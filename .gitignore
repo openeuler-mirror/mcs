@@ -1,0 +1,10 @@
+# no object files
+*.o
+*.a
+*.mod.c
+*.symvers
+*.order
+*.mod
+*.ko
+*.cmd
+*.vscode
