@@ -1,3 +1,6 @@
+#define pr_fmt(fmt) "mcs: " fmt
+
+#include <linux/acpi.h>
 #include <linux/device.h>
 #include <linux/file.h>
 #include <linux/wait.h>
@@ -12,28 +15,25 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 
-#define MCS_DEVICE_NAME    "mcs"
-#define CPU_ON_FUNCID       0xC4000003
-#define AFFINITY_INFO_FUNCID   0xC4000004
+#define MCS_DEVICE_NAME		"mcs"
+#define CPU_ON_FUNCID	   	0xC4000003
+#define AFFINITY_INFO_FUNCID	0xC4000004
 
-#define MAGIC_NUMBER       'A'
-#define IOC_SENDIPI        _IOW(MAGIC_NUMBER, 0, int)
-#define IOC_CPUON          _IOW(MAGIC_NUMBER, 1, int)
-#define IOC_AFFINITY_INFO  _IOW(MAGIC_NUMBER, 2, int)
-#define IOC_MAXNR          2
+#define MAGIC_NUMBER		'A'
+#define IOC_SENDIPI		_IOW(MAGIC_NUMBER, 0, int)
+#define IOC_CPUON		_IOW(MAGIC_NUMBER, 1, int)
+#define IOC_AFFINITY_INFO	_IOW(MAGIC_NUMBER, 2, int)
+#define IOC_MAXNR		2
 
-#define OPENAMP_INIT_TRIGGER      0x0
-#define OPENAMP_CLIENTOS_TRIGGER  0x1
-#define OPENAMP_IRQ  8
-
-#define START_INDEX     1
-#define SIZE_INDEX      2
+#define OPENAMP_INIT_TRIGGER		0x0
+#define OPENAMP_CLIENTOS_TRIGGER	0x1
+#define OPENAMP_IRQ			8
 
 static struct class *mcs_class;
 static int mcs_major;
 
-static u64 valid_start;
-static u64 valid_end;
+static phys_addr_t valid_start;
+static phys_addr_t valid_end;
 static const char *smccc_method = "hvc";
 
 static DECLARE_WAIT_QUEUE_HEAD(openamp_trigger_wait);
@@ -41,154 +41,153 @@ static int openamp_trigger;
 
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
-    pr_info("mcs_km: received ipi from client os\n");
-    openamp_trigger = OPENAMP_CLIENTOS_TRIGGER;
-    wake_up_interruptible(&openamp_trigger_wait);
-    return IRQ_HANDLED;
+	pr_info("mcs_km: received ipi from client os\n");
+	openamp_trigger = OPENAMP_CLIENTOS_TRIGGER;
+	wake_up_interruptible(&openamp_trigger_wait);
+	return IRQ_HANDLED;
 }
 
 void set_openamp_ipi(void)
 {
-    int err;
-    struct irq_desc *desc;
+	int err;
+	struct irq_desc *desc;
 
-    /* use IRQ8 as IPI7, init irq resource once */
-    desc = irq_to_desc(OPENAMP_IRQ);
-    if (!desc->action) {
-        err = request_percpu_irq(OPENAMP_IRQ, handle_clientos_ipi, "IPI", &cpu_number);
-        if (err) {
-            pr_err("mcs_km: request openamp irq failed(%d)\n", err);
-            return;
-        }
-    }
+	/* use IRQ8 as IPI7, init irq resource once */
+	desc = irq_to_desc(OPENAMP_IRQ);
+	if (!desc->action) {
+		err = request_percpu_irq(OPENAMP_IRQ, handle_clientos_ipi, "IPI", &cpu_number);
+		if (err) {
+			pr_err("mcs_km: request openamp irq failed(%d)\n", err);
+			return;
+		}
+	}
 
-    /* In SMP, all the cores run Linux should be enabled */
-    if (!irq_percpu_is_enabled(OPENAMP_IRQ)) {
-        preempt_disable(); /* fix kernel err message: using smp_processor_id() in preemptible */
-        enable_percpu_irq(OPENAMP_IRQ, 0);
-        preempt_enable();
-    }
+	/* In SMP, all the cores run Linux should be enabled */
+	if (!irq_percpu_is_enabled(OPENAMP_IRQ)) {
+		preempt_disable(); /* fix kernel err message: using smp_processor_id() in preemptible */
+		enable_percpu_irq(OPENAMP_IRQ, 0);
+		preempt_enable();
+	}
 
-    return;
+	return;
 }
 
 static void send_clientos_ipi(const struct cpumask *target)
 {
-    ipi_send_mask(OPENAMP_IRQ, target);
+	ipi_send_mask(OPENAMP_IRQ, target);
 }
 
 static unsigned int mcs_poll(struct file *file, poll_table *wait)
 {
-    unsigned int mask;
+	unsigned int mask;
 
-    poll_wait(file, &openamp_trigger_wait, wait);
-    mask = 0;
-    if (openamp_trigger == OPENAMP_CLIENTOS_TRIGGER)
-        mask |= POLLIN | POLLRDNORM;
+	poll_wait(file, &openamp_trigger_wait, wait);
+	mask = 0;
+	if (openamp_trigger == OPENAMP_CLIENTOS_TRIGGER)
+		mask |= POLLIN | POLLRDNORM;
 
-    openamp_trigger = OPENAMP_INIT_TRIGGER;
-    return mask;
+	openamp_trigger = OPENAMP_INIT_TRIGGER;
+	return mask;
 }
 
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-    int err;
-    int cpu_id, cpu_boot_addr;
-    struct arm_smccc_res res;
+	int err;
+	int cpu_id, cpu_boot_addr;
+	struct arm_smccc_res res;
 
-    if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
-        return -EINVAL;
-    if (_IOC_NR(cmd) > IOC_MAXNR)
-        return -EINVAL;
-    if (copy_from_user(&cpu_id, (int __user *)arg, sizeof(int)))
-        return -EFAULT;
+	if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
+		return -EINVAL;
+	if (_IOC_NR(cmd) > IOC_MAXNR)
+		return -EINVAL;
+	if (copy_from_user(&cpu_id, (int __user *)arg, sizeof(int)))
+		return -EFAULT;
 
-    switch (cmd) {
-        case IOC_SENDIPI:
-            pr_info("mcs_km: received ioctl cmd to send ipi to cpu(%d)\n", cpu_id);
-            send_clientos_ipi(cpumask_of(cpu_id));
-            break;
+	switch (cmd) {
+		case IOC_SENDIPI:
+			pr_info("mcs_km: received ioctl cmd to send ipi to cpu(%d)\n", cpu_id);
+			send_clientos_ipi(cpumask_of(cpu_id));
+			break;
 
-        case IOC_CPUON:
-            if (copy_from_user(&cpu_boot_addr, (unsigned int __user *)arg + 1, sizeof(unsigned int)))
-                return -EFAULT;
+		case IOC_CPUON:
+			if (copy_from_user(&cpu_boot_addr, (unsigned int __user *)arg + 1, sizeof(unsigned int)))
+				return -EFAULT;
 
-            pr_info("mcs_km: start booting clientos on cpu(%d) addr(0x%x) smccc(%s)\n", cpu_id, cpu_boot_addr, smccc_method);
+			pr_info("mcs_km: start booting clientos on cpu(%d) addr(0x%x) smccc(%s)\n", cpu_id, cpu_boot_addr, smccc_method);
 
-            if (strcmp(smccc_method, "smc") == 0)
-                arm_smccc_smc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
-            else
-                arm_smccc_hvc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
+			if (strcmp(smccc_method, "smc") == 0)
+				arm_smccc_smc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
+			else
+				arm_smccc_hvc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
 
-            if (res.a0) {
-                pr_err("mcs_km: boot clientos failed(%ld)\n", res.a0);
-                return -EINVAL;
-            }
-            break;
+			if (res.a0) {
+				pr_err("mcs_km: boot clientos failed(%ld)\n", res.a0);
+				return -EINVAL;
+			}
+			break;
 
-        case IOC_AFFINITY_INFO:
-            if (strcmp(smccc_method, "smc") == 0)
-                arm_smccc_smc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
-            else
-                arm_smccc_hvc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
+		case IOC_AFFINITY_INFO:
+			if (strcmp(smccc_method, "smc") == 0)
+				arm_smccc_smc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
+			else
+				arm_smccc_hvc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
 
-            if (copy_to_user((unsigned int __user *)arg, &res.a0, sizeof(unsigned int)))
-                return -EFAULT;
-            break;
+			if (copy_to_user((unsigned int __user *)arg, &res.a0, sizeof(unsigned int)))
+				return -EFAULT;
+			break;
 
-        default:
-            pr_err("mcs_km: IOC param invalid(0x%x)\n", cmd);
-            return -EINVAL;
-    }
-
-    return 0;
+		default:
+			pr_err("mcs_km: IOC param invalid(0x%x)\n", cmd);
+			return -EINVAL;
+	}
+	return 0;
 }
 
 #ifdef CONFIG_STRICT_DEVMEM
 static inline int range_is_allowed(unsigned long pfn, unsigned long size)
 {
-    u64 from = ((u64)pfn) << PAGE_SHIFT;
-    u64 to = from + size;
-    u64 cursor = from;
+	u64 from = ((u64)pfn) << PAGE_SHIFT;
+	u64 to = from + size;
+	u64 cursor = from;
 
-    while (cursor < to) {
-        if (page_is_ram(pfn))
-            return 0;
-        cursor += PAGE_SIZE;
-        pfn++;
-    }
-    return 1;
+	while (cursor < to) {
+		if (page_is_ram(pfn))
+			return 0;
+		cursor += PAGE_SIZE;
+		pfn++;
+	}
+	return 1;
 }
 #else
 static inline int range_is_allowed(unsigned long pfn, unsigned long size)
 {
-    return 1;
+	return 1;
 }
 #endif
 
 int mcs_phys_mem_access_prot_allowed(struct file *file,
 	unsigned long pfn, unsigned long size, pgprot_t *vma_prot)
 {
-    u64 start, end;
-    start = ((u64)pfn) << PAGE_SHIFT;
-    end = start + size;
+	u64 start, end;
+	start = ((u64)pfn) << PAGE_SHIFT;
+	end = start + size;
 
-    if (valid_start == 0 && valid_end == 0) {
-        if (!range_is_allowed(pfn, size))
-            return 0;
-        return 1;
-    }
+	if (valid_start == 0 && valid_end == 0) {
+		if (!range_is_allowed(pfn, size))
+			return 0;
+		return 1;
+	}
 
-    if (start < valid_start || end > valid_end)
-        return 0;
+	if (start < valid_start || end > valid_end)
+		return 0;
 
-    return 1;
+	return 1;
 }
 
 static pgprot_t mcs_phys_mem_access_prot(struct file *file, unsigned long pfn,
-				     unsigned long size, pgprot_t vma_prot)
+					 unsigned long size, pgprot_t vma_prot)
 {
-    return __pgprot_modify(vma_prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_NORMAL_NC) | PTE_PXN | PTE_UXN);
+	return __pgprot_modify(vma_prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_NORMAL_NC) | PTE_PXN | PTE_UXN);
 }
 
 static const struct vm_operations_struct mmap_mem_ops = {
@@ -249,47 +248,44 @@ static const struct file_operations mcs_fops = {
 
 static int get_mcs_node_info(void)
 {
-    int ret = 0;
-    struct device_node *nd = NULL;
-    u8 datasize;
-    u32 *val = NULL;
+	int ret, len, naddr, nsize;
+	struct device_node *nd;
+	const __be32 *prop;
 
-    nd = of_find_compatible_node(NULL, NULL, "mcs_mem");
-    if (nd == NULL) {
-        pr_info("no reserved-memory mcs node.\n");
-        return -EINVAL;
-    }
+	nd = of_find_compatible_node(NULL, NULL, "mcs_mem");
+	if (nd == NULL)
+		return -ENODEV;
 
-    datasize = of_property_count_elems_of_size(nd, "reg", sizeof(u32));
-    if (datasize != 3) {
-        pr_err("invalid reserved-memory mcs reg size.\n");
-        return -EINVAL;
-    }
+	naddr = of_n_addr_cells(nd);
+	nsize = of_n_size_cells(nd);
 
-    val = kmalloc(datasize * sizeof(u32), GFP_KERNEL);
-    if (val == NULL)
-        return -ENOMEM;
+	prop = of_get_property(nd, "reg", &len);
+	if (!prop)
+		return -ENOENT;
 
-    ret = of_property_read_u32_array(nd, "reg", val, datasize);
-    if (ret < 0)
-        goto out;
+	if (len && len != ((naddr + nsize) * sizeof(__be32)))
+		return -EINVAL;
 
-    valid_start = (u64)(*(val + START_INDEX));
-    valid_end = valid_start + (u64)(*(val + SIZE_INDEX));
+	valid_start = of_read_number(prop, naddr);
+	valid_end = valid_start + of_read_number(prop + naddr, nsize);
 
-    ret = of_property_read_string(nd, "smccc", &smccc_method);
-    if (ret < 0)
-        goto out;
+	ret = of_property_read_string(nd, "smccc", &smccc_method);
 
-out:
-    kfree(val);
-    return ret;
+	return ret;
 }
 
 static int __init mcs_dev_init(void)
 {
 	struct device *class_dev = NULL;
 	int ret = 0;
+
+	if (acpi_disabled) {
+		ret = get_mcs_node_info();
+		if (ret) {
+		    pr_err("Failed to parse mcs node in device tree, ret = %d\n", ret);
+		    return ret;
+		}
+	}
 
 	mcs_major = register_chrdev(0, MCS_DEVICE_NAME, &mcs_fops);
 	if (mcs_major < 0) {
@@ -310,12 +306,7 @@ static int __init mcs_dev_init(void)
 		goto error_device_create;
 	}
 
-    set_openamp_ipi();
-
-    if (get_mcs_node_info() < 0)
-		pr_info("there's no mcsmem dts node info. Allow page isn't ram mmap.\n");
-    else
-        pr_info("valid mcsmem node detected.\n");
+	set_openamp_ipi();
 
 	pr_info("mcs_km: create major %d for mcs dev.\n", mcs_major);
 	return 0;
@@ -334,7 +325,7 @@ static void __exit mcs_dev_exit(void)
 	class_destroy(mcs_class);
 	unregister_chrdev(mcs_major, MCS_DEVICE_NAME);
 
-    pr_info("mcs_km: remove mcs dev.\n");
+	pr_info("mcs_km: remove mcs dev.\n");
 }
 module_exit(mcs_dev_exit);
 
