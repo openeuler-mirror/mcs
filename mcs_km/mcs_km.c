@@ -32,6 +32,8 @@
 static struct class *mcs_class;
 static int mcs_major;
 
+static int __percpu *mcs_evt;
+
 static phys_addr_t valid_start;
 static phys_addr_t valid_end;
 static int invoke_hvc = 1;
@@ -54,35 +56,46 @@ static unsigned long invoke_psci_fn(unsigned long function_id,
 
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
-	pr_info("mcs_km: received ipi from client os\n");
+	pr_info("received ipi from client os\n");
 	openamp_trigger = OPENAMP_CLIENTOS_TRIGGER;
 	wake_up_interruptible(&openamp_trigger_wait);
 	return IRQ_HANDLED;
 }
 
-void set_openamp_ipi(void)
+static void enable_openamp_irq(void *data)
+{
+	enable_percpu_irq(OPENAMP_IRQ, IRQ_TYPE_NONE);
+}
+
+static void disable_openamp_irq(void *data)
+{
+	disable_percpu_irq(OPENAMP_IRQ);
+}
+
+static int set_openamp_ipi(void)
 {
 	int err;
 	struct irq_desc *desc;
 
+	mcs_evt = alloc_percpu(int);
+	if (!mcs_evt)
+		return -ENOMEM;
+
 	/* use IRQ8 as IPI7, init irq resource once */
 	desc = irq_to_desc(OPENAMP_IRQ);
 	if (!desc->action) {
-		err = request_percpu_irq(OPENAMP_IRQ, handle_clientos_ipi, "IPI", &cpu_number);
+		err = request_percpu_irq(OPENAMP_IRQ, handle_clientos_ipi, "MCS IPI", mcs_evt);
 		if (err) {
-			pr_err("mcs_km: request openamp irq failed(%d)\n", err);
-			return;
+			free_percpu(mcs_evt);
+			return err;
 		}
 	}
 
 	/* In SMP, all the cores run Linux should be enabled */
-	if (!irq_percpu_is_enabled(OPENAMP_IRQ)) {
-		preempt_disable(); /* fix kernel err message: using smp_processor_id() in preemptible */
-		enable_percpu_irq(OPENAMP_IRQ, 0);
-		preempt_enable();
-	}
+	if (!irq_percpu_is_enabled(OPENAMP_IRQ))
+		on_each_cpu(enable_openamp_irq, NULL, 1);
 
-	return;
+	return 0;
 }
 
 static void send_clientos_ipi(const struct cpumask *target)
@@ -117,7 +130,7 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 		case IOC_SENDIPI:
-			pr_info("mcs_km: received ioctl cmd to send ipi to cpu(%d)\n", cpu_id);
+			pr_info("received ioctl cmd to send ipi to cpu(%d)\n", cpu_id);
 			send_clientos_ipi(cpumask_of(cpu_id));
 			break;
 
@@ -125,11 +138,11 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			if (copy_from_user(&cpu_boot_addr, (unsigned long __user *)arg + 1, sizeof(unsigned long)))
 				return -EFAULT;
 
-			pr_info("mcs_km: start booting clientos on cpu(%d) addr(0x%lx)\n", cpu_id, cpu_boot_addr);
+			pr_info("start booting clientos on cpu(%d) addr(0x%lx)\n", cpu_id, cpu_boot_addr);
 
 			ret = invoke_psci_fn(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0);
 			if (ret) {
-				pr_err("mcs_km: boot clientos failed(%ld)\n", ret);
+				pr_err("boot clientos failed(%ld)\n", ret);
 				return -EINVAL;
 			}
 			break;
@@ -141,7 +154,7 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			break;
 
 		default:
-			pr_err("mcs_km: IOC param invalid(0x%x)\n", cmd);
+			pr_err("IOC param invalid(0x%x)\n", cmd);
 			return -EINVAL;
 	}
 	return 0;
@@ -331,7 +344,7 @@ static int __init mcs_dev_init(void)
 
 	mcs_major = register_chrdev(0, MCS_DEVICE_NAME, &mcs_fops);
 	if (mcs_major < 0) {
-		pr_err("mcs_km: unable to get major %d for memory devs.\n", mcs_major);
+		pr_err("unable to get major %d for memory devs.\n", mcs_major);
 		return -1;
 	}
 
@@ -348,9 +361,13 @@ static int __init mcs_dev_init(void)
 		goto error_device_create;
 	}
 
-	set_openamp_ipi();
+	ret = set_openamp_ipi();
+	if (ret) {
+		pr_err("Failed to request openamp ipi, ret = %d\n", ret);
+		goto error_device_create;
+	}
 
-	pr_info("mcs_km: create major %d for mcs dev.\n", mcs_major);
+	pr_info("create major %d for mcs dev.\n", mcs_major);
 	return 0;
 
 error_device_create:
@@ -363,11 +380,14 @@ module_init(mcs_dev_init);
 
 static void __exit mcs_dev_exit(void)
 {
+	on_each_cpu(disable_openamp_irq, NULL, 1);
+	free_percpu_irq(OPENAMP_IRQ, mcs_evt);
+	free_percpu(mcs_evt);
 	device_destroy(mcs_class, MKDEV((unsigned int)mcs_major, 1));
 	class_destroy(mcs_class);
 	unregister_chrdev(mcs_major, MCS_DEVICE_NAME);
 
-	pr_info("mcs_km: remove mcs dev.\n");
+	pr_info("remove mcs dev.\n");
 }
 module_exit(mcs_dev_exit);
 
