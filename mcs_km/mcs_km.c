@@ -34,10 +34,23 @@ static int mcs_major;
 
 static phys_addr_t valid_start;
 static phys_addr_t valid_end;
-static const char *smccc_method = "hvc";
+static int invoke_hvc = 1;
 
 static DECLARE_WAIT_QUEUE_HEAD(openamp_trigger_wait);
 static int openamp_trigger;
+
+static unsigned long invoke_psci_fn(unsigned long function_id,
+			unsigned long arg0, unsigned long arg1,
+			unsigned long arg2)
+{
+	struct arm_smccc_res res;
+
+	if (invoke_hvc)
+		arm_smccc_hvc(function_id, arg0, arg1, arg2, 0, 0, 0, 0, &res);
+	else
+		arm_smccc_smc(function_id, arg0, arg1, arg2, 0, 0, 0, 0, &res);
+	return res.a0;
+}
 
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
@@ -92,15 +105,14 @@ static unsigned int mcs_poll(struct file *file, poll_table *wait)
 
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-	int err;
-	int cpu_id, cpu_boot_addr;
-	struct arm_smccc_res res;
+	unsigned int cpu_id;
+	unsigned long cpu_boot_addr, ret;
 
 	if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
 		return -EINVAL;
 	if (_IOC_NR(cmd) > IOC_MAXNR)
 		return -EINVAL;
-	if (copy_from_user(&cpu_id, (int __user *)arg, sizeof(int)))
+	if (copy_from_user(&cpu_id, (unsigned int __user *)arg, sizeof(unsigned int)))
 		return -EFAULT;
 
 	switch (cmd) {
@@ -110,29 +122,21 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			break;
 
 		case IOC_CPUON:
-			if (copy_from_user(&cpu_boot_addr, (unsigned int __user *)arg + 1, sizeof(unsigned int)))
+			if (copy_from_user(&cpu_boot_addr, (unsigned long __user *)arg + 1, sizeof(unsigned long)))
 				return -EFAULT;
 
-			pr_info("mcs_km: start booting clientos on cpu(%d) addr(0x%x) smccc(%s)\n", cpu_id, cpu_boot_addr, smccc_method);
+			pr_info("mcs_km: start booting clientos on cpu(%d) addr(0x%lx)\n", cpu_id, cpu_boot_addr);
 
-			if (strcmp(smccc_method, "smc") == 0)
-				arm_smccc_smc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
-			else
-				arm_smccc_hvc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
-
-			if (res.a0) {
-				pr_err("mcs_km: boot clientos failed(%ld)\n", res.a0);
+			ret = invoke_psci_fn(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0);
+			if (ret) {
+				pr_err("mcs_km: boot clientos failed(%ld)\n", ret);
 				return -EINVAL;
 			}
 			break;
 
 		case IOC_AFFINITY_INFO:
-			if (strcmp(smccc_method, "smc") == 0)
-				arm_smccc_smc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
-			else
-				arm_smccc_hvc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
-
-			if (copy_to_user((unsigned int __user *)arg, &res.a0, sizeof(unsigned int)))
+			ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, cpu_id, 0, 0);
+			if (copy_to_user((unsigned long __user *)arg, &ret, sizeof(unsigned long)))
 				return -EFAULT;
 			break;
 
@@ -246,9 +250,43 @@ static const struct file_operations mcs_fops = {
 	.llseek = generic_file_llseek,
 };
 
+static const struct of_device_id psci_of_match[] = {
+	{ .compatible = "arm,psci" },
+	{ .compatible = "arm,psci-0.2" },
+	{ .compatible = "arm,psci-1.0" },
+	{},
+};
+
+static int get_psci_method(void)
+{
+	const char *method;
+	struct device_node *np;
+
+	np = of_find_matching_node(NULL, psci_of_match);
+
+	if (!np || !of_device_is_available(np))
+		return -ENODEV;
+
+	if (of_property_read_string(np, "method", &method)) {
+		of_node_put(np);
+		return -ENXIO;
+	}
+
+	of_node_put(np);
+
+	if (!strcmp("hvc", method))
+		invoke_hvc = 1;
+	else if (!strcmp("smc", method))
+		invoke_hvc = 0;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
 static int get_mcs_node_info(void)
 {
-	int ret, len, naddr, nsize;
+	int len, naddr, nsize;
 	struct device_node *nd;
 	const __be32 *prop;
 
@@ -260,6 +298,7 @@ static int get_mcs_node_info(void)
 	nsize = of_n_size_cells(nd);
 
 	prop = of_get_property(nd, "reg", &len);
+	of_node_put(nd);
 	if (!prop)
 		return -ENOENT;
 
@@ -268,10 +307,7 @@ static int get_mcs_node_info(void)
 
 	valid_start = of_read_number(prop, naddr);
 	valid_end = valid_start + of_read_number(prop + naddr, nsize);
-
-	ret = of_property_read_string(nd, "smccc", &smccc_method);
-
-	return ret;
+	return 0;
 }
 
 static int __init mcs_dev_init(void)
@@ -282,8 +318,14 @@ static int __init mcs_dev_init(void)
 	if (acpi_disabled) {
 		ret = get_mcs_node_info();
 		if (ret) {
-		    pr_err("Failed to parse mcs node in device tree, ret = %d\n", ret);
-		    return ret;
+			pr_err("Failed to parse mcs node in device tree, ret = %d\n", ret);
+			return ret;
+		}
+
+		ret = get_psci_method();
+		if (ret) {
+			pr_warn("Failed to get psci \"method\" property, ret = %d\n", ret);
+			return ret;
 		}
 	}
 

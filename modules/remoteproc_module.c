@@ -10,7 +10,7 @@ struct rproc_priv {
     struct remoteproc *rproc;  /* pass a remoteproc instance pointer */
     unsigned int idx;          /* remoteproc instance idx */
     unsigned int cpu_id;       /* related arg: cpu id */
-    unsigned int boot_address; /* related arg: boot address(in hex format) */
+    unsigned long boot_address; /* related arg: boot address(in hex format) */
 };
 
 static struct remoteproc rproc_inst;
@@ -47,7 +47,7 @@ static void rproc_remove(struct remoteproc *rproc)
 static int rproc_start(struct remoteproc *rproc)
 {
     int ret;
-    unsigned int boot_args[2];
+    unsigned long boot_args[2];
     struct rproc_priv *args = (struct rproc_priv *)rproc->priv;
 
     int fd = open(MCS_DEVICE_NAME, O_RDWR);
@@ -113,7 +113,7 @@ int acquire_cpu_state(void)
 {
     int ret;
     int fd;
-    unsigned int state_arg;
+    unsigned long state_arg;
 
     fd = open(MCS_DEVICE_NAME, O_RDWR);
     if (fd < 0) {
