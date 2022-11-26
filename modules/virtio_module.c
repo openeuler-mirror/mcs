@@ -39,8 +39,7 @@ static uint32_t virtio_get_features(struct virtio_device *vdev)
 static void virtio_notify(struct virtqueue *vq)
 {
 	(void)vq;
-	int cpu_handler_fd;
-	int ret;
+	int cpu_handler_fd, ret, target_cpu;
 
 	cpu_handler_fd = open(MCS_DEVICE_NAME, O_RDWR);
 	if (cpu_handler_fd < 0) {
@@ -48,7 +47,8 @@ static void virtio_notify(struct virtqueue *vq)
 		return;
 	}
 
-	ret = ioctl(cpu_handler_fd, IOC_SENDIPI, strtol(cpu_id, NULL, STR_TO_DEC));
+	target_cpu = strtol(cpu_id, NULL, STR_TO_DEC);
+	ret = ioctl(cpu_handler_fd, IOC_SENDIPI, &target_cpu);
 	if (ret) {
 		printf("send ipi tp second os failed\n");
 	}

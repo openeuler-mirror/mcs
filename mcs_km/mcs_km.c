@@ -100,39 +100,42 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
         return -EINVAL;
     if (_IOC_NR(cmd) > IOC_MAXNR)
         return -EINVAL;
-    err = !access_ok((void*)arg, _IOC_SIZE(cmd));
-    if (err)
-        return -EINVAL;
+    if (copy_from_user(&cpu_id, (int __user *)arg, sizeof(int)))
+        return -EFAULT;
 
     switch (cmd) {
         case IOC_SENDIPI:
-            cpu_id = (int)arg;
             pr_info("mcs_km: received ioctl cmd to send ipi to cpu(%d)\n", cpu_id);
             send_clientos_ipi(cpumask_of(cpu_id));
             break;
+
         case IOC_CPUON:
-            cpu_id = *(unsigned int*)arg;
-            cpu_boot_addr = *((unsigned int*)arg + 1);
+            if (copy_from_user(&cpu_boot_addr, (unsigned int __user *)arg + 1, sizeof(unsigned int)))
+                return -EFAULT;
 
             pr_info("mcs_km: start booting clientos on cpu(%d) addr(0x%x) smccc(%s)\n", cpu_id, cpu_boot_addr, smccc_method);
+
             if (strcmp(smccc_method, "smc") == 0)
                 arm_smccc_smc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
             else
                 arm_smccc_hvc(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0, 0, 0, 0, 0, &res);
+
             if (res.a0) {
                 pr_err("mcs_km: boot clientos failed(%ld)\n", res.a0);
                 return -EINVAL;
             }
             break;
-        case IOC_AFFINITY_INFO:
-            cpu_id = *(unsigned int*)arg;
 
+        case IOC_AFFINITY_INFO:
             if (strcmp(smccc_method, "smc") == 0)
                 arm_smccc_smc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
             else
                 arm_smccc_hvc(AFFINITY_INFO_FUNCID, cpu_id, 0, 0, 0, 0, 0, 0, &res);
-            *(unsigned int*)arg = res.a0;
+
+            if (copy_to_user((unsigned int __user *)arg, &res.a0, sizeof(unsigned int)))
+                return -EFAULT;
             break;
+
         default:
             pr_err("mcs_km: IOC param invalid(0x%x)\n", cmd);
             return -EINVAL;
@@ -176,9 +179,8 @@ int mcs_phys_mem_access_prot_allowed(struct file *file,
         return 1;
     }
 
-    if (start < valid_start || end > valid_end) {
+    if (start < valid_start || end > valid_end)
         return 0;
-    }
 
     return 1;
 }
@@ -224,9 +226,9 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 			    vma->vm_start,
 			    vma->vm_pgoff,
 			    size,
-			    vma->vm_page_prot)) {
+			    vma->vm_page_prot))
 		return -EAGAIN;
-	}
+
 	return 0;
 }
 
