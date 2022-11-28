@@ -57,7 +57,6 @@ int main(int argc, char **argv)
     ret = openamp_init();
     if (ret) {
         printf("openamp init failed: %d\n", ret);
-        openamp_deinit();
         return ret;
     }
 
