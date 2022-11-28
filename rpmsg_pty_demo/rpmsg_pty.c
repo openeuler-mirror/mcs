@@ -12,7 +12,24 @@
 
 /* define the keys according to your terminfo */
 #define KEY_CTRL_D      4
-#define PTSNAME_LEN     20
+
+static void pty_endpoint_exit(struct pty_ep_data *pty_ep)
+{
+    /* release the resources */
+    close(pty_ep->fd_master);
+    pthread_cancel(pty_ep->pty_thread);
+    rpmsg_service_unregister_endpoint(pty_ep->ep_id);
+    free(pty_ep);
+}
+
+static void pty_endpoint_unbind_cb(struct rpmsg_endpoint *ept)
+{
+    printf("%s: get unbind request from client side\n", ept->name);
+
+    struct pty_ep_data *pty_ep = (struct pty_ep_data *)ept->priv;
+
+    pty_endpoint_exit(pty_ep);
+}
 
 static int pty_endpoint_cb(struct rpmsg_endpoint *ept, void *data,
 		size_t len, uint32_t src, void *priv)
@@ -24,18 +41,20 @@ static int pty_endpoint_cb(struct rpmsg_endpoint *ept, void *data,
         ret = write(pty_ep->fd_master, data, len);
         if (ret < 0) {
             printf("write pty master error:%d\n", ret);
+            break;
         }
         len -= ret;
         data = (char *)data + ret;
     }
 
+    return 0;
 }
 
 int open_pty(int *pfdm)
 {
     int ret = -1;
     int fdm;
-    char pts_name[PTSNAME_LEN] = {0};
+    char pts_name[20] = {0};
 
     /* Open the master side of the PTY */
     fdm = posix_openpt(O_RDWR | O_NOCTTY);
@@ -87,13 +106,13 @@ void *pty_thread(void *arg)
 
     while (1) {
         ret = read(fdm, cmd, 128);   /* get command from ptmx */
-        if (ret < 0) {
+        if (ret <= 0) {
             printf("shell_user: get from ptmx failed: %d\n", ret);
             ret = -1;
             break;
         }
 
-        if (cmd[0] == KEY_CTRL_D) {  /* special key: ctrl+d */
+        if (cmd[ret - 1] == KEY_CTRL_D) {  /* special key: ctrl+d */
             ret = 0;  /* exit this thread, the same as pthread_exit */
             break;
         }
@@ -106,10 +125,9 @@ void *pty_thread(void *arg)
         }
     }
 
-    close(fdm);
-    free(pty_ep);
+    pty_endpoint_exit(pty_ep);
 
-    return (void *)(-1);
+    return (void *)((unsigned long)(ret));
 }
 
 struct pty_ep_data *pty_service_create(const char * ep_name)
@@ -130,7 +148,8 @@ struct pty_ep_data *pty_service_create(const char * ep_name)
         return NULL;
     }
 
-    pty_ep->ep_id = rpmsg_service_register_endpoint(ep_name, pty_endpoint_cb, NULL, pty_ep);
+    pty_ep->ep_id = rpmsg_service_register_endpoint(ep_name, pty_endpoint_cb,
+                                            pty_endpoint_unbind_cb, pty_ep);
 
     if (pthread_create(&pty_ep->pty_thread, NULL, pty_thread, pty_ep) < 0) {
         printf("pty thread create failed\n");

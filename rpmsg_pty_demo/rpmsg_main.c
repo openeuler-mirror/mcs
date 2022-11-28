@@ -17,7 +17,6 @@ static void cleanup(int sig)
 
 int rpmsg_app_master(void)
 {
-
     struct pty_ep_data *pty_shell;
 
     pty_shell = pty_service_create("uart");

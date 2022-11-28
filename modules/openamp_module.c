@@ -85,6 +85,8 @@ int openamp_init(void)
         return ret;
     }
 
+    virtio_init();
+
     rproc = create_remoteproc();
     if (!rproc) {
         printf("create remoteproc failed\n");
@@ -96,8 +98,6 @@ int openamp_init(void)
         printf("start processor failed\n");
         return ret;
     }
-
-    virtio_init();
 
     return 0;
 }

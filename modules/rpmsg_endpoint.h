@@ -11,6 +11,8 @@ extern "C" {
 int rpmsg_service_register_endpoint(const char *name, rpmsg_ept_cb cb,
                                     rpmsg_ns_unbind_cb unbind_cb, void *priv);
 
+int rpmsg_service_unregister_endpoint(unsigned int endpoint_id);
+
 /* send data using given rpmsg service endpoint */
 int rpmsg_service_send(unsigned int endpoint_id, const void *data, size_t len);
 

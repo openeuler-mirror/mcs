@@ -75,6 +75,17 @@ int rpmsg_service_register_endpoint(const char *name, rpmsg_ept_cb cb,
 	return -1;
 }
 
+int rpmsg_service_unregister_endpoint(unsigned int endpoint_id)
+{
+	if (endpoint_id < RPMSG_SERVICE_NUM_ENDPOINTS) {
+		if (endpoints[endpoint_id].name) {
+			endpoints[endpoint_id].name = NULL;
+
+			rpmsg_destroy_ept(&endpoints[endpoint_id].ep);
+		}
+	}
+}
+
 bool rpmsg_service_endpoint_is_bound(unsigned int endpoint_id)
 {
 	if (endpoint_id < RPMSG_SERVICE_NUM_ENDPOINTS) {
