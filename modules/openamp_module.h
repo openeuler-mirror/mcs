@@ -15,6 +15,7 @@ extern "C" {
 extern char *target_binfile;
 extern char *target_binaddr;
 extern char *cpu_id;
+extern int mcs_dev_fd;
 
 /* initialize openamp module, including remoteproc, virtio, rpmsg */
 int openamp_init(void);

@@ -31,7 +31,7 @@ extern "C" {
 void virtio_init(void);
 void virtio_deinit(void);
 
-extern char *cpu_id;
+
 extern struct virtqueue *vq[2];
 extern void *shmaddr;
 extern struct rpmsg_device *rdev;

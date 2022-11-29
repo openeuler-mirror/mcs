@@ -2,21 +2,20 @@
 
 #include "openamp_module.h"
 
-static int memfd;
-static void *binaddr;
-static int binsize;
+int mcs_dev_fd;
 void *shmaddr;
 
 static int reserved_mem_init(void)
 {
     int binfd;
     struct stat buf;
-    void *file_addr;
+    void *file_addr, *binaddr;
+    int binsize;
 
-    /* open memfd */
-    memfd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
-    if (memfd < 0) {
-        printf("mcsmem open failed: %d\n", memfd);
+    /* open mcs device */
+    mcs_dev_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
+    if (mcs_dev_fd < 0) {
+        printf("mcsmem open failed: %d\n", mcs_dev_fd);
         return -1;
     }
 
@@ -28,13 +27,13 @@ static int reserved_mem_init(void)
     }
 
     /* shared memory for virtio */
-    shmaddr = mmap(NULL, VDEV_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, VDEV_START_ADDR);
+    shmaddr = mmap(NULL, VDEV_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mcs_dev_fd, VDEV_START_ADDR);
     memset(shmaddr, 0, VDEV_SIZE);
 
     /* memory for loading clientos bin file */
     fstat(binfd, &buf);
     binsize = PAGE_ALIGN(buf.st_size);
-    binaddr = mmap(NULL, binsize, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, strtol(target_binaddr, NULL, STR_TO_HEX));
+    binaddr = mmap(NULL, binsize, PROT_READ | PROT_WRITE, MAP_SHARED, mcs_dev_fd, strtol(target_binaddr, NULL, STR_TO_HEX));
     memset(binaddr, 0, binsize);
 
     if (shmaddr < 0 || binaddr < 0) {
@@ -46,6 +45,8 @@ static int reserved_mem_init(void)
     file_addr = mmap(NULL, binsize, PROT_READ, MAP_PRIVATE, binfd, 0);
     memcpy(binaddr, file_addr, binsize);
 
+    munmap(file_addr, binsize);
+    munmap(binaddr, binsize);
     close(binfd);
 
     return 0;
@@ -57,12 +58,8 @@ static void reserved_mem_release(void)
         munmap(shmaddr, VDEV_SIZE);
     }
 
-    if (binaddr) {
-        munmap(binaddr, binsize);
-    }
-
-    if (memfd) {
-        close(memfd);
+    if (mcs_dev_fd) {
+        close(mcs_dev_fd);
     }
 }
 
