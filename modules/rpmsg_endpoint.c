@@ -28,7 +28,6 @@ void ns_bind_cb(struct rpmsg_device *rdev,
 
 	for (int i = 0; i < RPMSG_SERVICE_NUM_ENDPOINTS; ++i) {
 		if (endpoints[i].name && (strcmp(name, endpoints[i].name) == 0)) {
-			printf("found matched endpoint, creating ep in host os\n");
 			/* create the endpoint from host side and allocate an address */
 			err = rpmsg_create_ept(&endpoints[i].ep,
 						   rdev,
@@ -41,7 +40,9 @@ void ns_bind_cb(struct rpmsg_device *rdev,
 			if (err != 0) {
 				printf("Creating remote endpoint %s failed wirh error %d", name, err);
 			} else {
-				endpoints[i].bound = true;
+				printf("found matched endpoint, creating %s with id:%d in host os\n",
+						name, i);
+				rpmsg_service_endpoint_bound(i);
 				/* send an empty msg to notify the bound endpoint's address */
 				rpmsg_send(&endpoints[i].ep, (char *)"", 0);
 			}
