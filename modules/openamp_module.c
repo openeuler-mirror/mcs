@@ -83,6 +83,7 @@ int openamp_init(void)
     }
 
     virtio_init();
+    rpmsg_sys_service_init();
 
     rproc = create_remoteproc();
     if (!rproc) {

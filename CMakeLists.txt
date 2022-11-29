@@ -22,6 +22,8 @@ add_library(openamp STATIC
 	./modules/remoteproc_module.c
 	./modules/virtio_module.c
 	./modules/rpmsg_endpoint.c
+	./modules/rpmsg_rpc_service.c
+	./modules/rpmsg_sys_service.c
 )
 target_link_libraries(openamp
 	${SHARED_LINK_LIBS}

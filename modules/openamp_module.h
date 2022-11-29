@@ -7,6 +7,8 @@
 #include "remoteproc_module.h"
 #include "virtio_module.h"
 #include "rpmsg_endpoint.h"
+#include "rpmsg_rpc_service.h"
+#include "rpmsg_sys_service.h"
 
 #if defined __cplusplus
 extern "C" {

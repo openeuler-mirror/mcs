@@ -73,6 +73,8 @@ static int rproc_stop(struct remoteproc *rproc)
     /* TODO: send order to clientos by RPC service, clientos shut itself down by PSCI */
     printf("stop rproc\n");
 
+    sys_service_power_off(0);
+
     return 0;
 }
 
@@ -93,8 +95,9 @@ struct remoteproc *create_remoteproc(void)
     args.cpu_id = strtol(cpu_id, NULL, STR_TO_DEC);
     args.boot_address = strtol(target_binaddr, NULL, STR_TO_HEX);
     rproc = remoteproc_init(&rproc_inst, &rproc_ops, &args);
-    if (!rproc)
+    if (!rproc) {
         return NULL;
+    }
 
     return rproc;
 }
