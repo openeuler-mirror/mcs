@@ -5,22 +5,6 @@
 
 #include "openamp_module.h"
 
-static struct virtio_vring_info rvrings[2] = {
-	[0] = {
-		.info.align = VRING_ALIGNMENT,
-	},
-	[1] = {
-		.info.align = VRING_ALIGNMENT,
-	},
-};
-
-static struct virtio_device vdev;
-static struct rpmsg_virtio_device rvdev;
-static struct metal_io_region *io;
-struct virtqueue *vq[2];
-static metal_phys_addr_t shm_physmap[] = { SHM_START_ADDR };
-struct rpmsg_device *rdev;
-
 static unsigned char virtio_get_status(struct virtio_device *vdev)
 {
 	return VIRTIO_CONFIG_STATUS_DRIVER_OK;
@@ -28,7 +12,9 @@ static unsigned char virtio_get_status(struct virtio_device *vdev)
 
 static void virtio_set_status(struct virtio_device *vdev, unsigned char status)
 {
-	*(volatile unsigned int *)VDEVADDR(shmaddr) = (unsigned int)status;
+	struct client_os_inst *client = metal_container_of(vdev, struct client_os_inst, vdev);
+
+	*(volatile unsigned int *)(client->vdev_status_reg) = (unsigned int)status;
 }
 
 static uint32_t virtio_get_features(struct virtio_device *vdev)
@@ -38,11 +24,10 @@ static uint32_t virtio_get_features(struct virtio_device *vdev)
 
 static void virtio_notify(struct virtqueue *vq)
 {
-	(void)vq;
-	int ret, target_cpu;
+	struct client_os_inst *client = metal_container_of(vq->vq_dev, struct client_os_inst, vdev);
+	int ret;
 
-	target_cpu = strtol(cpu_id, NULL, STR_TO_DEC);
-	ret = ioctl(mcs_dev_fd, IOC_SENDIPI, &target_cpu);
+	ret = ioctl(client->mcs_fd, IOC_SENDIPI, &client->cpu_id);
 	if (ret) {
 		printf("send ipi tp second os failed\n");
 	}
@@ -57,69 +42,79 @@ struct virtio_dispatch dispatch = {
 	.notify = virtio_notify,
 };
 
-static struct rpmsg_virtio_shm_pool shpool;
-
-void virtio_init(void)
+void virtio_init(struct client_os_inst *client)
 {
 	int status = 0;
+	void *share_mem_start;
 
     printf("\nInitialize the virtio, virtqueue and rpmsg device\n");
 
-	io = malloc(sizeof(struct metal_io_region));
-	if (!io) {
+	client->io = malloc(sizeof(struct metal_io_region));
+	if (!client->io) {
 		printf("malloc io failed\n");
 		return;
 	}
-	metal_io_init(io, SHMEMADDR(shmaddr), shm_physmap, SHM_SIZE, -1, 0, NULL);
+
+	share_mem_start = client->virt_shared_mem + client->vdev_status_size;
+	client->shm_physmap[0] = client->phy_shared_mem + client->vdev_status_size;
+
+	metal_io_init(client->io, share_mem_start, client->shm_physmap,
+		client->shared_mem_size - client->vdev_status_size, -1, 0, NULL);
+
+	printf("virt add:%p, status_reg:%p, tx:%p, rx:%p, mempool:%p\n",
+    	client->virt_shared_mem, client->vdev_status_reg, client->virt_tx_addr,
+    	client->virt_rx_addr, share_mem_start);
 
 	/* setup vdev */
-	vq[0] = virtqueue_allocate(VRING_SIZE);
-	if (vq[0] == NULL) {
+	client->vq[0] = virtqueue_allocate(client->vring_size);
+	if (client->vq[0] == NULL) {
 		printf("virtqueue_allocate failed to alloc vq[0]\n");
-        free(io);
+        free(client->io);
 		return;
 	}
-	vq[1] = virtqueue_allocate(VRING_SIZE);
-	if (vq[1] == NULL) {
+	client->vq[1] = virtqueue_allocate(client->vring_size);
+	if (client->vq[1] == NULL) {
 		printf("virtqueue_allocate failed to alloc vq[1]\n");
-        free(io);
+        free(client->io);
 		return;
 	}
 
-	vdev.role = RPMSG_HOST;
-	vdev.vrings_num = VRING_COUNT;
-	vdev.func = &dispatch;
-	rvrings[0].io = io;
-	rvrings[0].info.vaddr = TXADDR(shmaddr);
-	rvrings[0].info.num_descs = VRING_SIZE;
-	rvrings[0].info.align = VRING_ALIGNMENT;
-	rvrings[0].vq = vq[0];
+	client->vdev.role = RPMSG_HOST;
+	client->vdev.vrings_num = VRING_COUNT;
+	client->vdev.func = &dispatch;
 
-	rvrings[1].io = io;
-	rvrings[1].info.vaddr = RXADDR(shmaddr);
-	rvrings[1].info.num_descs = VRING_SIZE;
-	rvrings[1].info.align = VRING_ALIGNMENT;
-	rvrings[1].vq = vq[1];
+	client->rvrings[0].io = client->io;
+	client->rvrings[0].info.vaddr = client->virt_tx_addr;
+	client->rvrings[0].info.num_descs = client->vring_size;
+	client->rvrings[0].info.align = VRING_ALIGNMENT;
+	client->rvrings[0].vq = client->vq[0];
 
-	vdev.vrings_info = &rvrings[0];
+	client->rvrings[1].io = client->io;
+	client->rvrings[1].info.vaddr = client->virt_rx_addr;
+	client->rvrings[1].info.num_descs = client->vring_size;
+	client->rvrings[1].info.align = VRING_ALIGNMENT;
+	client->rvrings[1].vq = client->vq[1];
+
+	client->vdev.vrings_info = &client->rvrings[0];
 
 	/* setup rvdev */
-	rpmsg_virtio_init_shm_pool(&shpool, SHMEMADDR(shmaddr), SHM_SIZE);
-	status = rpmsg_init_vdev(&rvdev, &vdev, ns_bind_cb, io, &shpool);
+	rpmsg_virtio_init_shm_pool(&client->shpool, share_mem_start,
+			client->shared_mem_size - client->vdev_status_size);
+
+	status = rpmsg_init_vdev(&client->rvdev, &client->vdev, ns_bind_cb,
+			 client->io, &client->shpool);
 	if (status != 0) {
 		printf("rpmsg_init_vdev failed %d\n", status);
-		free(io);
+		free(client->io);
 		return;
 	}
-
-	rdev = rpmsg_virtio_get_rpmsg_device(&rvdev);
 }
 
-void virtio_deinit(void)
+void virtio_deinit(struct client_os_inst *client)
 {
-    rpmsg_deinit_vdev(&rvdev);
+    rpmsg_deinit_vdev(&client->rvdev);
 
-    if (io) {
-        free(io);
+    if (client->io) {
+        free(client->io);
 	}
 }

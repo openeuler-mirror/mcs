@@ -11,32 +11,44 @@ extern "C" {
 #define CPU_STATE_OFF         1
 #define CPU_STATE_ON_PENDING  2
 
+
+struct client_os_inst {
+	/* data structure needed by remote proc */
+    struct remoteproc rproc; 	/* remoteproc instance */
+
+	/* data structure needed by virtio */
+	struct virtio_device vdev;	/* vdevice */
+	struct rpmsg_virtio_device rvdev; /* rpmsg virtio dev */
+	struct metal_io_region *io;
+	struct virtqueue *vq[VRING_COUNT];
+	metal_phys_addr_t shm_physmap[1];
+	struct virtio_vring_info rvrings[VRING_COUNT];
+	struct rpmsg_virtio_shm_pool shpool;
+	unsigned long phy_shared_mem;			/* the physical address of shared mem */
+	void *virt_shared_mem;			/* the virtual address of shared mem */
+	unsigned int shared_mem_size;	/* shared mem size */
+	void  *vdev_status_reg;			/*  virtual device status register */
+	unsigned int vdev_status_size;
+	unsigned int vring_size;
+	void *virt_tx_addr;
+	void *virt_rx_addr;
+
+	/* generic data structure */
+	char *path;					/* client os firmware path */
+    unsigned int cpu_id;     	/* related arg: cpu id */
+	int mcs_fd;					/* mcs device fd */
+	unsigned long load_address;	/* physical load address */
+    unsigned long entry; 		/* physical entry of client os, can be the same as load address */
+
+};
+
+
 /* create remoteproc */
-struct remoteproc *create_remoteproc(void);
+int create_remoteproc(struct client_os_inst *client);
 
-/*
- start remoteproc: refet to <openamp/remoteproc.h>
-	int remoteproc_start(struct remoteproc *rproc);
-*/
-
-/*
- stop remoteproc: refet to <openamp/remoteproc.h>
-	int remoteproc_stop(struct remoteproc *rproc);
-*/
-
-/*
- remove remoteproc: refet to <openamp/remoteproc.h>
-	int remoteproc_remove(struct remoteproc *rproc);
-*/
 
 /* destory remoteproc */
-void destory_remoteproc(void);
-
-/* acquire cpu power state */
-int acquire_cpu_state(void);
-
-extern char *cpu_id;
-extern char *target_binaddr;
+void destory_remoteproc(struct client_os_inst *client);
 
 #if defined __cplusplus
 }

@@ -124,16 +124,11 @@ int rpmsg_service_send(unsigned int endpoint_id, const void *data, size_t len)
 void *rpmsg_service_receive_loop(void *arg)
 {
 	int ret;
-	int dev_fd;
 	struct pollfd fds;
 
-	dev_fd = open(MCS_DEVICE_NAME, O_RDWR);
-	if (dev_fd < 0) {
-		printf("rpmsg_receive_message: open %s device failed.\n", MCS_DEVICE_NAME);
-		return (void*)-1;
-	}
+	struct client_os_inst *client = (struct client_os_inst *)arg;
 
-	fds.fd = dev_fd;
+	fds.fd = client->mcs_fd;
 	fds.events = POLLIN;
 
 	while (1) {
@@ -144,10 +139,9 @@ void *rpmsg_service_receive_loop(void *arg)
 		}
 
 		if (fds.revents & POLLIN) {
-			virtqueue_notification(vq[0]);  /* will call endpoint_cb or ns_bind_cb */
+			virtqueue_notification(client->vq[0]);  /* will call endpoint_cb or ns_bind_cb */
 		}
 	}
 
-	close(dev_fd);
 	return (void*)0;
 }
