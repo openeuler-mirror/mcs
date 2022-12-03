@@ -1,33 +1,22 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(openamp_demo)
-
-set(CMAKE_C_COMPILER ${CC})
-set(CMAKE_CXX_COMPILER ${CXX})
+project(openeuler_mcs_demo)
 
 # append -pthread flags
 add_compile_options(-pthread)
 
-message(STATUS "SDKTARGETSYSROOT=$ENV{SDKTARGETSYSROOT}")
 message(STATUS "DEMO_TARGET=${DEMO_TARGET}")
 
+
+set(MCS_LIB mcs)
+
 set(SHARED_LINK_LIBS
-	$ENV{SDKTARGETSYSROOT}/usr/lib64/libopen_amp.so
-	$ENV{SDKTARGETSYSROOT}/usr/lib64/libmetal.so
-	$ENV{SDKTARGETSYSROOT}/lib64/libsysfs.so
+	libopen_amp.so
+	libmetal.so
+	libsysfs.so
 )
 
-add_library(openamp STATIC
-	./modules/openamp_module.c
-	./modules/remoteproc_module.c
-	./modules/virtio_module.c
-	./modules/rpmsg_endpoint.c
-	./modules/rpmsg_rpc_service.c
-	./modules/rpmsg_sys_service.c
-)
-target_link_libraries(openamp
-	${SHARED_LINK_LIBS}
-)
+add_subdirectory(library)
 
 set(SRC_FILE
 	./${DEMO_TARGET}/rpmsg_main.c
@@ -41,9 +30,11 @@ else()
 endif()
 
 include_directories(
-	$ENV{SDKTARGETSYSROOT}/usr/include
-	./modules
-	./${DEMO_TARGET}
+	${DEMO_TARGET}
+	library/include/mcs
 )
+
 add_executable(rpmsg_main ${SRC_FILE})
-target_link_libraries(rpmsg_main openamp)
+target_link_libraries(rpmsg_main ${MCS_LIB} ${SHARED_LINK_LIBS})
+
+install(TARGETS rpmsg_main DESTINATION bin)
