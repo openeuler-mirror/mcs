@@ -38,20 +38,23 @@ void ns_bind_cb(struct rpmsg_device *rdev,
 						   endpoints[i].unbind_cb);
 
 			if (err != 0) {
-				printf("Creating remote endpoint %s failed wirh error %d", name, err);
+				printf("Creating remote endpoint %s failed with error %d", name, err);
 			} else {
 				printf("found matched endpoint, creating %s with id:%d in host os\n",
 						name, i);
 				rpmsg_service_endpoint_bound(i);
-				/* send an empty msg to notify the bound endpoint's address */
-				rpmsg_send(&endpoints[i].ep, (char *)"", 0);
+				/* send an empty msg to notify the bound endpoint's address, so the other
+				 * side can send data immediately, this may bring some potential issues like
+				 * data buffer overrun, comment is out by default
+				 */
+				/* rpmsg_send(&endpoints[i].ep, (char *)"", 0); */
 			}
 
 			return;
 		}
 	}
 
-	printf("Remote endpoint %s not registered locally", name);
+	printf("Remote endpoint %s not registered locally\n", name);
 }
 
 int rpmsg_service_register_endpoint(const char *name, rpmsg_ept_cb cb,
