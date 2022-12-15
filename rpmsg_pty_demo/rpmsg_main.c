@@ -22,11 +22,18 @@ static void cleanup(int sig)
 
 int rpmsg_app_master(struct client_os_inst *client)
 {
-    struct pty_ep_data *pty_shell;
+    struct pty_ep_data *pty_shell1;
 
-    pty_shell = pty_service_create("uart");
+    pty_shell1 = pty_service_create("uart");
 
-    if (pty_shell == NULL) {
+    if (pty_shell1 == NULL) {
+        return -1;
+    }
+
+    struct pty_ep_data *pty_shell2;
+    pty_shell2 = pty_service_create("console");
+
+    if (pty_shell2 == NULL) {
         return -1;
     }
 

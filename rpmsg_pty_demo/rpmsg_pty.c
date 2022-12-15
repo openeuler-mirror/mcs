@@ -63,6 +63,8 @@ int open_pty(int *pfdm)
         return  ret;
     }
 
+    printf("pty master fd is :%d\n", fdm);
+
     ret = grantpt(fdm);
     if (ret != 0) {
         printf("Error %d on grantpt()\n", errno);
