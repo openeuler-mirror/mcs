@@ -14,7 +14,7 @@ static void virtio_set_status(struct virtio_device *vdev, unsigned char status)
 {
 	struct client_os_inst *client = metal_container_of(vdev, struct client_os_inst, vdev);
 
-	*(volatile unsigned int *)(client->vdev_status_reg) = (unsigned int)status;
+	*(volatile unsigned char *)(client->vdev_status_reg) = status;
 }
 
 static uint32_t virtio_get_features(struct virtio_device *vdev)
@@ -112,7 +112,12 @@ void virtio_init(struct client_os_inst *client)
 
 void virtio_deinit(struct client_os_inst *client)
 {
-    rpmsg_deinit_vdev(&client->rvdev);
+	/* currently virtio_deinit is called in openamp_deinit
+	 * and after destory_remoteproc. Becasue destory_remoteproc
+	 * will reset the remote processor, so no need to call
+	 * rpmsg_deinit_vdev to avoid extra ipi interrupts
+	 */
+	/* rpmsg_deinit_vdev(&client->rvdev); */
 
     if (client->io) {
         free(client->io);
