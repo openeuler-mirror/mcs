@@ -91,9 +91,7 @@ static int set_openamp_ipi(void)
 		}
 	}
 
-	/* In SMP, all the cores run Linux should be enabled */
-	if (!irq_percpu_is_enabled(OPENAMP_IRQ))
-		on_each_cpu(enable_openamp_irq, NULL, 1);
+	on_each_cpu(enable_openamp_irq, NULL, 1);
 
 	return 0;
 }
