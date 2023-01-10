@@ -321,10 +321,52 @@ static int get_mcs_node_info(void)
 	return 0;
 }
 
+static int register_mcs_dev(void)
+{
+	int ret;
+	struct device *mcs_dev;
+
+	mcs_major = register_chrdev(0, MCS_DEVICE_NAME, &mcs_fops);
+	if (mcs_major < 0) {
+		ret = mcs_major;
+		pr_err("register_chrdev failed (%d)\n", ret);
+		goto err;
+	}
+
+	mcs_class = class_create(THIS_MODULE, MCS_DEVICE_NAME);
+	if (IS_ERR(mcs_class)) {
+		ret = PTR_ERR(mcs_class);
+		pr_err("class_create failed (%d)\n", ret);
+		goto err_class;
+	}
+
+	mcs_dev = device_create(mcs_class, NULL, MKDEV(mcs_major, 0),
+				NULL, MCS_DEVICE_NAME);
+	if (IS_ERR(mcs_dev)) {
+		ret = PTR_ERR(mcs_dev);
+		pr_err("device_create failed (%d)\n", ret);
+		goto err_device;
+	}
+	return 0;
+
+err_device:
+	class_destroy(mcs_class);
+err_class:
+	unregister_chrdev(mcs_major, MCS_DEVICE_NAME);
+err:
+	return ret;
+}
+
+static void unregister_mcs_dev(void)
+{
+	device_destroy(mcs_class, MKDEV(mcs_major, 0));
+	class_destroy(mcs_class);
+	unregister_chrdev(mcs_major, MCS_DEVICE_NAME);
+}
+
 static int __init mcs_dev_init(void)
 {
-	struct device *class_dev = NULL;
-	int ret = 0;
+	int ret;
 
 	if (acpi_disabled) {
 		ret = get_mcs_node_info();
@@ -335,43 +377,18 @@ static int __init mcs_dev_init(void)
 
 		ret = get_psci_method();
 		if (ret) {
-			pr_warn("Failed to get psci \"method\" property, ret = %d\n", ret);
+			pr_err("Failed to get psci \"method\" property, ret = %d\n", ret);
 			return ret;
 		}
-	}
-
-	mcs_major = register_chrdev(0, MCS_DEVICE_NAME, &mcs_fops);
-	if (mcs_major < 0) {
-		pr_err("unable to get major %d for memory devs.\n", mcs_major);
-		return -1;
-	}
-
-	mcs_class = class_create(THIS_MODULE, MCS_DEVICE_NAME);
-	if (IS_ERR(mcs_class)) {
-		ret = PTR_ERR(mcs_class);
-		goto error_class_create;
-	}
-
-	class_dev = device_create(mcs_class, NULL, MKDEV((unsigned int)mcs_major, 1), 
-			NULL, MCS_DEVICE_NAME);
-	if (unlikely(IS_ERR(class_dev))) {
-		ret = PTR_ERR(class_dev);
-		goto error_device_create;
 	}
 
 	ret = set_openamp_ipi();
 	if (ret) {
 		pr_err("Failed to request openamp ipi, ret = %d\n", ret);
-		goto error_device_create;
+		return ret;
 	}
 
-	pr_info("create major %d for mcs dev.\n", mcs_major);
-	return 0;
-
-error_device_create:
-	class_destroy(mcs_class);
-error_class_create:
-	unregister_chrdev(mcs_major, MCS_DEVICE_NAME);
+	ret = register_mcs_dev();
 	return ret;
 }
 module_init(mcs_dev_init);
@@ -381,11 +398,8 @@ static void __exit mcs_dev_exit(void)
 	on_each_cpu(disable_openamp_irq, NULL, 1);
 	free_percpu_irq(OPENAMP_IRQ, mcs_evt);
 	free_percpu(mcs_evt);
-	device_destroy(mcs_class, MKDEV((unsigned int)mcs_major, 1));
-	class_destroy(mcs_class);
-	unregister_chrdev(mcs_major, MCS_DEVICE_NAME);
-
-	pr_info("remove mcs dev.\n");
+	unregister_mcs_dev();
+	pr_info("remove mcs dev\n");
 }
 module_exit(mcs_dev_exit);
 
