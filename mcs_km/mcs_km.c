@@ -24,10 +24,7 @@
 #define IOC_CPUON		_IOW(MAGIC_NUMBER, 1, int)
 #define IOC_AFFINITY_INFO	_IOW(MAGIC_NUMBER, 2, int)
 #define IOC_MAXNR		2
-
-#define OPENAMP_INIT_TRIGGER		0x0
-#define OPENAMP_CLIENTOS_TRIGGER	0x1
-#define OPENAMP_IRQ			8
+#define IPI_MCS			8
 
 static struct class *mcs_class;
 static int mcs_major;
@@ -38,8 +35,8 @@ static phys_addr_t valid_start;
 static phys_addr_t valid_end;
 static int invoke_hvc = 1;
 
-static DECLARE_WAIT_QUEUE_HEAD(openamp_trigger_wait);
-static int openamp_trigger;
+static DECLARE_WAIT_QUEUE_HEAD(mcs_wait_queue);
+static atomic_t irq_ack;
 
 static unsigned long invoke_psci_fn(unsigned long function_id,
 			unsigned long arg0, unsigned long arg1,
@@ -57,60 +54,66 @@ static unsigned long invoke_psci_fn(unsigned long function_id,
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
 	pr_info("received ipi from client os\n");
-	openamp_trigger = OPENAMP_CLIENTOS_TRIGGER;
-	wake_up_interruptible(&openamp_trigger_wait);
+	atomic_set(&irq_ack, 1);
+	wake_up_interruptible(&mcs_wait_queue);
 	return IRQ_HANDLED;
 }
 
-static void enable_openamp_irq(void *data)
+static void enable_mcs_ipi(void *data)
 {
-	enable_percpu_irq(OPENAMP_IRQ, IRQ_TYPE_NONE);
+	enable_percpu_irq(IPI_MCS, IRQ_TYPE_NONE);
 }
 
-static void disable_openamp_irq(void *data)
+static void disable_mcs_ipi(void *data)
 {
-	disable_percpu_irq(OPENAMP_IRQ);
+	disable_percpu_irq(IPI_MCS);
 }
 
-static int set_openamp_ipi(void)
+static void remove_mcs_ipi(void)
+{
+	on_each_cpu(disable_mcs_ipi, NULL, 1);
+	free_percpu_irq(IPI_MCS, mcs_evt);
+	free_percpu(mcs_evt);
+}
+
+static int init_mcs_ipi(void)
 {
 	int err;
 	struct irq_desc *desc;
+
+	desc = irq_to_desc(IPI_MCS);
+	if (desc->action) {
+		pr_err("IRQ %d is not free\n", IPI_MCS);
+		return -EBUSY;
+	}
 
 	mcs_evt = alloc_percpu(int);
 	if (!mcs_evt)
 		return -ENOMEM;
 
-	/* use IRQ8 as IPI7, init irq resource once */
-	desc = irq_to_desc(OPENAMP_IRQ);
-	if (!desc->action) {
-		err = request_percpu_irq(OPENAMP_IRQ, handle_clientos_ipi, "MCS IPI", mcs_evt);
-		if (err) {
-			free_percpu(mcs_evt);
-			return err;
-		}
+	err = request_percpu_irq(IPI_MCS, handle_clientos_ipi, "MCS IPI", mcs_evt);
+	if (err) {
+		free_percpu(mcs_evt);
+		return err;
 	}
 
-	on_each_cpu(enable_openamp_irq, NULL, 1);
-
+	on_each_cpu(enable_mcs_ipi, NULL, 1);
 	return 0;
 }
 
 static void send_clientos_ipi(const struct cpumask *target)
 {
-	ipi_send_mask(OPENAMP_IRQ, target);
+	ipi_send_mask(IPI_MCS, target);
 }
 
 static unsigned int mcs_poll(struct file *file, poll_table *wait)
 {
-	unsigned int mask;
+	unsigned int mask = 0;
 
-	poll_wait(file, &openamp_trigger_wait, wait);
-	mask = 0;
-	if (openamp_trigger == OPENAMP_CLIENTOS_TRIGGER)
+	poll_wait(file, &mcs_wait_queue, wait);
+	if (atomic_cmpxchg(&irq_ack, 1, 0) == 1)
 		mask |= POLLIN | POLLRDNORM;
 
-	openamp_trigger = OPENAMP_INIT_TRIGGER;
 	return mask;
 }
 
@@ -261,17 +264,16 @@ static const struct file_operations mcs_fops = {
 	.llseek = generic_file_llseek,
 };
 
-static const struct of_device_id psci_of_match[] = {
-	{ .compatible = "arm,psci" },
-	{ .compatible = "arm,psci-0.2" },
-	{ .compatible = "arm,psci-1.0" },
-	{},
-};
-
 static int get_psci_method(void)
 {
 	const char *method;
 	struct device_node *np;
+	struct of_device_id psci_of_match[] = {
+		{ .compatible = "arm,psci" },
+		{ .compatible = "arm,psci-0.2" },
+		{ .compatible = "arm,psci-1.0" },
+		{},
+	};
 
 	np = of_find_matching_node(NULL, psci_of_match);
 
@@ -382,9 +384,9 @@ static int __init mcs_dev_init(void)
 		}
 	}
 
-	ret = set_openamp_ipi();
+	ret = init_mcs_ipi();
 	if (ret) {
-		pr_err("Failed to request openamp ipi, ret = %d\n", ret);
+		pr_err("Failed to init mcs ipi, ret = %d\n", ret);
 		return ret;
 	}
 
@@ -395,9 +397,7 @@ module_init(mcs_dev_init);
 
 static void __exit mcs_dev_exit(void)
 {
-	on_each_cpu(disable_openamp_irq, NULL, 1);
-	free_percpu_irq(OPENAMP_IRQ, mcs_evt);
-	free_percpu(mcs_evt);
+	remove_mcs_ipi();
 	unregister_mcs_dev();
 	pr_info("remove mcs dev\n");
 }
