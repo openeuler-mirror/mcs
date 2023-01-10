@@ -161,47 +161,6 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	return 0;
 }
 
-#ifdef CONFIG_STRICT_DEVMEM
-static inline int range_is_allowed(unsigned long pfn, unsigned long size)
-{
-	u64 from = ((u64)pfn) << PAGE_SHIFT;
-	u64 to = from + size;
-	u64 cursor = from;
-
-	while (cursor < to) {
-		if (page_is_ram(pfn))
-			return 0;
-		cursor += PAGE_SIZE;
-		pfn++;
-	}
-	return 1;
-}
-#else
-static inline int range_is_allowed(unsigned long pfn, unsigned long size)
-{
-	return 1;
-}
-#endif
-
-int mcs_phys_mem_access_prot_allowed(struct file *file,
-	unsigned long pfn, unsigned long size, pgprot_t *vma_prot)
-{
-	u64 start, end;
-	start = ((u64)pfn) << PAGE_SHIFT;
-	end = start + size;
-
-	if (valid_start == 0 && valid_end == 0) {
-		if (!range_is_allowed(pfn, size))
-			return 0;
-		return 1;
-	}
-
-	if (start < valid_start || end > valid_end)
-		return 0;
-
-	return 1;
-}
-
 static pgprot_t mcs_phys_mem_access_prot(struct file *file, unsigned long pfn,
 					 unsigned long size, pgprot_t vma_prot)
 {
@@ -228,8 +187,7 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	if (offset + (phys_addr_t)size - 1 < offset)
 		return -EINVAL;
 
-	if (!mcs_phys_mem_access_prot_allowed(file, vma->vm_pgoff, size,
-						&vma->vm_page_prot))
+	if (offset < valid_start || (offset + size) > valid_end)
 		return -EINVAL;
 
 	vma->vm_page_prot = mcs_phys_mem_access_prot(file, vma->vm_pgoff,
@@ -297,7 +255,7 @@ static int get_psci_method(void)
 	return 0;
 }
 
-static int get_mcs_node_info(void)
+static int get_mcs_reserved_mem(void)
 {
 	int len, naddr, nsize;
 	struct device_node *nd;
@@ -320,6 +278,11 @@ static int get_mcs_node_info(void)
 
 	valid_start = of_read_number(prop, naddr);
 	valid_end = valid_start + of_read_number(prop + naddr, nsize);
+
+	if (!request_mem_region(valid_start, valid_end - valid_start, "mcs_mem")) {
+		pr_err("Can not request mcs_mem\n");
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -371,15 +334,15 @@ static int __init mcs_dev_init(void)
 	int ret;
 
 	if (acpi_disabled) {
-		ret = get_mcs_node_info();
-		if (ret) {
-			pr_err("Failed to parse mcs node in device tree, ret = %d\n", ret);
-			return ret;
-		}
-
 		ret = get_psci_method();
 		if (ret) {
 			pr_err("Failed to get psci \"method\" property, ret = %d\n", ret);
+			return ret;
+		}
+
+		ret = get_mcs_reserved_mem();
+		if (ret) {
+			pr_err("Failed to get mcs mem, ret = %d\n", ret);
 			return ret;
 		}
 	}
@@ -387,10 +350,18 @@ static int __init mcs_dev_init(void)
 	ret = init_mcs_ipi();
 	if (ret) {
 		pr_err("Failed to init mcs ipi, ret = %d\n", ret);
-		return ret;
+		goto err_free_mcs_mem;
 	}
 
 	ret = register_mcs_dev();
+	if (ret) {
+		pr_err("Failed to register mcs dev, ret = %d\n", ret);
+		goto err_free_mcs_mem;
+	}
+
+	return ret;
+err_free_mcs_mem:
+	release_mem_region(valid_start, valid_end - valid_start);
 	return ret;
 }
 module_init(mcs_dev_init);
@@ -399,6 +370,7 @@ static void __exit mcs_dev_exit(void)
 {
 	remove_mcs_ipi();
 	unregister_mcs_dev();
+	release_mem_region(valid_start, valid_end - valid_start);
 	pr_info("remove mcs dev\n");
 }
 module_exit(mcs_dev_exit);
