@@ -115,25 +115,23 @@ mcs支持两种构建安装方式：
      # 新增 mcs-memreserve-overlay.dts
          /dts-v1/;
          /plugin/;
-     
          / {
-                 fragment@0 {
+             fragment@0 {
                  target-path = "/";
-                         __overlay__ {
+                 __overlay__ {
                      reserved-memory {
                          #address-cells = <2>;
                          #size-cells = <1>;
+                         ranges;
      
-                         mcsconfig: mcs@70000000 {
+                    mcs@70000000 {
+                             reg = <0x00 0x70000000 0x10000000>;
                              compatible = "mcs_mem";
-                             #address-cells = <1>;
-                             #size-cells = <1>;
-                             reg = <0x0 0x70000000 0x10000000>;
-                             smccc = "smc";
+                             no-map;
                          };
                      };
-                         };
                  };
+             };
          };
      
      # 制作使用的dtbo
