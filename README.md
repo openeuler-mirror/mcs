@@ -37,21 +37,19 @@ mcs支持两种构建安装方式：
 
 - **集成构建**
 
-  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建方法请参考 openEuler Embedded 在线文档章节：**混合关键性系统镜像构建指导**。
+  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建方法请参考 openEuler Embedded 在线文档章节：**混合关键性系统构建指南**。
 
 - **单独构建**
 
   1. 根据openEuler Embedded使用手册安装SDK并设置SDK环境变量。
 
   2. 交叉编译内核模块 mcs_km.ko，编译方式如下:
-
      ```shell
      cd mcs_km
      make
      ```
 
   3.  交叉编译用户态样例 rpmsg_main，编译方式如下:
-
      ```shell
      cmake -S . -B build -DDEMO_TARGET=rpmsg_pty_demo
      cd build
@@ -59,7 +57,6 @@ mcs支持两种构建安装方式：
      ```
 
   4. 在SDK的 sysroots 中获取依赖库，包括 libmetal, libopen_amp, libsysfs，获取方式如下：
-
      ```shell
      # 若sdk的安装路径为/opt/openeuler/sdk
      cd /opt/openeuler/sdk/sysroot
@@ -74,7 +71,8 @@ mcs支持两种构建安装方式：
 
 目前mcs支持在**qemu-aarch64**和**树莓派**上部署运行，部署mcs需要预留出必要的内存、CPU资源，并且还需要bios提供psci支持。
 
-**若使用openEuler Embedded提供的混合关键性系统镜像，无需进行单独配置；若使用qemu/树莓派标准镜像，则需要进行下述配置操作：**
+若使用集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：**混合关键性系统使用方法**。 
+若使用qemu/树莓派标准镜像，则需要进行下述配置操作：
 
 1. **通过配置dts预留出mcs_mem**
 
@@ -87,7 +85,7 @@ mcs支持两种构建安装方式：
      $ apt install qemu-system-arm device-tree-compiler  # ubuntu
      
      # 获取 QEMU devicetree
-     $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -smp 4 -M dumpdtb=qemu.dtb
+     $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -nographic -smp 4 -M dumpdtb=qemu.dtb
      $ dtc -I dtb -O dts -o qemu.dts qemu.dtb
      
      # 修改qemu.dts，添加 reserved-memory 节点，预留出 0x70000000 - 0x80000000 的内存
@@ -144,12 +142,10 @@ mcs支持两种构建安装方式：
      $ echo "dtoverlay=mcs-memreserve" >> ${rpi_boot_path}/config.txt
      ```
 
-   
 
 2. **隔离cpu用于启动实时OS**
 
    通过修改内核cmdline，增加`maxcpus=3 `隔离3核。
-
    - **QEMU**
 
      在启动qemu时，增加 `-append 'maxcpus=3'`即可。
@@ -158,22 +154,19 @@ mcs支持两种构建安装方式：
 
      树莓派使用支持 psci 的 uefi 引导固件，因此通过 grub.cfg 配置cmdline，修改 `${rpi_boot_path}/EFI/BOOT/grub.cfg`，添加 `maxcpus=3`即可。
 
-     
 
 3. **使用支持psci的bios启动镜像**
 
    - **QEMU**
 
      qemu无需单独配置bios，启动命令如下：
-
      ```shell
-     $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -nographic -append 'maxcpus=3 console=ttyAMA1' -smp 4 -kernel zImage -initrd *.rootfs.cpio.gz -dtb qemu_mcs.dtb
+     $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -nographic -append 'maxcpus=3' -smp 4 -kernel zImage -initrd *.rootfs.cpio.gz -dtb qemu_mcs.dtb
      ```
 
    - **Raspberry Pi**
 
      树莓派需要使用支持 psci 的 uefi 引导固件，具体参考 openEuler Embedded 在线文档章节：**树莓派的UEFI支持和网络启动**
-
 
 
 ​	按照上述3个步骤，准备好运行环境后，接下来就可以进行 mcs 的安装和使用：
@@ -184,16 +177,20 @@ mcs支持两种构建安装方式：
    - rpmsg_pty_demo中提供的实时os： **zephyr_qemu.bin / zephyr_rpi.bin**
    - 安装依赖库 **libmetal, libopen_amp, libsysfs** 到运行环境上的 /usr/lib64 中
 
-   
 
-5. **插入内核模块**
+5. **调整内核打印等级并插入内核模块**
 
+   为了不影响shell的使用，先屏蔽内核打印：
+   ```shell
+   $ echo "1 4 1 7" > /proc/sys/kernel/printk
+   ```
+
+   插入内核模块：
    ```shell
    $ insmod mcs_km.ko
    ```
 
    插入内核模块后，可以通过 `cat /proc/iomem`查看预留出来的 mcs_mem，如：
-
    ```shell
    qemu-aarch64 ~ # cat /proc/iomem
    ...
@@ -204,14 +201,10 @@ mcs支持两种构建安装方式：
    ```
 
    若mcs_km.ko插入失败，可以通过dmesg看到对应的失败日志，可能的原因有：
-
    - 使用的交叉工具链与内核版本不匹配
-
    - 未预留内存资源
-
    - 使用的bios不支持psci
 
-     
 
 6. **运行rpmsg_main程序，使用方式如下：**
 
@@ -237,7 +230,8 @@ mcs支持两种构建安装方式：
    ...
    ```
 
-   根据提示，可以通过`/dev/pts/1`与client os进行shell交互，例如：
+   此时按`ctrl-c`可以通知client os下线并退出rpmsg_main，下线后支持重复拉起。
+   也可以根据打印提示，通过`/dev/pts/1`与client os进行shell交互，例如：
 
    ```shell
    # 新建一个terminal，登录到运行环境
