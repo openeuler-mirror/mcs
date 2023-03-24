@@ -22,7 +22,11 @@ set(SRC_FILE
 	./${DEMO_TARGET}/rpmsg_main.c
 )
 
-if(DEMO_TARGET MATCHES "rpmsg_pty_demo")
+if(DEMO_TARGET MATCHES "openamp_demo")
+	list(APPEND SRC_FILE "./rpmsg_pty_demo/rpmsg_pty.c")
+	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_matrix_multiply.c")
+	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_ping.c")
+elseif(DEMO_TARGET MATCHES "rpmsg_pty_demo")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_pty.c")
 else()
 	message(FATAL_ERROR "DEMO_TARGET: choose a target to build.
