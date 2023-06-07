@@ -37,7 +37,7 @@ mcs支持两种构建安装方式：
 
 - **集成构建**
 
-  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建方法请参考 openEuler Embedded 在线文档章节：**混合关键性系统构建指南**。
+  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统构建指南](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mcs.html#mcs-build)。
 
 - **单独构建**
 
@@ -71,8 +71,8 @@ mcs支持两种构建安装方式：
 
 目前mcs支持在**qemu-aarch64**和**树莓派**上部署运行，部署mcs需要预留出必要的内存、CPU资源，并且还需要bios提供psci支持。
 
-若使用集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：**混合关键性系统使用方法**。 
-若使用qemu/树莓派标准镜像，则需要进行下述配置操作：
+若使用树莓派的集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统使用方法](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mcs.html#id4)。 
+其他镜像则需要进行下述额外的配置操作：
 
 1. **通过配置dts预留出mcs_mem**
 
@@ -166,7 +166,7 @@ mcs支持两种构建安装方式：
 
    - **Raspberry Pi**
 
-     树莓派需要使用支持 psci 的 uefi 引导固件，具体参考 openEuler Embedded 在线文档章节：**树莓派的UEFI支持和网络启动**
+     树莓派需要使用支持 psci 的 uefi 引导固件，具体参考 openEuler Embedded 在线文档章节：[树莓派的UEFI支持和网络启动](https://openeuler.gitee.io/yocto-meta-openeuler/master/bsp/arm64/raspberrypi4/uefi.html#raspberrypi4-uefi-guide)
 
 
 ​	按照上述3个步骤，准备好运行环境后，接下来就可以进行 mcs 的安装和使用：
@@ -244,3 +244,5 @@ mcs支持两种构建安装方式：
      uart:~$ help
      uart:~$ kernel version
    ```
+
+   注意，这里的`/dev/pts/1`并非是一个固定的路径，路径的最后的那个数字是一个可以变化的值。如果我们启动了两个实例，那么有可能之后的那个实例的pts路径为`/dev/pts/2`。
