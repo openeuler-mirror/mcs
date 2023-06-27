@@ -13,7 +13,7 @@
 
 static struct client_os_inst client_os = {
     /* physical address start of shared device mem */
-    .phy_shared_mem = 0x70000000,
+    .phy_shared_mem = 0x390000000,
     /* size of shared device mem */
     .shared_mem_size = 0x30000,
     .vring_size = VRING_SIZE,
@@ -61,10 +61,17 @@ int main(int argc, char **argv)
     signal(SIGINT, cleanup);
 
     /* \todo: parameter check */
-    while ((opt = getopt(argc, argv, "c:t:a:e::")) != -1) {
+    while ((opt = getopt(argc, argv, "c:b:t:a:e::")) != -1) {
         switch (opt) {
         case 'c':
             cpu_id = optarg;
+            break;
+        case 'b':
+            if (strlen(optarg) > sizeof(client_os.boot_bin_path) - 1) {
+                printf("Error: boot_bin path string is too long\n");
+                return -1;
+            }
+            strcpy(client_os.boot_bin_path, optarg);
             break;
         case 't':
             target_binfile = optarg;

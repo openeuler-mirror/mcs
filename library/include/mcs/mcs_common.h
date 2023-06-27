@@ -12,6 +12,7 @@
 #define IOC_SENDIPI        _IOW('A', 0, int)
 #define IOC_CPUON          _IOW('A', 1, int)
 #define IOC_AFFINITY_INFO  _IOW('A', 2, int)
+#define IOC_LOAD_BOOT      _IOW('A', 3, int)
 
 #define STR_TO_HEX         16
 #define STR_TO_DEC         10

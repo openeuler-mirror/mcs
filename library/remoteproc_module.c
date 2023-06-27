@@ -62,6 +62,19 @@ const struct remoteproc_ops rproc_ops = {
     .stop = rproc_stop,
 };
 
+int load_boot_bin(struct client_os_inst *client)
+{
+    int ret;
+
+    ret = ioctl(client->mcs_fd, IOC_LOAD_BOOT, &client->boot_bin_path);
+    if (ret) {
+         printf("load boot bin failed\n");
+         return -1;
+    }
+
+    return 0;
+}
+
 int create_remoteproc(struct client_os_inst *client)
 {
     int ret;
@@ -82,7 +95,7 @@ int create_remoteproc(struct client_os_inst *client)
 
     rproc = remoteproc_init(&client->rproc, &rproc_ops, client);
     if (rproc == NULL) {
-        printf("remoteproc  init failed\n");
+        printf("remoteproc init failed\n");
         return -1;
     }
 

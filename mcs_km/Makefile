@@ -1,4 +1,5 @@
 obj-m := mcs_km.o
+mcs_km-objs = main.o mmu_map.o
 
 SRC := $(shell pwd)
 

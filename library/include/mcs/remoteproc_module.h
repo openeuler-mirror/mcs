@@ -20,7 +20,7 @@ extern "C" {
 
 struct client_os_inst {
 	/* data structure needed by remote proc */
-    struct remoteproc rproc; 	/* remoteproc instance */
+	struct remoteproc rproc; 	/* remoteproc instance */
 
 	/* data structure needed by virtio */
 	struct virtio_device vdev;	/* vdevice */
@@ -41,11 +41,11 @@ struct client_os_inst {
 
 	/* generic data structure */
 	char *path;					/* client os firmware path */
-    unsigned int cpu_id;     	/* related arg: cpu id */
+	char boot_bin_path[256];			/* boot firmware path */
+	unsigned int cpu_id;     	/* related arg: cpu id */
 	int mcs_fd;					/* mcs device fd */
 	unsigned long load_address;	/* physical load address */
-    unsigned long entry; 		/* physical entry of client os, can be the same as load address */
-
+	unsigned long entry; 		/* physical entry of client os, can be the same as load address */
 };
 
 

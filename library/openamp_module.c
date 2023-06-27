@@ -105,6 +105,10 @@ int openamp_init(struct client_os_inst *client)
     }
     client->mcs_fd = ret;
 
+    ret = load_boot_bin(client);
+    if (ret)
+        return ret;
+
     ret = create_remoteproc(client);
     if (ret < 0) {
         printf("create remoteproc failed\n");
