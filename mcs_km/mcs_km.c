@@ -207,7 +207,7 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 			    vma->vm_start,
 			    vma->vm_pgoff,
 			    size,
-			    vma->vm_page_prot))
+			    vma->vm_page_prot) < 0)
 		return -EAGAIN;
 
 	return 0;

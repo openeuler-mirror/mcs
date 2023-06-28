@@ -5,63 +5,80 @@
  */
 
 #include <stdio.h>
-
 #include "openamp_module.h"
-
 
 static int reserved_mem_init(struct client_os_inst *client)
 {
-    int binfd;
+    int bin_fd;
     struct stat buf;
-    void *file_addr, *binaddr;
-    int binsize;
-    void *shmaddr = NULL;
+    void *file_addr, *sh_bin_addr;
+    int bin_size;
+    void *sh_mem_addr;
+    int err;
 
-    /* open clientos bin file */
-    binfd = open(client->path, O_RDONLY);
-    if (binfd < 0) {
-        printf("open %s failed, binfd:%d\n", client->path, binfd);
-        return -1;
-    }
-
-    printf("mcs fd:%d\n", client->mcs_fd);
+    /* to-do: check if the starting address of client os is valid */
+    /* to-do: client os must be in the range of shared mem */
     /* shared memory for virtio */
-    shmaddr = mmap(NULL, client->shared_mem_size,
+    sh_mem_addr = mmap(NULL, client->shared_mem_size,
             PROT_READ | PROT_WRITE, MAP_SHARED, client->mcs_fd,
             client->phy_shared_mem);
-    /* must be initialized to zero */
-    memset(shmaddr, 0, client->shared_mem_size);
-
-    /* memory for loading clientos bin file */
-    fstat(binfd, &buf);
-    binsize = PAGE_ALIGN(buf.st_size);
-
-    /* check clientos must be in the range of shared mem */
-
-
-    binaddr = mmap(NULL, binsize, PROT_READ | PROT_WRITE, MAP_SHARED,
-                    client->mcs_fd, client->load_address);
-
-    if (shmaddr < 0 || binaddr < 0) {
-        printf("mmap reserved mem failed: shmaddr:%p, binaddr:%p\n",
-                shmaddr, binaddr);
-        return -1;
+    if (sh_mem_addr == MAP_FAILED) {
+        printf("mmap failed: sh_mem_addr:%p\n", sh_mem_addr);
+        return -EPERM;
     }
+    /* must be initialized to zero */
+    memset(sh_mem_addr, 0, client->shared_mem_size);
 
+    /* open clientos bin file from Linux file system */
+    bin_fd = open(client->path, O_RDONLY);
+    if (bin_fd < 0) {
+        printf("open %s failed, bin_fd:%d\n", client->path, bin_fd);
+        err = bin_fd;
+        goto err_ummap_share_mem;
+    }
+    /* memory for loading clientos bin file */
+    fstat(bin_fd, &buf);
+    bin_size = PAGE_ALIGN(buf.st_size);
+
+    /* the address in the shared memory to put bin file */
+    sh_bin_addr = mmap(NULL, bin_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                    client->mcs_fd, client->load_address);
+    if (sh_bin_addr == MAP_FAILED) {
+        printf("mmap reserved mem failed: sh_bin_addr:%p\n",
+                sh_bin_addr);
+        err = errno;
+        goto err_close_bin_fd;
+    }
+    
+    /* the address of bin file in Linux */
+    file_addr = mmap(NULL, bin_size, PROT_READ, MAP_PRIVATE, bin_fd, 0);
+    if (file_addr == MAP_FAILED) {
+        printf("mmap failed: file_addr: %p\n", file_addr);
+        err = errno;
+        goto err_ummap_sh_bin_addr;
+    }
+    close(bin_fd); 
     /* load clientos */
-    file_addr = mmap(NULL, binsize, PROT_READ, MAP_PRIVATE, binfd, 0);
-    memcpy(binaddr, file_addr, binsize);
+    memcpy(sh_bin_addr, file_addr, bin_size);
 
-    munmap(file_addr, binsize);
-    munmap(binaddr, binsize);
-    close(binfd);
+    /* unmap bin file, both from the Linux and shared memory */
+    munmap(file_addr, bin_size);
+    munmap(sh_bin_addr, bin_size);
 
-    client->virt_shared_mem = shmaddr;
-    client->vdev_status_reg = shmaddr;
-    client->virt_tx_addr = shmaddr + client->shared_mem_size - client->vdev_status_size;
+    client->virt_shared_mem = sh_mem_addr;
+    client->vdev_status_reg = sh_mem_addr;
+    client->virt_tx_addr = sh_mem_addr + client->shared_mem_size - client->vdev_status_size;
     client->virt_rx_addr = client->virt_tx_addr - client->vdev_status_size;
 
     return 0;
+
+err_ummap_sh_bin_addr:
+    munmap(sh_bin_addr, bin_size);
+err_close_bin_fd:
+    close(bin_fd);
+err_ummap_share_mem:
+    munmap(sh_mem_addr, client->phy_shared_mem);
+    return err;
 }
 
 static void reserved_mem_release(struct client_os_inst *client)
@@ -70,7 +87,7 @@ static void reserved_mem_release(struct client_os_inst *client)
         munmap(client->virt_shared_mem, client->shared_mem_size);
     }
 
-    if (client->mcs_fd) {
+    if (client->mcs_fd >= 0) {
         close(client->mcs_fd);
     }
 }
@@ -89,15 +106,15 @@ int openamp_init(struct client_os_inst *client)
     client->mcs_fd = ret;
 
     ret = create_remoteproc(client);
-    if (ret) {
+    if (ret < 0) {
         printf("create remoteproc failed\n");
-        return -1;
+        goto err_close_fd;
     }
 
     ret = reserved_mem_init(client);
-    if (ret) {
+    if (ret < 0) {
         printf("failed to init reserved mem\n");
-        return ret;
+        goto err_close_fd;
     }
 
     virtio_init(client);
@@ -105,12 +122,16 @@ int openamp_init(struct client_os_inst *client)
 
     printf("start client os\n");
     ret = remoteproc_start(&client->rproc);
-    if (ret) {
+    if (ret < 0) {
         printf("start processor failed\n");
-        return ret;
+        goto err_close_fd;
     }
 
     return 0;
+
+err_close_fd:
+    close(client->mcs_fd);
+    return ret;
 }
 
 void openamp_deinit(struct client_os_inst *client)

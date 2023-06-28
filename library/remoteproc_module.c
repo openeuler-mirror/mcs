@@ -37,7 +37,7 @@ static int rproc_start(struct remoteproc *rproc)
     boot_args[1] = client->entry;
 
     ret = ioctl(client->mcs_fd, IOC_CPUON, boot_args);
-    if (ret) {
+    if (ret < 0) {
         printf("boot clientos failed\n");
         return ret;
     }
@@ -70,7 +70,7 @@ int create_remoteproc(struct client_os_inst *client)
 
     state_arg = client->cpu_id;
     ret = ioctl(client->mcs_fd, IOC_AFFINITY_INFO, &state_arg);
-    if (ret) {
+    if (ret < 0) {
         printf("acquire cpu state failed\n");
         return -1;
     }
