@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023. All rights reserved
+ *
+ * SPDX-License-Identifier: MulanPSL-2.0
+ */
+
 #ifndef REMOTEPROC_MODULE_H
 #define REMOTEPROC_MODULE_H
 

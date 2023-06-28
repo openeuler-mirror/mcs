@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023. All rights reserved
+ *
+ * SPDX-License-Identifier: MulanPSL-2.0
+ */
+
 #define _XOPEN_SOURCE 600
 #include <stdlib.h>
 #include <stdio.h>

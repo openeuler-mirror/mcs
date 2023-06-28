@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023. All rights reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0
+ */
+
 #define pr_fmt(fmt) "mcs: " fmt
 
 #include <linux/acpi.h>

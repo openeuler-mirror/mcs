@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023. All rights reserved
+ *
+ * SPDX-License-Identifier: MulanPSL-2.0
+ */
+
 #ifndef RPMSG_SYS_SERVICE_H
 #define RPMSG_SYS_SERVICE_H
 

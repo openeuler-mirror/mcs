@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023. All rights reserved
+ *
+ * SPDX-License-Identifier: MulanPSL-2.0
+ */
 
 #include "openamp_module.h"
 #include "rpmsg_rpc_service.h"
