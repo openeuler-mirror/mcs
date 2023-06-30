@@ -46,6 +46,16 @@ enum {
 	TABLE_MAX
 };
 
+const char* mem_name[] = {
+	"PAGE_TABLE",
+	"BAR_TABLE",
+	"DMA_TABLE",
+	"SHAREMEM_TABLE",
+	"LOG_TABLE",
+	"TEXT_TABLE",
+	"DATA_TABLE",
+};
+
 static mmu_map_info clientos_map_info[TABLE_MAX] = {
 	{
 		// pagetable
@@ -113,8 +123,6 @@ static void mem_mmu_page_table(mmu_map_info *map_info)
 		return;
 	}
 
-	pr_info("map pa 0x%lx va 0x%lx pagesize 0x%lx\n", map_info->pa, map_info->va, map_info->page_size);
-
 	ppe = pml + PAGE_TABLE_OFFSET;
 	pde = ppe + PAGE_TABLE_OFFSET;
 	pte = pde + PAGE_TABLE_OFFSET;
@@ -172,6 +180,9 @@ void mem_map_info_set(unsigned long loadaddr)
 
 	for (i = 0; i < TABLE_MAX; i++) {
 		if (i != BAR_TABLE) {
+			pr_info("map %s: pa 0x%lx, va 0x%lx, size 0x%lx, pagesize 0x%lx\n",
+				mem_name[i], clientos_map_info[i].pa, clientos_map_info[i].va,
+				clientos_map_info[i].size, clientos_map_info[i].page_size);
 			mem_mmu_page_table(&clientos_map_info[i]);
 		}
 	}
