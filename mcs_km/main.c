@@ -129,9 +129,16 @@ static int init_mcs_ipi(void)
 	return err;
 }
 
+/*
+ * send X86_MCS_IPI
+ * Destination Mode: Physical
+ */
 static void send_clientos_ipi(const unsigned int cpu)
 {
-        apic->send_IPI(cpu, X86_MCS_IPI_VECTOR);
+	int apicid = apic->cpu_present_to_apicid(cpu);
+
+	weak_wrmsr_fence();
+	wrmsrl(APIC_BASE_MSR + (APIC_ICR >> 4), ((__u64) apicid) << 32 | X86_MCS_IPI_VECTOR);
 }
 
 static unsigned int mcs_poll(struct file *file, poll_table *wait)
