@@ -13,7 +13,7 @@
 
 static struct client_os_inst client_os = {
     /* physical address start of shared device mem */
-    .phy_shared_mem = 0x390000000,
+    .phy_shared_mem = 0x3fde00000,
     /* size of shared device mem */
     .shared_mem_size = 0x30000,
     .vring_size = VRING_SIZE,
