@@ -65,7 +65,7 @@ static mmu_map_info clientos_map_info[TABLE_MAX] = {
 		.attr = MEM_ATTR_CACHE_RWX,
 		.page_size = PAGE_SIZE_4K,
 	}, {
-		// bar, unused
+		// bar
 		.va = 0xf00008000,
 		.pa = 0x0,
 		.size = 0x100000,
@@ -108,6 +108,12 @@ static mmu_map_info clientos_map_info[TABLE_MAX] = {
 		.page_size = PAGE_SIZE_2M,
 	}
 };
+
+void set_bar_addr(unsigned long phy_addr)
+{
+	clientos_map_info[BAR_TABLE].pa = phy_addr;
+}
+EXPORT_SYMBOL_GPL(set_bar_addr);
 
 static void mem_mmu_page_table(mmu_map_info *map_info)
 {
@@ -179,7 +185,7 @@ void mem_map_info_set(unsigned long loadaddr)
 	memunmap(table_base);
 
 	for (i = 0; i < TABLE_MAX; i++) {
-		if (i != BAR_TABLE) {
+		if (clientos_map_info[i].pa != 0) {
 			pr_info("map %s: pa 0x%lx, va 0x%lx, size 0x%lx, pagesize 0x%lx\n",
 				mem_name[i], clientos_map_info[i].pa, clientos_map_info[i].va,
 				clientos_map_info[i].size, clientos_map_info[i].page_size);
