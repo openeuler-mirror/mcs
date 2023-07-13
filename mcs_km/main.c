@@ -386,10 +386,12 @@ static int __init mcs_dev_init(void)
 	ret = register_mcs_dev();
 	if (ret) {
 		pr_err("Failed to register mcs dev, ret = %d\n", ret);
-		goto err_free_mcs_mem;
+		goto err_remove_ipi;
 	}
 
 	return ret;
+err_remove_ipi:
+	remove_mcs_ipi();
 err_free_mcs_mem:
 	release_mem_region(valid_start, valid_end - valid_start);
 	return ret;
