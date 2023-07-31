@@ -11,9 +11,9 @@
 #define PAGE_SIZE_2M		0x200000
 #define PAGE_SIZE_4K		0x1000
 
-#define PPE_ADDR		0x2003
-#define PDE_ADDR		0x3003
-#define PTE_ADDR		0x4003
+#define PPE_ADDR		0xa1003
+#define PDE_ADDR		0xa2003
+#define PTE_ADDR		0xa3003
 
 #define PML_SHIFT		39
 #define PPE_SHIFT		30
@@ -36,7 +36,8 @@ typedef struct {
 } mmu_map_info;
 
 enum {
-	PAGE_TABLE = 0,
+	BOOT_TABLE = 0,
+	PAGE_TABLE,
 	BAR_TABLE,
 	DMA_TABLE,
 	SHAREMEM_TABLE,
@@ -47,6 +48,7 @@ enum {
 };
 
 const char* mem_name[] = {
+	"BOOT_TABLE",
 	"PAGE_TABLE",
 	"BAR_TABLE",
 	"DMA_TABLE",
@@ -58,10 +60,17 @@ const char* mem_name[] = {
 
 static mmu_map_info clientos_map_info[TABLE_MAX] = {
 	{
+		// boottable
+		.va = 0x0,
+		.pa = 0x0,
+		.size = 0x1000,
+		.attr = MEM_ATTR_CACHE_RWX,
+		.page_size = PAGE_SIZE_4K,
+	}, {
 		// pagetable
-		.va = 0x1000,
-		.pa = 0x1000,
-		.size = 0x7000,
+		.va = 0xa0000,
+		.pa = 0xa0000,
+		.size = 0x6000,
 		.attr = MEM_ATTR_CACHE_RWX,
 		.page_size = PAGE_SIZE_4K,
 	}, {
@@ -103,8 +112,8 @@ static mmu_map_info clientos_map_info[TABLE_MAX] = {
 		// data
 		.va = 0xf02a00000,
 		.pa = 0x0,
-		.size = 0x25800000,
-		.attr = MEM_ATTR_UNCACHE_RWX,
+		.size = 0x1000000,
+		.attr = MEM_ATTR_CACHE_RWX,
 		.page_size = PAGE_SIZE_2M,
 	}
 };
@@ -185,11 +194,13 @@ void mem_map_info_set(unsigned long loadaddr)
 	memunmap(table_base);
 
 	for (i = 0; i < TABLE_MAX; i++) {
-		if (clientos_map_info[i].pa != 0) {
-			pr_info("map %s: pa 0x%lx, va 0x%lx, size 0x%lx, pagesize 0x%lx\n",
-				mem_name[i], clientos_map_info[i].pa, clientos_map_info[i].va,
-				clientos_map_info[i].size, clientos_map_info[i].page_size);
-			mem_mmu_page_table(&clientos_map_info[i]);
+		/* bar 分区的物理地址需要外部接口配置，如果没有配置（pa == 0），则不进行页表映射 */
+		if ((i == BAR_TABLE) && (clientos_map_info[i].pa == 0)) {
+			continue;
 		}
+		pr_info("map %s: pa 0x%lx, va 0x%lx, size 0x%lx, pagesize 0x%lx\n",
+			mem_name[i], clientos_map_info[i].pa, clientos_map_info[i].va,
+			clientos_map_info[i].size, clientos_map_info[i].page_size);
+		mem_mmu_page_table(&clientos_map_info[i]);
 	}
 }

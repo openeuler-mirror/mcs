@@ -32,7 +32,7 @@
 #define IOC_LOAD_BOOT		_IOW(MAGIC_NUMBER, 3, int)
 #define IOC_MAXNR		3
 
-#define BOOT_BIN_ADDR		0x7000
+#define BOOT_BIN_ADDR		0x0
 
 static struct class *mcs_class;
 static int mcs_major;
