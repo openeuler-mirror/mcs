@@ -25,7 +25,11 @@ static void virtio_set_status(struct virtio_device *vdev, unsigned char status)
 
 static uint32_t virtio_get_features(struct virtio_device *vdev)
 {
+#ifndef RPMSG_RPC_DEMO
 	return 1 << VIRTIO_RPMSG_F_NS;
+#else
+	return 0;
+#endif
 }
 
 static void virtio_notify(struct virtqueue *vq)
@@ -106,9 +110,13 @@ void virtio_init(struct client_os_inst *client)
 	/* setup rvdev */
 	rpmsg_virtio_init_shm_pool(&client->shpool, share_mem_start,
 			client->shared_mem_size - client->vdev_status_size);
-
+#ifndef RPMSG_RPC_DEMO
 	status = rpmsg_init_vdev(&client->rvdev, &client->vdev, ns_bind_cb,
 			 client->io, &client->shpool);
+#else
+	status = rpmsg_init_vdev(&client->rvdev, &client->vdev, NULL,
+			 client->io, &client->shpool);
+#endif
 	if (status != 0) {
 		printf("rpmsg_init_vdev failed %d\n", status);
 		free(client->io);

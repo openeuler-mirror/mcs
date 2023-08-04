@@ -45,6 +45,11 @@ elseif(DEMO_TARGET MATCHES "mica_demo")
 	# compile testing usecase
 	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/${DEMO_TARGET}/${TEST_DEBUG_BACKEND})
 	install(TARGETS ${TEST_DEBUG_BACKEND} DESTINATION bin)
+elseif(DEMO_TARGET MATCHES "rpmsg_rpc_demo")
+	add_definitions(-DRPMSG_RPC_DEMO)
+	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpc_helper.c")
+	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_workers.c")
+	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_backend.c")
 else()
 	message(FATAL_ERROR "DEMO_TARGET: choose a target to build.
 		[mica_demo]")
