@@ -168,6 +168,7 @@ static void mem_mmu_page_table(mmu_map_info *map_info)
 void mem_map_info_set(unsigned long loadaddr)
 {
 	void *table_base;
+	unsigned long *log_table_base;
 	int i;
 	// todo: ALIGN_UP_2M
 	// unsigned long phy_addr = ALIGN_UP_2M(loadaddr);
@@ -203,4 +204,14 @@ void mem_map_info_set(unsigned long loadaddr)
 			clientos_map_info[i].size, clientos_map_info[i].page_size);
 		mem_mmu_page_table(&clientos_map_info[i]);
 	}
+
+	/* In order to init the shm device, uniproton needs to know the actual physical
+	 address of the SHAREMEM_TABLE, so we will write it in the log table. */
+	log_table_base = memremap(clientos_map_info[LOG_TABLE].pa, 0x200000, MEMREMAP_WT);
+	if (log_table_base == NULL) {
+		pr_err("mem_map_info_set memremap failed\n");
+		return;
+	}
+	log_table_base[0] = clientos_map_info[SHAREMEM_TABLE].pa;
+	memunmap(log_table_base);
 }

@@ -14,8 +14,6 @@
  *                  i210_eth                 
  */
 
-#define RESERVE_MEM_BASE_CK 0x400000000ULL
-
 #define RESERVE_MEM_BASE 0x400200000ULL
 #define NR_DESC 128
 #define DMA_SIZE 2048
@@ -73,6 +71,7 @@ typedef struct {
 #define I210_DEV_MAX_NUM 4 /* 最大支持i210设备个数 */
 const PCI_DEV_INFO_S* get_mac_dev_info(u32 dev_id);
 void mac_dev_func_hook(u32 dev_id, pfn_free_dma_map_t fn_free_dma_map);
+const unsigned long get_load_addr_start(void);
 
 /* Transmit Descriptor */
 struct mac_tx_desc {

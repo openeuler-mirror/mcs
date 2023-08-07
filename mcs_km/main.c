@@ -13,6 +13,7 @@
 #include <linux/wait.h>
 #include <linux/poll.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/cpumask.h>
@@ -37,8 +38,11 @@
 static struct class *mcs_class;
 static int mcs_major;
 
-static phys_addr_t valid_start = 0x390000000;
-static phys_addr_t valid_end = 0x410000000;
+static unsigned long load_addr;
+module_param(load_addr, ulong, S_IRUSR);
+
+static phys_addr_t valid_start = 0UL;
+static phys_addr_t valid_end = 0UL;
 
 static DECLARE_WAIT_QUEUE_HEAD(mcs_wait_queue);
 static atomic_t irq_ack;
@@ -284,6 +288,7 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	size_t size = vma->vm_end - vma->vm_start;
 	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
 
+	printk(KERN_INFO "mcs_mmap:%lx %lx %lx \n", offset, size, vma->vm_pgoff);
 	/* Does it even fit in phys_addr_t? */
 	if (offset >> PAGE_SHIFT != vma->vm_pgoff)
 		return -EINVAL;
@@ -369,6 +374,16 @@ static void unregister_mcs_dev(void)
 static int __init mcs_dev_init(void)
 {
 	int ret;
+
+	if (load_addr < 0x10000000UL) {
+		pr_err("load_addr not set!!!\n");
+		return -EINVAL;
+	}
+
+	valid_start = load_addr - 0x10000000UL;
+	valid_end = load_addr + 0x10000000UL;
+	printk(KERN_INFO "load_addr:%lx %lx %lx \n", load_addr, valid_start,
+		valid_end);
 
 	if (!acpi_disabled) {
 		if (!request_mem_region(valid_start, valid_end - valid_start, "mcs_mem")) {

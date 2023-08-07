@@ -181,7 +181,10 @@ unsigned long calc_dma_phy_addr(unsigned long loadaddr)
 
 int net_addr_init(void)
 {
-    g_rxRingBase = calc_dma_phy_addr(RESERVE_MEM_BASE_CK);
+    unsigned long load_addr_start = get_load_addr_start();
+    printk(KERN_INFO "load_addr_start:%llx\n", load_addr_start);
+
+    g_rxRingBase = calc_dma_phy_addr(load_addr_start);
     g_rxDmaBase = g_rxRingBase + RX_RING_SIZE;
     g_txRingBase = g_rxDmaBase + RX_DMA_SIZE;
     g_txDmaBase = g_txRingBase + TX_RING_SIZE;

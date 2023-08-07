@@ -1,7 +1,16 @@
 #include <linux/types.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/pci.h>
 #include "i210_eth.h"
+
+static unsigned long load_addr;
+module_param(load_addr, ulong, S_IRUSR);
+
+const unsigned long get_load_addr_start(void)
+{
+    return load_addr;
+}
 
 const char g_i210_driver_name[] = "i210_eth";
 #define E1000_DEV_ID_I210_COPPER        0x1533
