@@ -40,17 +40,26 @@ static void pty_endpoint_unbind_cb(struct rpmsg_endpoint *ept)
 static int pty_endpoint_cb(struct rpmsg_endpoint *ept, void *data,
 		size_t len, uint32_t src, void *priv)
 {
-    int ret;
+    int ret, i, j;
     struct pty_ep_data *pty_ep = (struct pty_ep_data *)priv;
+    char msg[len * 2 + 1];
+    char *msg_data = (char *)data;
 
-    while (len) {
-        ret = write(pty_ep->fd_master, data, len);
-        if (ret < 0) {
-            printf("write pty master error:%d\n", ret);
-            break;
+    /* when using pty, translate '\n' to "\r\n" */
+    for (i = 0, j = 0; i < len; ++i, ++msg_data) {
+        if (*msg_data == '\n') {
+            msg[i + j] = '\r';
+            ++j;
         }
-        len -= ret;
-        data = (char *)data + ret;
+        msg[i + j] = *msg_data;
+    }
+    
+    len = i + j;
+    msg[len] = '\0';
+    ret = write(pty_ep->fd_master, msg, len);
+    if (ret < 0) {
+        printf("write pty master error:%d\n", ret);
+        return ret;
     }
 
     return 0;
