@@ -87,6 +87,7 @@ static int rpmsg_handle_sendto(void *data, struct rpc_instance *inst);
 static int rpmsg_handle_setsockopt(void *data, struct rpc_instance *inst);
 static int rpmsg_handle_shutdown(void *data, struct rpc_instance *inst);
 static int rpmsg_handle_socket(void *data, struct rpc_instance *inst);
+static int rpmsg_handle_printf(void *data, struct rpc_instance *inst);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -120,6 +121,7 @@ static struct rpc_service service_table[] = {
     {SETSOCKOPT_ID, &rpmsg_handle_setsockopt},
     {SHUTDOWN_ID, &rpmsg_handle_shutdown},
     {SOCKET_ID, &rpmsg_handle_socket},
+    {PRINTF_ID, &rpmsg_handle_printf},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -1091,5 +1093,19 @@ static int rpmsg_handle_getsockopt(void *data, struct rpc_instance *inst)
         &resp, payload_size);
     lprintf("==getsockopt send rsp(%d)\n", ret);
     CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+ }
+
+static int rpmsg_handle_printf(void *data, struct rpc_instance *inst)
+{
+    rpc_printf_req_t *req = (rpc_printf_req_t *)data;
+    int ret = 0;
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    ret = write(1, req->buf, MIN(sizeof(req->buf), req->len));
+    lprintf("==printf(%d), ret(%d)\n", req->len, ret);
+
     return ret > 0 ?  0 : ret;
  }

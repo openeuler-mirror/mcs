@@ -34,9 +34,10 @@
 #define SETSOCKOPT_ID      118UL
 #define SHUTDOWN_ID        119UL
 #define SOCKET_ID          120UL
+#define PRINTF_ID          300UL
 
 #define MIN_ID            OPEN_ID
-#define MAX_ID            SOCKET_ID
+#define MAX_ID            PRINTF_ID
 
 #define MAX_SBUF_LEN      432  /* max socket buf len*/
 #define MAX_CBUF_LEN      416
@@ -617,5 +618,12 @@ typedef struct rpc_getsockopt_outp {
     void* optval;
     socklen_t* optlen;
 } rpc_getsockopt_outp_t;
+
+/* printf */
+typedef struct rpc_printf_req {
+    unsigned long func_id;
+    int len;
+    char buf[MAX_STRING_LEN];
+} rpc_printf_req_t;
 
 #endif  /* _RPC_INTERNAL_MODEL_H */
