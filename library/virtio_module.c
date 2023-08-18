@@ -103,9 +103,13 @@ void virtio_init(struct client_os_inst *client)
 
 	client->vdev.vrings_info = &client->rvrings[0];
 
-	/* setup rvdev */
+	/* the shared memory pool should not include the field vring info data structure 
+		┌─────────────────────┬────────────┬─────────────────────┬─────────────────────┐
+		│   status register   │   shpool   │    vring 1 info     │    vring 0 info     │
+		└─────────────────────┴────────────┴─────────────────────┴─────────────────────┘
+	*/
 	rpmsg_virtio_init_shm_pool(&client->shpool, share_mem_start,
-			client->shared_mem_size - client->vdev_status_size);
+			client->shared_mem_size - 2 * client->vdev_status_size);
 
 	status = rpmsg_init_vdev(&client->rvdev, &client->vdev, ns_bind_cb,
 			 client->io, &client->shpool);
