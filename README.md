@@ -37,11 +37,34 @@ mcs支持两种构建安装方式：
 
 - **集成构建**
 
-  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统构建指南](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mcs.html#mcs-build)。
+  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统构建指南](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id1)。在创建镜像的编译配置文件时，需要加上 `-f openeuler-mcs` ，构建步骤如下：
+  ```shell
+  # 初始化oebuild工作目录，以及下载各软件包代码
+  $ oebuild init oebuild_workdir
+  $ cd oebuild_workdir
+  $ oebuild update
+
+  # 创建镜像的构建目录
+  #  -p 指定构建镜像
+  #  -f 指定镜像所带特性
+  #  -d 指定工作目录
+  # 如：-p raspberrypi4-64 构建树莓派镜像，-p aarch64-std 构建QEMU镜像
+  #     -f openeuler-mcs 会为镜像打包 mcs 相关的软件包
+  $ oebuild generate -p raspberrypi4-64 -f openeuler-mcs -d build_rpi_mcs
+  $ cd build_rpi_mcs
+
+  $ oebuild bitbake
+  # 敲以上命令后，进入构建容器
+  # 在构建容器中构建镜像和sdk
+  $ bitbake openeuler-image    # 构建镜像
+  $ bitbake openeuler-image -c populate_sdk   # 构建SDK
+  ```
 
 - **单独构建**
 
-  1. 根据openEuler Embedded使用手册安装SDK并设置SDK环境变量。
+  按照集成构建方法构建出带mcs功能的SDK后，可以使用SDK快速开发mcs，步骤如下：
+
+  1. 根据[openEuler Embedded使用手册](https://openeuler.gitee.io/yocto-meta-openeuler/master/getting_started/index.html#sdk)安装SDK并设置SDK环境变量。
 
   2. 交叉编译内核模块 mcs_km.ko，编译方式如下:
      ```shell
@@ -49,7 +72,7 @@ mcs支持两种构建安装方式：
      make
      ```
 
-  3.  交叉编译用户态样例 rpmsg_main，编译方式如下:
+  3. 交叉编译用户态样例 rpmsg_main，编译方式如下:
      ```shell
      cmake -S . -B build -DDEMO_TARGET=rpmsg_pty_demo
      cd build
@@ -83,24 +106,24 @@ mcs支持两种构建安装方式：
      ```shell
      # 安装 qemu-system-aarch64、dtc
      $ apt install qemu-system-arm device-tree-compiler  # ubuntu
-     
+
      # 获取 QEMU devicetree
      $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -nographic -smp 4 -M dumpdtb=qemu.dtb
      $ dtc -I dtb -O dts -o qemu.dts qemu.dtb
-     
+
      # 修改qemu.dts，添加 reserved-memory 节点，预留出 0x70000000 - 0x80000000 的内存
      	reserved-memory {
      		#address-cells = <0x02>;
      		#size-cells = <0x02>;
      		ranges;
-     
+
      		mcs@70000000 {
      			reg = <0x00 0x70000000 0x00 0x10000000>;
      			compatible = "mcs_mem";
      			no-map;
      		};
      	};
-     
+
      # 制作最终使用的dtb文件
      $ dtc -I dts -O dtb -o qemu_mcs.dtb qemu.dts
      ```
@@ -121,7 +144,7 @@ mcs支持两种构建安装方式：
                          #address-cells = <2>;
                          #size-cells = <1>;
                          ranges;
-     
+
                     mcs@70000000 {
                              reg = <0x00 0x70000000 0x10000000>;
                              compatible = "mcs_mem";
@@ -131,13 +154,13 @@ mcs支持两种构建安装方式：
                  };
              };
          };
-     
+
      # 制作使用的dtbo
      $ dtc -I dts -O dtb -o mcs-memreserve.dtbo mcs-memreserve-overlay.dts
-     
+
      # 挂载树莓派boot分区，将 mcs-memreserve.dtbo 安装到树莓派boot分区的overlays中：
      $ cp mcs-memreserve.dtbo ${rpi_boot_path}/overlays/
-     
+
      # 修改树莓派的config.txt，新增 dtoverlay 使能 mcs-memreserve.dtbo
      $ echo "dtoverlay=mcs-memreserve" >> ${rpi_boot_path}/config.txt
      ```
@@ -169,7 +192,7 @@ mcs支持两种构建安装方式：
      树莓派需要使用支持 psci 的 uefi 引导固件，具体参考 openEuler Embedded 在线文档章节：[树莓派的UEFI支持和网络启动](https://openeuler.gitee.io/yocto-meta-openeuler/master/bsp/arm64/raspberrypi4/uefi.html#raspberrypi4-uefi-guide)
 
 
-​	按照上述3个步骤，准备好运行环境后，接下来就可以进行 mcs 的安装和使用：
+按照上述3个步骤，准备好运行环境后，接下来就可以进行 mcs 的安装和使用：
 
 4. **根据前文的构建安装指导，安装**：
 
@@ -197,14 +220,13 @@ mcs支持两种构建安装方式：
    70000000-7fffffff : reserved
      70000000-7fffffff : mcs_mem
    ...
-   
+
    ```
 
    若mcs_km.ko插入失败，可以通过dmesg看到对应的失败日志，可能的原因有：
    - 使用的交叉工具链与内核版本不匹配
    - 未预留内存资源
    - 使用的bios不支持psci
-
 
 6. **运行rpmsg_main程序，使用方式如下：**
 
@@ -236,10 +258,10 @@ mcs支持两种构建安装方式：
    ```shell
    # 新建一个terminal，登录到运行环境
    $ ssh user@ip
-   
+
    # 连接pts设备
    $ screen /dev/pts/1
-   
+
    # 敲回车后，可以打开client os的shell，对client os下发命令，例如
      uart:~$ help
      uart:~$ kernel version
