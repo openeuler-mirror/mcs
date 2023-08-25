@@ -31,15 +31,24 @@
 #define IOC_AFFINITY_INFO	_IOW(MAGIC_NUMBER, 2, int)
 #define IOC_MAXNR		2
 #define IPI_MCS			8
+#define RPROC_MEM_MAX		4
 
 static struct class *mcs_class;
 static int mcs_major;
 
 static int __percpu *mcs_evt;
 
-static phys_addr_t valid_start;
-static phys_addr_t valid_end;
 static int invoke_hvc = 1;
+/**
+ * struct mcs_rproc_mem - internal memory structure
+ * @phy_addr: physical address of the memory region
+ * @size: total size of the memory region
+ */
+struct mcs_rproc_mem {
+	phys_addr_t phy_addr;
+	size_t size;
+};
+static struct mcs_rproc_mem mem[RPROC_MEM_MAX];
 
 static DECLARE_WAIT_QUEUE_HEAD(mcs_wait_queue);
 static atomic_t irq_ack;
@@ -182,6 +191,8 @@ static const struct vm_operations_struct mmap_mem_ops = {
 /* A lite version of linux/drivers/char/mem.c, Test with MMU for arm64 mcs functions */
 static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	int i;
+	int found = 0;
 	size_t size = vma->vm_end - vma->vm_start;
 	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
 
@@ -193,8 +204,17 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	if (offset + (phys_addr_t)size - 1 < offset)
 		return -EINVAL;
 
-	if (offset < valid_start || (offset + size) > valid_end)
+	for (i = 0; (i < RPROC_MEM_MAX) && (mem[i].phy_addr != 0); i++) {
+		if (offset >= mem[i].phy_addr && size <= mem[i].size) {
+			found = 1;
+			break;
+		}
+	}
+
+	if (found == 0) {
+		pr_err("mmap failed: mmap memory is not in mcs reserved memory\n");
 		return -EINVAL;
+	}
 
 	vma->vm_page_prot = mcs_phys_mem_access_prot(file, vma->vm_pgoff,
 						 size,
@@ -261,35 +281,56 @@ static int get_psci_method(void)
 	return 0;
 }
 
-static int get_mcs_reserved_mem(void)
+static int init_reserved_mem(void)
 {
-	int len, naddr, nsize;
-	struct device_node *nd;
-	const __be32 *prop;
+	int n = 0;
+	int i, count, ret;
+	struct device_node *np;
 
-	nd = of_find_compatible_node(NULL, NULL, "mcs_mem");
-	if (nd == NULL)
+	np = of_find_compatible_node(NULL, NULL, "oe,mcs_remoteproc");
+	if (np == NULL)
 		return -ENODEV;
 
-	naddr = of_n_addr_cells(nd);
-	nsize = of_n_size_cells(nd);
-
-	prop = of_get_property(nd, "reg", &len);
-	of_node_put(nd);
-	if (!prop)
-		return -ENOENT;
-
-	if (len && len != ((naddr + nsize) * sizeof(__be32)))
-		return -EINVAL;
-
-	valid_start = of_read_number(prop, naddr);
-	valid_end = valid_start + of_read_number(prop + naddr, nsize);
-
-	if (!request_mem_region(valid_start, valid_end - valid_start, "mcs_mem")) {
-		pr_err("Can not request mcs_mem\n");
-		return -EINVAL;
+	count = of_count_phandle_with_args(np, "memory-region", NULL);
+	if (count <= 0) {
+		pr_err("reserved mem is required for MCS\n");
+		return -ENODEV;
 	}
+
+	for (i = 0; i < count; i++) {
+		struct device_node *node;
+		struct resource res;
+
+		node = of_parse_phandle(np, "memory-region", i);
+		ret = of_address_to_resource(node, 0, &res);
+		if (ret) {
+			pr_err("unable to resolve memory region\n");
+			return ret;
+		}
+
+		if (n >= RPROC_MEM_MAX)
+			break;
+
+		if (!request_mem_region(res.start, resource_size(&res), "mcs_mem")) {
+			pr_err("Can not request mcs_mem, 0x%llx-0x%llx\n", res.start, res.end);
+			return -EINVAL;
+		}
+
+		mem[n].phy_addr = res.start;
+		mem[n].size = resource_size(&res);
+		n++;
+	}
+
 	return 0;
+}
+
+static void release_reserved_mem(void)
+{
+	int i;
+
+	for (i = 0; (i < RPROC_MEM_MAX) && (mem[i].phy_addr != 0); i++) {
+		release_mem_region(mem[i].phy_addr, mem[i].size);
+	}
 }
 
 static int register_mcs_dev(void)
@@ -346,7 +387,7 @@ static int __init mcs_dev_init(void)
 			return ret;
 		}
 
-		ret = get_mcs_reserved_mem();
+		ret = init_reserved_mem();
 		if (ret) {
 			pr_err("Failed to get mcs mem, ret = %d\n", ret);
 			return ret;
@@ -369,7 +410,7 @@ static int __init mcs_dev_init(void)
 err_remove_ipi:
 	remove_mcs_ipi();
 err_free_mcs_mem:
-	release_mem_region(valid_start, valid_end - valid_start);
+	release_reserved_mem();
 	return ret;
 }
 module_init(mcs_dev_init);
@@ -378,7 +419,7 @@ static void __exit mcs_dev_exit(void)
 {
 	remove_mcs_ipi();
 	unregister_mcs_dev();
-	release_mem_region(valid_start, valid_end - valid_start);
+	release_reserved_mem();
 	pr_info("remove mcs dev\n");
 }
 module_exit(mcs_dev_exit);
