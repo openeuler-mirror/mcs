@@ -50,7 +50,6 @@ struct mcs_rproc_pdata {
 static void handle_event(struct work_struct *work)
 {
 	rproc_vq_interrupt(rproc, 0);
-	rproc_vq_interrupt(rproc, 1);
 }
 
 /**
@@ -105,7 +104,7 @@ static int init_mcs_ipi(void)
 }
 
 /**
- * Configure the boot address and boot the processor
+ * Make hvc/smc call to boot the processor
  */
 static int rproc_cpu_boot(unsigned int cpu, unsigned long boot_addr,
 			  enum arm_smccc_conduit conduit)
@@ -243,8 +242,11 @@ static int init_reserved_mem(struct device *dev,
 	struct device_node *np = dev->of_node;
 
 	count = of_count_phandle_with_args(np, "memory-region", NULL);
-	if (count <= 0)
-		return 0;
+	/* We at least require two memory-region, one for virtio and one for elf firmware. */
+	if (count < 2) {
+		dev_err(dev, "reserved mem is required\n");
+		return -ENODEV;
+	}
 
 	ret = of_reserved_mem_device_init_by_idx(dev, np, 0);
 	if (ret) {
