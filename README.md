@@ -37,9 +37,9 @@ mcs支持两种构建安装方式：
 
 - **集成构建**
 
-  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统构建指南](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id1)。在创建镜像的编译配置文件时，需要加上 `-f openeuler-mcs` ，构建步骤如下：
+  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建依赖 oebuild 工具，具体请参考 openEuler Embedded 在线文档章节：[混合关键性系统构建指南](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id1)。在创建镜像的编译配置文件时，需要加上 `-f openeuler-mcs` ，构建步骤如下：
   ```shell
-  # 初始化oebuild工作目录，以及下载各软件包代码
+  # 初始化oebuild工作目录，通过oebuild下载依赖软件包
   $ oebuild init oebuild_workdir
   $ cd oebuild_workdir
   $ oebuild update
@@ -51,12 +51,12 @@ mcs支持两种构建安装方式：
   # 如：-p raspberrypi4-64 构建树莓派镜像，-p aarch64-std 构建QEMU镜像
   #     -f openeuler-mcs 会为镜像打包 mcs 相关的软件包
   $ oebuild generate -p raspberrypi4-64 -f openeuler-mcs -d build_rpi_mcs
-  $ cd build_rpi_mcs
+  $ cd build/build_rpi_mcs
 
   $ oebuild bitbake
   # 敲以上命令后，进入构建容器
   # 在构建容器中构建镜像和sdk
-  $ bitbake openeuler-image    # 构建镜像
+  $ bitbake openeuler-image                   # 构建镜像
   $ bitbake openeuler-image -c populate_sdk   # 构建SDK
   ```
 
@@ -66,27 +66,38 @@ mcs支持两种构建安装方式：
 
   1. 根据[openEuler Embedded使用手册](https://openeuler.gitee.io/yocto-meta-openeuler/master/getting_started/index.html#sdk)安装SDK并设置SDK环境变量。
 
-  2. 交叉编译内核模块 mcs_km.ko，编译方式如下:
+  2. 由于 mcs_remoteproc.ko 依赖内核头文件[remoteproc_internal.h](https://gitee.com/openeuler/kernel/blob/5.10.0-153.12.0/drivers/remoteproc/remoteproc_internal.h)，
+     需要先将该头文件拷贝到 mcs_km 目录中，如下：
+     ```shell
+     $ tree mcs_km
+     mcs_km
+     ├── Makefile
+     ├── mcs_km.c
+     ├── mcs_remoteproc.c
+     └── remoteproc_internal.h
+     ```
+
+  3. 交叉编译内核模块 mcs_km.ko、mcs_remoteproc.ko，编译方式如下:
      ```shell
      cd mcs_km
      make
      ```
 
-  3. 交叉编译用户态样例 rpmsg_main，编译方式如下:
+  4. 交叉编译用户态样例 rpmsg_main，编译方式如下:
      ```shell
      cmake -S . -B build -DDEMO_TARGET=rpmsg_pty_demo
      cd build
      make
      ```
 
-  4. 在SDK的 sysroots 中获取依赖库，包括 libmetal, libopen_amp, libsysfs，获取方式如下：
+  5. 在SDK的 sysroots 中获取依赖库，包括 libmetal, libopen_amp, libsysfs，获取方式如下：
      ```shell
      # 若sdk的安装路径为/opt/openeuler/sdk
      cd /opt/openeuler/sdk/sysroot
      find . -name libmetal.so*
      find . -name libopen_amp.so*
      find . -name libsysfs.so*
-     
+
      # 将以上so安装到运行环境中的 /usr/lib64 目录中
      ```
 
@@ -94,10 +105,10 @@ mcs支持两种构建安装方式：
 
 目前mcs支持在**qemu-aarch64**和**树莓派**上部署运行，部署mcs需要预留出必要的内存、CPU资源，并且还需要bios提供psci支持。
 
-若使用树莓派的集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统使用方法](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mcs.html#id4)。 
+若使用树莓派的集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统使用方法](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id2)。
 其他镜像则需要进行下述额外的配置操作：
 
-1. **通过配置dts预留出mcs_mem**
+1. **通过配置dts预留共享内存**
 
    - **QEMU**
 
@@ -111,18 +122,36 @@ mcs支持两种构建安装方式：
      $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -nographic -smp 4 -M dumpdtb=qemu.dtb
      $ dtc -I dtb -O dts -o qemu.dts qemu.dtb
 
-     # 修改qemu.dts，添加 reserved-memory 节点，预留出 0x70000000 - 0x80000000 的内存
-     	reserved-memory {
-     		#address-cells = <0x02>;
-     		#size-cells = <0x02>;
-     		ranges;
+     # 修改qemu.dts，添加 reserved-memory、mcs-remoteproc 节点，预留内存
+	reserved-memory {
+		#address-cells = <0x02>;
+		#size-cells = <0x02>;
+		ranges;
 
-     		mcs@70000000 {
-     			reg = <0x00 0x70000000 0x00 0x10000000>;
-     			compatible = "mcs_mem";
-     			no-map;
-     		};
-     	};
+		// 划分给client os的内存区域
+		// 对应于client os的启动地址0x7a000000
+		// 为client os分配了64M内存(0x4000000)
+		client_os_reserved: client_os_reserved@7a000000 {
+			compatible = "mcs_mem";
+			reg = <0x00 0x7a000000 0x00 0x4000000>;
+			no-map;
+		};
+
+		// 通信使用的共享内存区域(1M)
+		// 0x70000000 - 0x70100000
+		client_os_dma_memory_region: client_os-dma-memory@70000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x00 0x70000000 0x00 0x100000>;
+			no-map;
+		};
+	};
+
+	mcs-remoteproc {
+		compatible = "oe,mcs_remoteproc";
+		// 注意：共享内存区域必须要放在第一段
+		memory-region = <&client_os_dma_memory_region>,
+				<&client_os_reserved>;
+	};
 
      # 制作最终使用的dtb文件
      $ dtc -I dts -O dtb -o qemu_mcs.dtb qemu.dts
@@ -168,7 +197,7 @@ mcs支持两种构建安装方式：
 
 2. **隔离cpu用于启动实时OS**
 
-   通过修改内核cmdline，增加`maxcpus=3 `隔离3核。
+   通过修改内核cmdline，增加`maxcpus=3`隔离3核。
    - **QEMU**
 
      在启动qemu时，增加 `-append 'maxcpus=3'`即可。
