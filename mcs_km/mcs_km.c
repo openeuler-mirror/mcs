@@ -22,6 +22,12 @@
 #include <linux/of_irq.h>
 
 #define MCS_DEVICE_NAME		"mcs"
+
+/**
+ * PSCI Functions
+ * For more detail see:
+ * Arm Power State Coordination Interface Platform Design Document
+ */
 #define CPU_ON_FUNCID	   	0xC4000003
 #define AFFINITY_INFO_FUNCID	0xC4000004
 
@@ -38,6 +44,11 @@ static int mcs_major;
 
 static int __percpu *mcs_evt;
 
+struct cpu_info {
+	u32 cpu;
+	u64 boot_addr;
+};
+
 static int invoke_hvc = 1;
 /**
  * struct mcs_rproc_mem - internal memory structure
@@ -53,6 +64,25 @@ static struct mcs_rproc_mem mem[RPROC_MEM_MAX];
 static DECLARE_WAIT_QUEUE_HEAD(mcs_wait_queue);
 static atomic_t irq_ack;
 
+/**
+ * make hvc/smc call
+ * @return:
+ *    CPU_ON_FUNCID:
+ * 	SUCCESS			0
+ * 	INVALID_PARAMETERS 	-2
+ * 	DENIED			-3
+ * 	ALREADY_ON		-4
+ * 	ON_PENDING		-5
+ * 	INTERNAL_FAILURE	-6
+ * 	INVALID_ADDRESS		-9
+ *
+ *    AFFINITY_INFO_FUNCID:
+ * 	ON			0
+ * 	OFF			1
+ * 	ON_PENDING		2
+ * 	INVALID_PARAMETERS 	-2
+ * 	DISABLED		-8
+ */
 static unsigned long invoke_psci_fn(unsigned long function_id,
 			unsigned long arg0, unsigned long arg1,
 			unsigned long arg2)
@@ -134,39 +164,38 @@ static unsigned int mcs_poll(struct file *file, poll_table *wait)
 
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-	unsigned int cpu_id;
-	unsigned long cpu_boot_addr, ret;
+	int ret;
+	struct cpu_info info;
 
 	if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
 		return -EINVAL;
 	if (_IOC_NR(cmd) > IOC_MAXNR)
 		return -EINVAL;
-	if (copy_from_user(&cpu_id, (unsigned int __user *)arg, sizeof(unsigned int)))
+	if (copy_from_user(&info, (struct cpu_info __user *)arg, sizeof(info)))
 		return -EFAULT;
 
 	switch (cmd) {
 		case IOC_SENDIPI:
-			pr_info("received ioctl cmd to send ipi to cpu(%d)\n", cpu_id);
-			send_clientos_ipi(cpumask_of(cpu_id));
+			pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
+			send_clientos_ipi(cpumask_of(info.cpu));
 			break;
 
 		case IOC_CPUON:
-			if (copy_from_user(&cpu_boot_addr, (unsigned long __user *)arg + 1, sizeof(unsigned long)))
-				return -EFAULT;
-
-			pr_info("start booting clientos on cpu(%d) addr(0x%lx)\n", cpu_id, cpu_boot_addr);
-
-			ret = invoke_psci_fn(CPU_ON_FUNCID, cpu_id, cpu_boot_addr, 0);
+			pr_info("start booting clientos on cpu(%d) addr(0x%llu)\n", info.cpu, info.boot_addr);
+			ret = invoke_psci_fn(CPU_ON_FUNCID, info.cpu, info.boot_addr, 0);
 			if (ret) {
-				pr_err("boot clientos failed(%ld)\n", ret);
+				pr_err("boot clientos failed(%d)\n", ret);
 				return -EINVAL;
 			}
 			break;
 
 		case IOC_AFFINITY_INFO:
-			ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, cpu_id, 0, 0);
-			if (copy_to_user((unsigned long __user *)arg, &ret, sizeof(unsigned long)))
+			ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, info.cpu, 0, 0);
+			if (ret != 1) {
+				pr_err("cpu state check failed! cpu(%d) is not in the OFF state, current state: %d\n",
+				       info.cpu, ret);
 				return -EFAULT;
+			}
 			break;
 
 		default:
@@ -245,6 +274,7 @@ static const struct file_operations mcs_fops = {
 	.mmap = mcs_mmap,
 	.poll = mcs_poll,
 	.unlocked_ioctl = mcs_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
 	.llseek = generic_file_llseek,
 };
 

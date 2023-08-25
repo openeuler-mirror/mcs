@@ -30,10 +30,13 @@ static uint32_t virtio_get_features(struct virtio_device *vdev)
 
 static void virtio_notify(struct virtqueue *vq)
 {
-	struct client_os_inst *client = metal_container_of(vq->vq_dev, struct client_os_inst, vdev);
 	int ret;
+	struct client_os_inst *client = metal_container_of(vq->vq_dev, struct client_os_inst, vdev);
+	struct cpu_info info = {
+		.cpu = client->cpu_id
+	};
 
-	ret = ioctl(client->mcs_fd, IOC_SENDIPI, &client->cpu_id);
+	ret = ioctl(client->mcs_fd, IOC_SENDIPI, &info);
 	if (ret) {
 		printf("send ipi tp second os failed\n");
 	}

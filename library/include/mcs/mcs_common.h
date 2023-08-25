@@ -30,4 +30,9 @@
 /* vring size, one item of vring can hold RING_BUFFER(512) bytes */
 #define VRING_SIZE                 16
 
+struct cpu_info {
+    uint32_t cpu;
+    uint64_t boot_addr;
+};
+
 #endif /* MCS_COMMON_H */

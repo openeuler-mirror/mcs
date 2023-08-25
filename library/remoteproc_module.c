@@ -30,13 +30,13 @@ static void rproc_remove(struct remoteproc *rproc)
 static int rproc_start(struct remoteproc *rproc)
 {
     int ret;
-    unsigned long boot_args[2];
     struct client_os_inst *client = (struct client_os_inst *)rproc->priv;
+    struct cpu_info info = {
+        .cpu = client->cpu_id,
+        .boot_addr = client->entry
+    };
 
-    boot_args[0] = client->cpu_id;
-    boot_args[1] = client->entry;
-
-    ret = ioctl(client->mcs_fd, IOC_CPUON, boot_args);
+    ret = ioctl(client->mcs_fd, IOC_CPUON, &info);
     if (ret < 0) {
         printf("boot clientos failed\n");
         return ret;
@@ -65,24 +65,20 @@ const struct remoteproc_ops rproc_ops = {
 int create_remoteproc(struct client_os_inst *client)
 {
     int ret;
-    unsigned long state_arg;
     struct remoteproc *rproc;
+    struct cpu_info info = {
+        .cpu = client->cpu_id
+    };
 
-    state_arg = client->cpu_id;
-    ret = ioctl(client->mcs_fd, IOC_AFFINITY_INFO, &state_arg);
+    ret = ioctl(client->mcs_fd, IOC_AFFINITY_INFO, &info);
     if (ret < 0) {
         printf("acquire cpu state failed\n");
         return -1;
     }
 
-    if (state_arg != CPU_STATE_OFF) {
-        printf("cpu(%d) is already on.\n", client->cpu_id);
-        return -1;
-    }
-
     rproc = remoteproc_init(&client->rproc, &rproc_ops, client);
     if (rproc == NULL) {
-        printf("remoteproc  init failed\n");
+        printf("remoteproc init failed\n");
         return -1;
     }
 
