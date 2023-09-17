@@ -1,0 +1,121 @@
+#!/bin/bash
+
+set -e
+
+HYPERVISOR=""
+FIRMWARE_PATH="/lib/firmware"
+CLIENT_OS=""
+RPMSG_TTY="/dev/ttyRPMSG0"
+PRINTK="/proc/sys/kernel/printk"
+LOG_LEVEL="$(cat ${PRINTK})"
+
+die() {
+	echo >&2 "$@"
+	echo ${LOG_LEVEL} > "${PRINTK}"
+	exit 1
+}
+
+do_start()
+{
+	echo "1 4 1 7" > "${PRINTK}"
+
+	if [ -n "${HYPERVISOR}" ]; then
+		modprobe jailhouse 2>/dev/null
+		modprobe mcs_ivshmem 2>/dev/null
+		jailhouse enable /usr/share/jailhouse/cells/qemu-arm64-mcs.cell
+		echo qemu-arm64-zephyr-mcs-demo.cell > /sys/class/remoteproc/remoteproc0/jh_cell
+		echo ${CLIENT_OS} > /sys/class/remoteproc/remoteproc0/jh_inmate
+		echo start > /sys/class/remoteproc/remoteproc0/state
+	else
+		modprobe mcs_remoteproc 2>/dev/null
+		echo 0 > /sys/devices/system/cpu/cpu3/online
+		echo ${CLIENT_OS} > /sys/class/remoteproc/remoteproc0/firmware
+		echo start > /sys/class/remoteproc/remoteproc0/state
+	fi
+	sleep 5
+	if [ -e "${RPMSG_TTY}" ]; then
+		echo "Please open ${RPMSG_TTY} to talk with client OS"
+	fi
+}
+
+usage()
+{
+	cat <<-END >&2
+	Usage: $0 { COMMAND | --help }
+
+	  Available commands:
+	    start { CLIENT } [ -m | --mode MODE ]
+	          CLIENT            # Specify the client OS to be loaded
+	          -m --mode         # Chose the deploy mode:
+	                                phys: on bare metal, default
+	                                virt: on hypervisor
+
+	  eg,
+	    # deploy zephyr.elf on bare metal
+	        $0 start zephyr.elf --mode phys
+
+	    # deploy zephyr.elf on hypervisor
+	        $0 start zephyr.elf --mode virt
+	END
+	exit
+}
+
+check_opt()
+{
+	if [ -f "$(modinfo -F filename jailhouse 2>/dev/null)" ]; then
+		HYPERVISOR="jailhouse"
+	fi
+
+	ARGS=`getopt -o hm: --long help,mode: -n "$0" -- "$@"`
+	if [ $? != 0 ]; then
+		usage
+	fi
+
+	eval set -- "${ARGS}"
+
+	while true
+	do
+		case "$1" in
+			-h|--help)
+				usage
+				;;
+			-m|--mode)
+				if [ "$2" = "phys" ]; then
+					HYPERVISOR=""
+				elif [ "$2" = "virt" ]; then
+					[ -z "${HYPERVISOR}" ] && \
+					die "Not found hypervisor, no support for virt mode."
+				else
+					die "Invalid mode: ${2}. See '--help' option output for help."
+				fi
+				shift 2
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+	done
+
+	# check client OS
+	CLIENT_OS=$(basename $@ 2>/dev/null)
+	if [ ! -f "${FIRMWARE_PATH}/${CLIENT_OS}" ]; then
+		die "Not found client OS: ${CLIENT_OS}. The client OS should be placed in '/lib/firmware' directory."
+	fi
+}
+
+case "$1" in
+	start)
+		shift
+		check_opt $@
+		echo "Starting ${CLIENT_OS} on CPU3"
+		do_start
+		;;
+	*)
+		usage
+esac
+
+exit 0
