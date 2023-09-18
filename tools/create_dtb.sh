@@ -37,7 +37,7 @@ die() {
 check_commands()
 {
 	# Depends: qemu-system-aarch64, dtc
-	for COMMAND in "qemu-system-aarch64 dtc"; do
+	for COMMAND in qemu-system-aarch64 dtc; do
 		if ! command -v $COMMAND > /dev/null; then
 			echo "$COMMAND not found"
 			return 1
@@ -99,7 +99,6 @@ append_rproc_node()
 	            };
 	
 	            client_os_reserved: client_os_reserved@7a000000 {
-	                compatible = "mcs_mem";
 	                reg = <0x00 0x7a000000 0x00 0x4000000>;
 	                no-map;
 	            };
@@ -114,7 +113,7 @@ append_rproc_node()
 	        mcs-remoteproc {
 	            compatible = "oe,mcs_remoteproc";
 	            memory-region = <&client_os_dma_memory_region>,
-	                    <&client_os_reserved>;
+	                            <&client_os_reserved>;
 	        };
 	    };
 	END
@@ -146,7 +145,10 @@ create_qemu_dtb()
 		die "Cannot create ${OUTPUT_DTB}"
 	fi
 
-	# append reserved 
+	if [ ! -f "${OUTPUT_DTB}" ]; then
+		die "Cannot create ${TMP_DTS}"
+	fi
+	# append reserved-memory
 	sed -i '$ d' ${TMP_DTS}
 	append_rproc_node ${TMP_DTS}
 

@@ -20,6 +20,9 @@ do_start()
 	echo "1 4 1 7" > "${PRINTK}"
 
 	if [ -n "${HYPERVISOR}" ]; then
+		if [ ! -f "$(modinfo -F filename mcs_ivshmem 2>/dev/null)" ]; then
+			die "Module mcs_ivshmem.ko not found. Aborting."
+		fi
 		modprobe jailhouse 2>/dev/null
 		modprobe mcs_ivshmem 2>/dev/null
 		jailhouse enable /usr/share/jailhouse/cells/qemu-arm64-mcs.cell
@@ -27,6 +30,9 @@ do_start()
 		echo ${CLIENT_OS} > /sys/class/remoteproc/remoteproc0/jh_inmate
 		echo start > /sys/class/remoteproc/remoteproc0/state
 	else
+		if [ ! -f "$(modinfo -F filename mcs_remoteproc 2>/dev/null)" ]; then
+			die "Module mcs_remoteproc.ko not found. Aborting."
+		fi
 		modprobe mcs_remoteproc 2>/dev/null
 		echo 0 > /sys/devices/system/cpu/cpu3/online
 		echo ${CLIENT_OS} > /sys/class/remoteproc/remoteproc0/firmware
@@ -47,11 +53,11 @@ usage()
 	    start { CLIENT } [ -m | --mode MODE ]
 	          CLIENT            # Specify the client OS to be loaded
 	          -m --mode         # Chose the deploy mode:
-	                                phys: on bare metal, default
+	                                phys: on bare-metal, default
 	                                virt: on hypervisor
 
 	  eg,
-	    # deploy zephyr.elf on bare metal
+	    # deploy zephyr.elf on bare-metal
 	        $0 start zephyr.elf --mode phys
 
 	    # deploy zephyr.elf on hypervisor
