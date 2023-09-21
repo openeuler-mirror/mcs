@@ -10,6 +10,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <sys/select.h>
+#include <syscall.h>
 
 #include <openamp/rpmsg_rpc_client_server.h>
 #include <openamp/rpmsg.h>
@@ -65,6 +66,7 @@ static int rpmsg_handle_lseek(void *data, struct rpc_instance *inst);
 static int rpmsg_handle_fcntl(void *data, struct rpc_instance *inst);
 static int rpmsg_handle_ioctl(void *data, struct rpc_instance *inst);
 static int rpmsg_handle_unlink(void *data, struct rpc_instance *inst);
+static int rpmsg_handle_getdents64(void *data, struct rpc_instance *inst);
 
 static int rpmsg_handle_freeaddrinfo(void *data, struct rpc_instance *inst);
 static int rpmsg_handle_getaddrinfo(void *data, struct rpc_instance *inst);
@@ -100,6 +102,7 @@ static struct rpc_service service_table[] = {
     {FCNTL_ID, &rpmsg_handle_fcntl},
     {IOCTL_ID, &rpmsg_handle_ioctl},
     {UNLINK_ID, &rpmsg_handle_unlink},
+    {GETDENTS64_ID, &rpmsg_handle_getdents64},
     {FREEADDRINFO_ID, &rpmsg_handle_freeaddrinfo},
     {GETADDRINFO_ID, &rpmsg_handle_getaddrinfo},
     {GETHOSTBYADDR_ID, &rpmsg_handle_gethostbyaddr},
@@ -226,7 +229,7 @@ static int rpmsg_endpoint_server_cb(struct rpmsg_endpoint *ept, void *data,
 #else
     unsigned char buf[MAX_BUF_LEN];
 #endif
-    unsigned int id;
+    unsigned long id;
     struct rpc_instance *inst;
     (void)priv;
     (void)src;
@@ -234,7 +237,7 @@ static int rpmsg_endpoint_server_cb(struct rpmsg_endpoint *ept, void *data,
     lprintf("ccb: src %x, len %lu\n", src, len);
 
     inst = &service_inst;
-    id = *(int *)data;
+    id = *(unsigned long *)data;
     lprintf("fun_id:%d\n", id);
     if (len > MAX_BUF_LEN) {
         lprintf("overlong data\n");
@@ -1107,5 +1110,39 @@ static int rpmsg_handle_printf(void *data, struct rpc_instance *inst)
     ret = write(1, req->buf, MIN(sizeof(req->buf), req->len));
     lprintf("==printf(%d), ret(%d)\n", req->len, ret);
 
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_getdents64(void *data, struct rpc_instance *inst)
+{
+    DEFINE_VARS(getdents64)
+    off_t off = 0;
+
+    if (!req || !inst)
+        return -EINVAL;
+    int buflen = MIN(req->count, sizeof(resp.buf));
+    payload_size -= sizeof(resp.buf);
+    lprintf("==getdents64 fd:%d, pos:%ld\n", req->fd, req->pos);
+    if (req->pos != -1) {
+        off = lseek(req->fd, req->pos, SEEK_SET);
+    }
+    if (off < 0) {
+        resp.ret = -1;
+        lprintf("==getdents64 seek fail fd:%d, ret:%ld\n", req->fd, off);
+    } else {
+        ret = syscall(SYS_getdents64, req->fd, resp.buf, buflen);
+        lprintf("==getdents64 fd:%d, ret:%d\n", req->fd, ret);
+        if (ret > 0) {
+            payload_size += ret;
+        }
+        resp.ret = ret;
+    }
+    lerror(resp.ret, errno);
+    set_rsp_base(&resp.super, req->trace_id);
+    resp.pos = lseek(req->fd, 0, SEEK_CUR);
+    ret = rpc_server_send(inst, GETDENTS64_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==getdents64 send rsp(%d), new pos: %ld\n", ret, resp.pos);
+    CLEANUP(data);
     return ret > 0 ?  0 : ret;
  }

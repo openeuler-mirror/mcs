@@ -7,8 +7,6 @@
 #include "rpc_server_internal.h"
 
 static struct client_os_inst client_os = {
-    /* physical address start of shared device mem */
-    .phy_shared_mem = 0x3fde00000,
     /* size of shared device mem */
     .shared_mem_size = 0x30000,
     .vring_size = VRING_SIZE,
@@ -76,8 +74,16 @@ int main(int argc, char **argv)
                         client_os.load_address;
     client_os.path = target_binfile;
 
-    printf("cpu:%d, ld:%lx, entry:%lx, path:%s\n",
-        client_os.cpu_id,client_os.load_address, client_os.entry, client_os.path);
+    /* clientos_map_info[LOG_TABLE].size + [SHAREMEM_TABLE].size */
+    if (client_os.entry < 0x2200000) {
+        printf("Error: target_binaddr is too small\n");
+        return -1;
+    }
+    client_os.phy_shared_mem = client_os.entry - 0x2200000;
+
+    printf("cpu:%d, ld:%lx, entry:%lx, path:%s share_mem:%lx\n",
+        client_os.cpu_id,client_os.load_address, client_os.entry, client_os.path,
+        client_os.phy_shared_mem);
 
     ret = openamp_init(&client_os);
     if (ret) {
