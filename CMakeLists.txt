@@ -19,18 +19,18 @@ set(SHARED_LINK_LIBS
 add_subdirectory(library)
 
 set(SRC_FILE
-	./${DEMO_TARGET}/rpmsg_main.c
+	./${DEMO_TARGET}/mica_main.c
 )
 
 if(DEMO_TARGET MATCHES "openamp_demo")
 	list(APPEND SRC_FILE "./rpmsg_pty_demo/rpmsg_pty.c")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_matrix_multiply.c")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_ping.c")
-elseif(DEMO_TARGET MATCHES "rpmsg_pty_demo")
+elseif(DEMO_TARGET MATCHES "mica_demo")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_pty.c")
 else()
 	message(FATAL_ERROR "DEMO_TARGET: choose a target to build.
-		[rpmsg_pty_demo]")
+		[mica_demo]")
 endif()
 
 include_directories(
@@ -38,7 +38,7 @@ include_directories(
 	library/include/mcs
 )
 
-add_executable(rpmsg_main ${SRC_FILE})
-target_link_libraries(rpmsg_main ${MCS_LIB} ${SHARED_LINK_LIBS})
+add_executable(mica_main ${SRC_FILE})
+target_link_libraries(mica_main ${MCS_LIB} ${SHARED_LINK_LIBS})
 
-install(TARGETS rpmsg_main DESTINATION bin)
+install(TARGETS mica_main DESTINATION bin)
