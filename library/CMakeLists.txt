@@ -8,6 +8,7 @@ add_library(${MCS_LIB} STATIC
 		rpmsg_sys_service.c
 		mica_debug_common.c
 		mica_debug_ring_buffer.c
+		mica_gdb_server.c
 )
 
 include_directories(
