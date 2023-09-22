@@ -6,6 +6,7 @@ add_library(${MCS_LIB} STATIC
 		rpmsg_endpoint.c
 		rpmsg_rpc_service.c
 		rpmsg_sys_service.c
+		mica_debug_common.c
 )
 
 include_directories(
