@@ -27,15 +27,31 @@ if(DEMO_TARGET MATCHES "openamp_demo")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_matrix_multiply.c")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_ping.c")
 elseif(DEMO_TARGET MATCHES "mica_demo")
+	if(CONFIG_RING_BUFFER MATCHES "y")
+		add_definitions(-DCONFIG_RING_BUFFER)
+		set(TEST_DEBUG_BACKEND test_ring_buffer)
+	else()
+		message(FATAL_ERROR "choose a messaging mechanism to build.
+			[-DCONFIG_RING_BUFFER=y]")
+	endif()
+
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_pty.c")
+
+	# enable debug log
+	if(DEFINED MICA_DEBUG_LOG)
+		add_definitions(-DMICA_DEBUG_LOG)
+	endif()
+	# compile testing usecase
+	add_subdirectory(${CMAKE_SOURCE_DIR}/${DEMO_TARGET}/${TEST_DEBUG_BACKEND})
+	install(TARGETS ${TEST_DEBUG_BACKEND} DESTINATION bin)
 else()
 	message(FATAL_ERROR "DEMO_TARGET: choose a target to build.
 		[mica_demo]")
 endif()
 
 include_directories(
-	${DEMO_TARGET}
-	library/include/mcs
+	${CMAKE_SOURCE_DIR}/${DEMO_TARGET}
+	${CMAKE_SOURCE_DIR}/library/include/mcs
 )
 
 add_executable(mica_main ${SRC_FILE})
