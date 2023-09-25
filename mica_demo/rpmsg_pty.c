@@ -19,6 +19,8 @@
 /* define the keys according to your terminfo */
 #define KEY_CTRL_D      4
 
+struct rpmsg_app_resource g_rpmsg_app_resource;
+
 static void pty_endpoint_exit(struct pty_ep_data *pty_ep)
 {
     /* release the resources */
@@ -66,7 +68,7 @@ int open_pty(int *pfdm)
     fdm = posix_openpt(O_RDWR | O_NOCTTY);
     if (fdm < 0) {
         printf("Error %d on posix_openpt()\n", errno);
-        return  ret;
+        return ret;
     }
 
     printf("pty master fd is :%d\n", fdm);
@@ -74,20 +76,20 @@ int open_pty(int *pfdm)
     ret = grantpt(fdm);
     if (ret != 0) {
         printf("Error %d on grantpt()\n", errno);
-        return ret;
+        goto err_close_pty;
     }
 
     ret = unlockpt(fdm);
     if (ret != 0) {
         printf("Error %d on unlockpt()\n", errno);
-        return ret;
+        goto err_close_pty;
     }
 
     /* Open the slave side of the PTY */
     ret = ptsname_r(fdm, pts_name, sizeof(pts_name));
     if (ret != 0) {
         printf("Error %d on ptsname_r()\n", errno);
-        return ret;
+        goto err_close_pty;
     }
 
     printf("pls open %s to talk with client OS\n", pts_name);
@@ -95,9 +97,12 @@ int open_pty(int *pfdm)
     *pfdm = fdm;
 
     return 0;
+
+err_close_pty:
+    close(fdm);
 }
 
-void *pty_thread(void *arg)
+static void *pty_thread(void *arg)
 {
     int ret;
     int fdm;
@@ -135,36 +140,105 @@ void *pty_thread(void *arg)
 
     pty_endpoint_exit(pty_ep);
 
-    return (void *)((unsigned long)(ret));
+    return INT_TO_PTR(ret);
 }
 
-struct pty_ep_data *pty_service_create(const char * ep_name)
+static struct pty_ep_data *pty_service_create(const char * ep_name)
 {
+    if (ep_name == NULL) {
+        return NULL;
+    }
+
     int ret;
     struct pty_ep_data * pty_ep;
 
     pty_ep = (struct pty_ep_data * )malloc(sizeof(struct pty_ep_data));
-
-    if (pty_ep == NULL || ep_name == NULL) {
+    if (pty_ep == NULL) {
         return NULL;
     }
 
     ret = open_pty(&pty_ep->fd_master);
-
     if (ret != 0) {
-        free(pty_ep);
-        return NULL;
+        goto err_free_resource_struct;
     }
 
     pty_ep->ep_id = rpmsg_service_register_endpoint(ep_name, pty_endpoint_cb,
                                             pty_endpoint_unbind_cb, pty_ep);
-
-    if (pthread_create(&pty_ep->pty_thread, NULL, pty_thread, pty_ep) < 0) {
-        printf("pty thread create failed\n");
-        free(pty_ep);
-        return NULL;
+    if (pty_ep->ep_id < 0) {
+        printf("register endpoint %s failed\n", ep_name);
+        goto err_close_pty;
     }
-    pthread_detach(pty_ep->pty_thread);
+
+    if (pthread_create(&pty_ep->pty_thread, NULL, pty_thread, pty_ep) != 0) {
+        printf("pty thread create failed\n");
+        goto err_unregister_endpoint;
+    }
+    if (pthread_detach(pty_ep->pty_thread) != 0) {
+        printf("pty thread detach failed\n");
+        goto err_cancel_thread;
+    }
 
     return pty_ep;
+
+err_cancel_thread:
+    pthread_cancel(pty_ep->pty_thread);
+err_unregister_endpoint:
+    rpmsg_service_unregister_endpoint(pty_ep->ep_id);
+err_close_pty:
+    close(pty_ep->fd_master);
+err_free_resource_struct:
+    free(pty_ep);
+    return NULL;
+}
+
+int rpmsg_app_start(struct client_os_inst *client)
+{
+    int ret;
+    g_rpmsg_app_resource.pty_ep_uart = pty_service_create("uart");
+    if (g_rpmsg_app_resource.pty_ep_uart == NULL) {
+        return -1;
+    }
+
+    g_rpmsg_app_resource.pty_ep_console = pty_service_create("console");
+    if (g_rpmsg_app_resource.pty_ep_console == NULL) {
+        ret = -1;
+        goto err_free_uart;
+    }
+
+    if (pthread_create(&g_rpmsg_app_resource.rpmsg_loop_thread, NULL, rpmsg_loop_thread, client) != 0) {
+        perror("create rpmsg loop thread failed\n");
+        ret = -errno;
+        goto err_free_console;
+    }
+    if (pthread_detach(g_rpmsg_app_resource.rpmsg_loop_thread) != 0) {
+        perror("detach rpmsg loop thread failed\n");
+        ret = -errno;
+        goto err_cancel_thread;
+    }
+
+    return 0;
+
+err_cancel_thread:
+    pthread_cancel(g_rpmsg_app_resource.rpmsg_loop_thread);
+err_free_console:
+    pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_console);
+err_free_uart:
+    pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_uart);
+    return ret;
+}
+
+static void *rpmsg_loop_thread(void *args)
+{
+    struct client_os_inst *client = (struct client_os_inst *)args;
+    printf("start polling for remote interrupts\n");
+    rpmsg_service_receive_loop(client);
+    return NULL;
+}
+
+void rpmsg_app_stop(void)
+{
+    pthread_cancel(g_rpmsg_app_resource.rpmsg_loop_thread);
+    pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_uart);
+    pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_console);
+    printf("rpmsg apps have stopped\n");
 }
