@@ -4,12 +4,8 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
-#include <stdio.h>
-#include <stdarg.h>
-#include <pthread.h>
+#include "mica_debug.h"
 #include "rpmsg_pty.h"
-
-#include "openamp_module.h"
 
 static struct client_os_inst client_os = {
     /* physical address start of shared device mem */
@@ -20,48 +16,33 @@ static struct client_os_inst client_os = {
     .vdev_status_size = VDEV_STATUS_SIZE,
 };
 
+/* flag to show if the mica is in debug mode */
+bool g_is_debugging = false;
+
 static void cleanup(int sig)
 {
+    if (g_is_debugging) {
+        return;
+    }
+    rpmsg_app_stop();
     openamp_deinit(&client_os);
-    exit(0);
-}
-
-int rpmsg_app_master(struct client_os_inst *client)
-{
-    struct pty_ep_data *pty_shell1;
-
-    pty_shell1 = pty_service_create("uart");
-
-    if (pty_shell1 == NULL) {
-        return -1;
-    }
-
-    struct pty_ep_data *pty_shell2;
-    pty_shell2 = pty_service_create("console");
-
-    if (pty_shell2 == NULL) {
-        return -1;
-    }
-
-    rpmsg_service_receive_loop(client);
-
-    return 0;
+    exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char **argv)
 {
     int ret;
     int opt;
-    char *cpu_id;
-    char *target_binfile;
-    char *target_binaddr;
+    char *cpu_id = NULL;
+    char *target_binfile = NULL;
+    char *target_binaddr = NULL;
     char *target_entry = NULL;
+    char *target_elf = NULL;
 
     /* ctrl+c signal, do cleanup before program exit */
     signal(SIGINT, cleanup);
 
-    /* \todo: parameter check */
-    while ((opt = getopt(argc, argv, "c:t:a:e::")) != -1) {
+    while ((opt = getopt(argc, argv, "c:b:t:a:e::d:")) != -1) {
         switch (opt) {
         case 'c':
             cpu_id = optarg;
@@ -75,11 +56,37 @@ int main(int argc, char **argv)
         case 'e':
             target_entry = optarg;
             break;
+        case 'd':
+            target_elf = optarg;
+            g_is_debugging = true;
+            break;
         case '?':
             printf("Unknown option: %c ",(char)optopt);
         default:
             break;
         }
+    }
+
+    // check for input validity
+    bool is_valid = true;
+    if (cpu_id == NULL) {
+        printf("Usage: -c <id of the CPU running client OS>\n");
+        is_valid = false;
+    }
+    if (target_binfile == NULL) {
+        printf("Usage: -t <path to the target executable>\n");
+        is_valid = false;
+    }
+    if (target_binaddr == NULL) {
+        printf("Usage: -a <physical address for the executable to be put on>\n");
+        is_valid = false;
+    }
+    if (g_is_debugging && target_elf == NULL) {
+        printf("Usage: -d <path to the ELF file needed to be debugged>\n");
+        is_valid = false;
+    }
+    if (is_valid == false) {
+        return -1;
     }
 
     client_os.cpu_id = strtol(cpu_id, NULL, STR_TO_DEC);
@@ -88,23 +95,34 @@ int main(int argc, char **argv)
                         client_os.load_address;
     client_os.path = target_binfile;
 
-    printf("cpu:%d, ld:%lx, entry:%lx, path:%s\n",
-        client_os.cpu_id,client_os.load_address, client_os.entry, client_os.path);
-
+    /* init openamp for RPMsg communication */
     ret = openamp_init(&client_os);
     if (ret) {
-        printf("openamp init failed: %d\n", ret);
+        printf("openamp init failed:%d\n", ret);
         return ret;
     }
-
-    ret = rpmsg_app_master(&client_os);
+    ret = rpmsg_app_start(&client_os);
     if (ret) {
-        printf("rpmsg app master failed: %d\n", ret);
-        openamp_deinit(&client_os);
-        return ret;
+        printf("rpmsg app start failed: %d\n", ret);
+        goto err_openamp_deinit;
     }
 
+    if (g_is_debugging) {
+        ret = debug_start(&client_os, target_elf);
+        if (ret < 0) {
+            printf("debug start failed\n");
+        }
+        // exit rpmsg app
+        goto debug_exit;
+    }
+    printf("wait for rpmsg app exit\n");
+    // blocked here in case automatically exit
+    while (1) {
+        sleep(1);
+    }
+debug_exit:
+    rpmsg_app_stop();
+err_openamp_deinit:
     openamp_deinit(&client_os);
-
-    return 0;
+    return ret;
 }

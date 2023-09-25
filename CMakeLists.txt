@@ -27,6 +27,7 @@ if(DEMO_TARGET MATCHES "openamp_demo")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_matrix_multiply.c")
 	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_ping.c")
 elseif(DEMO_TARGET MATCHES "mica_demo")
+	# the shared memory communication mechanism must be defined
 	if(CONFIG_RING_BUFFER MATCHES "y")
 		add_definitions(-DCONFIG_RING_BUFFER)
 		set(TEST_DEBUG_BACKEND test_ring_buffer)
@@ -34,15 +35,15 @@ elseif(DEMO_TARGET MATCHES "mica_demo")
 		message(FATAL_ERROR "choose a messaging mechanism to build.
 			[-DCONFIG_RING_BUFFER=y]")
 	endif()
-
-	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_pty.c")
-
+	# add source file for mica_demo
+	list(APPEND SRC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/${DEMO_TARGET}/rpmsg_pty.c")
+	list(APPEND SRC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/${DEMO_TARGET}/mica_debug.c")
 	# enable debug log
 	if(DEFINED MICA_DEBUG_LOG)
 		add_definitions(-DMICA_DEBUG_LOG)
 	endif()
 	# compile testing usecase
-	add_subdirectory(${CMAKE_SOURCE_DIR}/${DEMO_TARGET}/${TEST_DEBUG_BACKEND})
+	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/${DEMO_TARGET}/${TEST_DEBUG_BACKEND})
 	install(TARGETS ${TEST_DEBUG_BACKEND} DESTINATION bin)
 else()
 	message(FATAL_ERROR "DEMO_TARGET: choose a target to build.
