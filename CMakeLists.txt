@@ -45,9 +45,12 @@ elseif(DEMO_TARGET MATCHES "mica_demo")
 	# compile testing usecase
 	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/${DEMO_TARGET}/${TEST_DEBUG_BACKEND})
 	install(TARGETS ${TEST_DEBUG_BACKEND} DESTINATION bin)
+elseif(DEMO_TARGET MATCHES "benchmark_demo")
+	list(APPEND SRC_FILE "./${DEMO_TARGET}/benchmark.c")
+	list(APPEND SRC_FILE "./${DEMO_TARGET}/rpmsg_pty.c")
 else()
 	message(FATAL_ERROR "DEMO_TARGET: choose a target to build.
-		[mica_demo]")
+		[mica_demo|mica_pty_demo]")
 endif()
 
 include_directories(
@@ -57,5 +60,10 @@ include_directories(
 
 add_executable(mica_main ${SRC_FILE})
 target_link_libraries(mica_main ${MCS_LIB} ${SHARED_LINK_LIBS})
+
+# compile benchmark
+
+add_executable(pty_test "./benchmark_demo/pty_test.c")
+target_link_libraries(pty_test ${MCS_LIB} ${SHARED_LINK_LIBS})
 
 install(TARGETS mica_main DESTINATION bin)
