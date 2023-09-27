@@ -7,6 +7,10 @@
 #include "mica_debug.h"
 #include "rpmsg_pty.h"
 
+#define UNIPROTON_SHARED_MEM_LENGTH 0x2000000
+#define UNIPROTON_LOG_LENGTH 0x200000
+#define UNIPROTON_SHARED_MEM_SHIFT (UNIPROTON_SHARED_MEM_LENGTH + UNIPROTON_LOG_LENGTH)
+
 static struct client_os_inst client_os = {
     /* size of shared device mem */
     .shared_mem_size = 0x30000,
@@ -101,11 +105,11 @@ int main(int argc, char **argv)
     client_os.path = target_binfile;
 
     /* clientos_map_info[LOG_TABLE].size + [SHAREMEM_TABLE].size */
-    if (client_os.entry < 0x2200000) {
+    if (client_os.entry < UNIPROTON_SHARED_MEM_SHIFT) {
         printf("Error: target_binaddr is too small\n");
         return -1;
     }
-    client_os.phy_shared_mem = client_os.entry - 0x2200000;
+    client_os.phy_shared_mem = client_os.entry - UNIPROTON_SHARED_MEM_SHIFT;
 
     printf("cpu:%d, ld:%lx, entry:%lx, path:%s share_mem:%lx\n",
         client_os.cpu_id,client_os.load_address, client_os.entry, client_os.path,
