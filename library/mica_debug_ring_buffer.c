@@ -118,7 +118,7 @@ int start_ring_buffer_module(struct client_os_inst *client, mqd_t from_server, m
     data->from_server = from_server;
     data->to_server = to_server;
     // the ring buffer area should be mmaped first
-    void *ring_buffer_va = mmap(NULL, RING_BUFFER_LEN * 2, PROT_READ | PROT_WRITE, MAP_SHARED, client->mcs_fd, RING_BUFFER_PA);
+    void *ring_buffer_va = mmap(NULL, RING_BUFFER_LEN * 2, PROT_READ | PROT_WRITE, MAP_SHARED, client->mcs_fd, client->entry - RING_BUFFER_BASE_SHIFT);
     if (ring_buffer_va == MAP_FAILED) {
         perror("mmap ring buffer failed");
         ret = -errno;

@@ -23,7 +23,7 @@
 #include "ring_buffer.h"
 
 /* the shared memory space used for communication */
-#define RING_BUFFER_PA 0x400000000 - 0x4000
+#define RING_BUFFER_BASE_SHIFT 0x4000
 #define RING_BUFFER_LEN 0x1000
 
 struct debug_ring_buffer_module_data{
