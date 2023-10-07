@@ -38,11 +38,13 @@
 static struct class *mcs_class;
 static int mcs_major;
 
-static unsigned long load_addr;
-module_param(load_addr, ulong, S_IRUSR);
+static unsigned long rmem_base;
+module_param(rmem_base, ulong, S_IRUSR);
+MODULE_PARM_DESC(rmem_base, "The base address of the reserved mem");
 
-static phys_addr_t valid_start = 0UL;
-static phys_addr_t valid_end = 0UL;
+static unsigned long rmem_size;
+module_param(rmem_size, ulong, S_IRUSR);
+MODULE_PARM_DESC(rmem_size, "The size of the reserved mem");
 
 static DECLARE_WAIT_QUEUE_HEAD(mcs_wait_queue);
 static atomic_t irq_ack;
@@ -288,7 +290,7 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	size_t size = vma->vm_end - vma->vm_start;
 	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
 
-	printk(KERN_INFO "mcs_mmap:%lx %lx %lx \n", offset, size, vma->vm_pgoff);
+	pr_info("mcs_mmap:%llx %lx %lx\n", offset, size, vma->vm_pgoff);
 	/* Does it even fit in phys_addr_t? */
 	if (offset >> PAGE_SHIFT != vma->vm_pgoff)
 		return -EINVAL;
@@ -297,7 +299,7 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	if (offset + (phys_addr_t)size - 1 < offset)
 		return -EINVAL;
 
-	if (offset < valid_start || (offset + size) > valid_end)
+	if (offset < rmem_base || size > rmem_size)
 		return -EINVAL;
 
 	vma->vm_ops = &mmap_mem_ops;
@@ -375,21 +377,15 @@ static int __init mcs_dev_init(void)
 {
 	int ret;
 
-	if (load_addr < 0x10000000UL) {
-		pr_err("load_addr not set!!!\n");
-		return -EINVAL;
+	if (rmem_base == 0 || rmem_size == 0) {
+		pr_err("you must supply rmem_base and rmem_size parameters!\n");
+		return -ENXIO;
 	}
 
-	valid_start = load_addr - 0x10000000UL;
-	valid_end = load_addr + 0x10000000UL;
-	printk(KERN_INFO "load_addr:%lx %lx %lx \n", load_addr, valid_start,
-		valid_end);
-
-	if (!acpi_disabled) {
-		if (!request_mem_region(valid_start, valid_end - valid_start, "mcs_mem")) {
-			pr_err("Can not request mcs_mem\n");
-			return -EINVAL;
-		}
+	if (!request_mem_region(rmem_base, rmem_size, "mcs_mem")) {
+		pr_err("Can not request mcs_mem. Did you reserve the memory with "
+		       "\"memmap=\" or \"mem=\"?\n");
+		return -EINVAL;
 	}
 
 	ret = init_mcs_ipi();
@@ -408,7 +404,7 @@ static int __init mcs_dev_init(void)
 err_remove_ipi:
 	remove_mcs_ipi();
 err_free_mcs_mem:
-	release_mem_region(valid_start, valid_end - valid_start);
+	release_mem_region(rmem_base, rmem_size);
 	return ret;
 }
 module_init(mcs_dev_init);
@@ -417,7 +413,7 @@ static void __exit mcs_dev_exit(void)
 {
 	remove_mcs_ipi();
 	unregister_mcs_dev();
-	release_mem_region(valid_start, valid_end - valid_start);
+	release_mem_region(rmem_base, rmem_size);
 	pr_info("remove mcs dev\n");
 }
 module_exit(mcs_dev_exit);
