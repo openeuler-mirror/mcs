@@ -1,0 +1,170 @@
+#!/bin/bash
+# For starting, stopping and restarting UniProton
+# Note:
+#   only supports single-core.
+#   Please use 'maxcpus=' to reserve one cpu for UniProton.
+#   Please use 'memmap=' to reserve mem region for UniProton.
+set -e
+
+FIRMWARE_PATH="/lib/firmware"
+CPU_SYSTEM="/sys/devices/system/cpu"
+CLIENT_OS=""
+TARGET_CPU=""
+
+# Note: Please set 'memmap=256M\$0x110000000'
+RESERVED_MEM_BASE=0x110000000
+RESERVED_MEM_SIZE=0x10000000
+# Note:
+# TEXT_ADDR needs to be larger than:
+#   RESERVED_MEM_BASE + BAR_TABLE_SIZE(0x100000)
+#    + DMA_TABLE_SIZE(0x200000) + SHAREMEM_TABLE_SIZE(0x2000000)
+#    + LOG_TABLE(0x200000)
+TEXT_ADDR=0x118000000
+DEBUG=""
+
+usage()
+{
+	cat <<-END >&2
+	Usage: $0 { COMMAND | --help }
+
+	  Available commands:
+	    start { CLIENT } [ -d | --debug ]
+	          CLIENT            # Specify the client OS to be loaded
+	          -d --debug        # Start the gdb and debug the client OS.
+
+	    stop                    # Stop the client OS
+
+	  eg,
+	    # deploy the UniProton
+	        $0 start uniproton.bin
+
+	    # stop the UniProton
+	        $0 stop
+
+	    # Use gdb to debug the UniProton
+	        $0 start uniproton.bin --debug
+	END
+	exit
+}
+
+die() {
+	echo >&2 "$@"
+	exit 1
+}
+
+do_start()
+{
+	if [ ! -f "$(modinfo -F filename mcs_km 2>/dev/null)" ]; then
+		die "Module mcs_km.ko not found in directory /lib/modules. Aborting."
+	fi
+	modprobe mcs_km rmem_base=${RESERVED_MEM_BASE} rmem_size=${RESERVED_MEM_SIZE}
+	if [ $? != 0 ]; then
+		die "Request mem failed, did you reserve the memory with 'memmap='? Aborting."
+	fi
+
+	# step1: stop the target cpu
+	echo 0 > "${CPU_SYSTEM}/cpu${TARGET_CPU}/online"
+
+	# step2: run mica to start client OS
+	mica_main -b ${FIRMWARE_PATH}/ap_boot \
+	  -c ${TARGET_CPU} \
+	  -t ${CLIENT_OS} -a ${TEXT_ADDR} \
+	  ${DEBUG} &
+
+	local pid=$!
+	sleep 5
+	if kill -0 ${pid}; then
+		echo "UniProton start success!"
+	else
+		die "UniProton start failed! Aborting."
+	fi
+}
+
+do_stop()
+{
+	local pid=$(pidof mica_main)
+	if [ -z "${pid}" ]; then
+		die "mica is not running. No need to stop the UniProton."
+	fi
+
+	local target=$(ps -o cmd= -p ${pid} | awk -F '-c ' '{print $2}' | awk '{print $1}')
+	echo "Stopping CPU${target}"
+	# step1: kill mica
+	kill -SIGINT ${pid} >/dev/null 2>&1
+
+	# step2: restart the target cpu
+	echo 1 > "${CPU_SYSTEM}/cpu${target}/online"
+	if [ $? != 0 ]; then
+		die "UniProton stop failed! Aborting."
+	else
+		echo "UniProton stopped."
+	fi
+}
+
+get_free_cpu()
+{
+	# use the last free cpu
+	TARGET_CPU="$(cat ${CPU_SYSTEM}/offline | awk -F '-' '{print $NF}')"
+
+	# If there are no free cpu, select the last online cpu.
+	if [ -z "${TARGET_CPU}" ]; then
+		TARGET_CPU="$(cat ${CPU_SYSTEM}/online | awk -F '-' '{print $NF}')"
+		if [ -z "${TARGET_CPU}" ]; then
+			die "No CPU available for UniProton. Aborting."
+		fi
+	fi
+}
+
+check_opt()
+{
+	ARGS=`getopt -o hd --long help,debug -n "$0" -- "$@"`
+	if [ $? != 0 ]; then
+		usage
+	fi
+
+	eval set -- "${ARGS}"
+
+	while true
+	do
+		case "$1" in
+			-h|--help)
+				usage
+				;;
+			-d|--debug)
+				DEBUG=" -d "
+				shift
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+	done
+
+	# check client OS
+	CLIENT_OS=$(basename $@ 2>/dev/null)
+	if [ ! -f "${CLIENT_OS}" ]; then
+		die "Not found client OS: ${CLIENT_OS}. Aborting."
+	fi
+}
+
+case "$1" in
+	start)
+		shift
+		check_opt $@
+		get_free_cpu
+		echo "Starting ${CLIENT_OS} on CPU${TARGET_CPU}"
+		do_start
+		;;
+	stop)
+		shift
+		do_stop
+		;;
+	*)
+		usage
+esac
+
+exit 0
