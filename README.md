@@ -1,18 +1,18 @@
 # mcs
 
-#### 介绍
+### 介绍
 
 目前工控设备、航天设备、机器人系统、智能车系统对功能和生态的需求日益丰富，对实时性、可靠性、安全性提出了更高的要求，由单一OS承载所有功能面临的挑战越来越大。针对这些场景，我们提出了**混合关键性系统(MCS, Mixed Criticality System)**，实现在一颗片上系统中部署多个OS，同时提供Linux的服务管理能力以及实时OS带来的高实时、高可靠的关键能力。
 
-#### 软件架构
+### 软件架构
 
 mcs_km:  提供OpenAMP所需内核模块，支持Client OS启动、专用中断收发、管理保留内存等功能。
 
-rpmsg_pty_demo: 提供OpenAMP用户态程序Linux端样例，支持在Linux上通过pty设备访问Client OS。
+mica_demo: 提供OpenAMP用户态程序Linux端样例，支持在Linux上通过pty设备访问Client OS。
 
 library: 提供OpenAMP样例必需的模块remoteproc、virtio、rpmsg、openamp。
 
-#### 原理简介
+### 原理简介
 
 OpenAMP旨在通过非对称多处理器的开源解决方案来标准化异构嵌入式系统中操作环境之间的交互。
 
@@ -26,7 +26,9 @@ OpenAMP包括如下三大重要组件：
 
 样例Demo通过提供mcs_km.ko 内核模块实现Linux内核启动从核的功能，并预留了OpenAMP通信所需的专用中断及其收发机制。用户可在用户态通过dev设备实现Client OS的启动，并通过rpmsg组件实现与Client OS的简单通信。
 
-#### 构建安装指导
+____
+
+### 构建安装指导
 
 mcs支持两种构建安装方式：
 
@@ -69,6 +71,7 @@ mcs支持两种构建安装方式：
      cd mcs_km
      make
      ```
+     将 `mcs_km.ko` 放到运行环境的 `/lib/modules/5.10.0/extra/` 目录中，并执行 `depmod` 生成模块映射文件。
 
   3. 交叉编译用户态样例 mica_main，编译方式如下:
      ```shell
@@ -76,6 +79,7 @@ mcs支持两种构建安装方式：
      cd build
      make
      ```
+     将编译产生的 `mica_main` 和仓库tools目录下的 `mica` 放到运行环境的 `/usr/bin/` 目录中。
 
   4. 在SDK的 sysroots 中获取依赖库，包括 libmetal, libopen_amp, libsysfs，获取方式如下：
      ```shell
@@ -84,12 +88,40 @@ mcs支持两种构建安装方式：
      find . -name libmetal.so*
      find . -name libopen_amp.so*
      find . -name libsysfs.so*
-
-     # 将以上so安装到运行环境中的 /usr/lib64 目录中
      ```
+     将以上so安装到运行环境中的 `/usr/lib64` 目录中。
 
-#### 使用说明
+____
 
-目前，对于x86机器，仅支持UniProton的混合部署。请按照[UniProton构建安装指导](https://gitee.com/openeuler/UniProton/blob/openEuler-23.09/doc/demoUsageGuide/x86_64_demo_usage_guide.md)编译、构建、部署UniProton。
+### 使用说明
+
+#### 预留CPU及内存
+
+部署UniProton之前，需要为UniProton预留出必要的内存、CPU资源。如四核CPU建议预留一个核，内存建议预留256M，
+可通过修改boot分区的grub.cfg配置内核启动参数，新增 `maxcpus=3 memmap=256M\$0x110000000` 参数，参考如下：
+```shell
+openEuler-Embedded ~ # mount /dev/sda1 /boot
+openEuler-Embedded ~ # cat /boot/efi/boot/grub.cfg
+# Automatically created by OE
+serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+default=boot
+timeout=10
+
+menuentry 'boot'{
+linux /bzImage  root=*** rw rootwait quiet maxcpus=3 memmap=256M\$0x110000000 console=ttyS0,115200 console=tty0
+}
+```
+
+#### 部署UniProton
+
+请按照[UniProton构建安装指导](https://gitee.com/openeuler/UniProton/blob/openEuler-23.09/doc/demoUsageGuide/x86_64_demo_usage_guide.md)编译、构建、安装UniProton。
+若构建出来的UniProton镜像为：x86_64.bin。启动、停止命令为：
+
+  - 启动 UniProton：
+     运行 `mica start x86_64.bin`
+  - 停止 UniProton：
+     运行 `mica stop`
+
+#### 调试UniProton
 
 如果希望调试支持GDB stub的UniProton，参见[调试支持 GDB stub 的 Client OS](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#gdb-stub-client-os)。
