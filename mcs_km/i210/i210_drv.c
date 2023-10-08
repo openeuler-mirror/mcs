@@ -175,14 +175,14 @@ unsigned long calc_dma_phy_addr(unsigned long loadaddr)
             (clientos_map_info[i].size) : (PAGE_SIZE_2M);
         clientos_map_info[i].pa = phy_addr;
     }
-    printk(KERN_INFO "dma_phy_addr:%llx\n", clientos_map_info[DMA_TABLE].pa);
+    printk(KERN_INFO "dma_phy_addr:%lx\n", clientos_map_info[DMA_TABLE].pa);
     return clientos_map_info[DMA_TABLE].pa;
 }
 
 int net_addr_init(void)
 {
     unsigned long load_addr_start = get_load_addr_start();
-    printk(KERN_INFO "load_addr_start:%llx\n", load_addr_start);
+    printk(KERN_INFO "load_addr_start:%lx\n", load_addr_start);
 
     g_rxRingBase = calc_dma_phy_addr(load_addr_start);
     g_rxDmaBase = g_rxRingBase + RX_RING_SIZE;
@@ -209,7 +209,7 @@ int net_addr_init(void)
     mac_dev_func_hook(0, bus_addr_destory);
 
     printk(KERN_INFO "base_addr(phy virt bus host):0x(%llx %llx %llx %llx)\n"
-        "size(rx_ring rx_dma tx_ring tx_dma):0x(%lx %lx %lx %lx)",
+        "size(rx_ring rx_dma tx_ring tx_dma):0x(%lx %x %lx %x)",
         g_rxRingBase, g_rxRingVirtBase, g_rxRingBusBase, g_rxRingHostVirtBase,
         RX_RING_SIZE, RX_DMA_SIZE, TX_RING_SIZE, TX_DMA_SIZE);
     return 0;

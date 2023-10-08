@@ -1,6 +1,10 @@
 obj-m := mcs_km.o
 mcs_km-objs = main.o mmu_map.o
 
+obj-m += eth_i210.o
+eth_i210-y += i210/i210_main.o
+eth_i210-y += i210/i210_drv.o
+
 SRC := $(shell pwd)
 
 all:
