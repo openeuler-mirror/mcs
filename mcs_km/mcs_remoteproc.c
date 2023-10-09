@@ -11,8 +11,14 @@
 #include "remoteproc_internal.h"
 
 #define CPU_ON_FUNCID	   	0xC4000003
-#define IPI_MCS			8
+#define IPI_MCS				8
 #define RPROC_MEM_MAX		4
+
+/* use resource tables's  reserved[0] to carry some extra information
+ * the following IDs come from PSCI definition
+ */
+#define CPU_OFF_FUNCID		0x84000002
+#define CPU_SUSPEND_FUNCID 	0xc4000001
 
 static int __percpu *mcs_evt;
 static struct rproc *rproc;
@@ -31,15 +37,16 @@ struct mcs_rproc_mem {
 	size_t size;
 };
 
-
 /**
  * struct mcs_rproc_data - mcs rproc private data
  * @smccc_conduit: smc or hvc psci conduit
+ * @status:	virtual proc status based on rsc table reserved val
  * @mem: reserved memory regions
  * @rproc: pointer to remoteproc instance
  */
 struct mcs_rproc_pdata {
 	enum arm_smccc_conduit smccc_conduit;
+	u32 __iomem *status;
 	struct mcs_rproc_mem mem[RPROC_MEM_MAX];
 	struct rproc *rproc;
 };
@@ -141,6 +148,9 @@ static int mcs_rproc_start(struct rproc *rproc)
 		return ret;
 	}
 
+	/* use resource table's reserved[0] as extra status bit */
+	priv->status = rproc->table_ptr->reserved;
+
 	ret = rproc_cpu_boot(3, rproc->bootaddr, priv->smccc_conduit);
 	if (ret) {
 		remove_mcs_ipi();
@@ -161,7 +171,14 @@ static void mcs_rproc_kick(struct rproc *rproc, int vqid)
 /* power off the remote processor */
 static int mcs_rproc_stop(struct rproc *rproc)
 {
-	// TODO: stop cpu
+	static int flg = 0;
+	struct mcs_rproc_pdata *priv = rproc->priv;
+
+	priv->status[0] = CPU_OFF_FUNCID;
+	ipi_send_mask(IPI_MCS, cpumask_of(3));
+
+	/* \todo: should check priv->status[0] be cleared? */
+
 	remove_mcs_ipi();
 	flush_work(&workqueue);
 	return 0;
@@ -195,7 +212,7 @@ static void *mcs_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len)
 static struct rproc_ops mcs_rproc_ops = {
 	.start		= mcs_rproc_start,
 	.stop		= mcs_rproc_stop,
-	.da_to_va       = mcs_rproc_da_to_va,
+	.da_to_va   = mcs_rproc_da_to_va,
 	.kick		= mcs_rproc_kick,
 };
 
