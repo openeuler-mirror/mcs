@@ -70,9 +70,9 @@ mcs支持两种构建安装方式：
      make
      ```
 
-  3. 交叉编译用户态样例 rpmsg_main，编译方式如下:
+  3. 交叉编译用户态样例 mica_main，编译方式如下:
      ```shell
-     cmake -S . -B build -DDEMO_TARGET=rpmsg_pty_demo
+     cmake -S . -B build -DDEMO_TARGET=mica_demo -DCONFIG_RING_BUFFER=y -DMICA_DEBUG_LOG=y
      cd build
      make
      ```
@@ -90,4 +90,6 @@ mcs支持两种构建安装方式：
 
 #### 使用说明
 
-目前，对于x86机器，仅支持UniProton的混合部署。请按照[UniProton构建安装指导](https://gitee.com/openeuler/UniProton/blob/dev/doc/demoUsageGuide/uvpck_demo_usage_guide.md)编译、构建、部署UniProton。
+目前，对于x86机器，仅支持UniProton的混合部署。请按照[UniProton构建安装指导](https://gitee.com/openeuler/UniProton/blob/openEuler-23.09/doc/demoUsageGuide/x86_64_demo_usage_guide.md)编译、构建、部署UniProton。
+
+如果希望调试支持GDB stub的UniProton，参见[调试支持 GDB stub 的 Client OS](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#gdb-stub-client-os)。
