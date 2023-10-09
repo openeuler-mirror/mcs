@@ -1,20 +1,20 @@
 # mcs
 
-#### 介绍
+## 介绍
 
 目前工控设备、航天设备、机器人系统、智能车系统对功能和生态的需求日益丰富，对实时性、可靠性、安全性提出了更高的要求，由单一OS承载所有功能面临的挑战越来越大。针对这些场景，我们提出了**混合关键性系统(MCS, Mixed Criticality System)**，实现在一颗片上系统中部署多个OS，同时提供Linux的服务管理能力以及实时OS带来的高实时、高可靠的关键能力。
 
-#### 软件架构
+## 软件架构
 
 mcs_km:  提供OpenAMP所需内核模块，支持Client OS启动、专用中断收发、管理保留内存等功能。
 
-rpmsg_pty_demo: 提供OpenAMP用户态程序Linux端样例，支持在Linux上通过pty设备访问Client OS。
+mica_demo: 提供OpenAMP用户态程序Linux端样例，支持在Linux上通过pty设备访问Client OS，以及通过ring buffer调试支持GDB stub的Client OS。
 
 library: 提供OpenAMP样例必需的模块remoteproc、virtio、rpmsg、openamp。
 
-zephyr: 提供样例镜像文件，在每个demo中，zephyr_qemu.bin运行在qemu上，zephyr_rpi.bin运行在树莓派上，该文件需要被加载至设定的0x7a000000起始地址。启动后会运行OpenAMP Client端的样例程序，并与Linux端进行交互。
+rtos: 提供样例镜像文件，在每个demo中，qemu_zephyr_*.bin运行在qemu上，rasp_zephyr_*.bin运行在树莓派上，该文件需要被加载至设定的0x7a000000起始地址。启动后会运行OpenAMP Client端的样例程序，并与Linux端进行交互。
 
-#### 原理简介
+## 原理简介
 
 OpenAMP旨在通过非对称多处理器的开源解决方案来标准化异构嵌入式系统中操作环境之间的交互。
 
@@ -28,7 +28,7 @@ OpenAMP包括如下三大重要组件：
 
 样例Demo通过提供mcs_km.ko 内核模块实现Linux内核启动从核的功能，并预留了OpenAMP通信所需的专用中断及其收发机制。用户可在用户态通过dev设备实现Client OS的启动，并通过rpmsg组件实现与Client OS的简单通信。
 
-#### 构建安装指导
+## 构建安装指导
 
 mcs支持两种构建安装方式：
 
@@ -83,9 +83,9 @@ mcs支持两种构建安装方式：
      make
      ```
 
-  4. 交叉编译用户态样例 rpmsg_main，编译方式如下:
+  4. 交叉编译用户态样例 mica_main，编译方式如下:
      ```shell
-     cmake -S . -B build -DDEMO_TARGET=rpmsg_pty_demo
+     cmake -S . -B build -DDEMO_TARGET=mica_demo -DCONFIG_RING_BUFFER=y -DMICA_DEBUG_LOG=y
      cd build
      make
      ```
@@ -101,11 +101,11 @@ mcs支持两种构建安装方式：
      # 将以上so安装到运行环境中的 /usr/lib64 目录中
      ```
 
-#### 使用说明
+## 启动pty与client os交互
 
 目前mcs支持在**qemu-aarch64**和**树莓派**上部署运行，部署mcs需要预留出必要的内存、CPU资源，并且还需要bios提供psci支持。
 
-若使用树莓派的集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：[混合关键性系统使用方法](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id2)。
+若使用树莓派的集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：[基于openAMP的MICA框架](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id2)。
 其他镜像则需要进行下述额外的配置操作：
 
 1. **通过配置dts预留共享内存**
@@ -123,35 +123,35 @@ mcs支持两种构建安装方式：
      $ dtc -I dtb -O dts -o qemu.dts qemu.dtb
 
      # 修改qemu.dts，添加 reserved-memory、mcs-remoteproc 节点，预留内存
-	reserved-memory {
-		#address-cells = <0x02>;
-		#size-cells = <0x02>;
-		ranges;
+     reserved-memory {
+        #address-cells = <0x02>;
+        #size-cells = <0x02>;
+        ranges;
 
-		// 划分给client os的内存区域
-		// 对应于client os的启动地址0x7a000000
-		// 为client os分配了64M内存(0x4000000)
-		client_os_reserved: client_os_reserved@7a000000 {
-			compatible = "mcs_mem";
-			reg = <0x00 0x7a000000 0x00 0x4000000>;
-			no-map;
-		};
+        // 划分给client os的内存区域
+        // 对应于client os的启动地址0x7a000000
+        // 为client os分配了64M内存(0x4000000)
+        client_os_reserved: client_os_reserved@7a000000 {
+          compatible = "mcs_mem";
+          reg = <0x00 0x7a000000 0x00 0x4000000>;
+          no-map;
+        };
 
-		// 通信使用的共享内存区域(1M)
-		// 0x70000000 - 0x70100000
-		client_os_dma_memory_region: client_os-dma-memory@70000000 {
-			compatible = "shared-dma-pool";
-			reg = <0x00 0x70000000 0x00 0x100000>;
-			no-map;
-		};
-	};
+        // 通信使用的共享内存区域(1M)
+        // 0x70000000 - 0x70100000
+        client_os_dma_memory_region: client_os-dma-memory@70000000 {
+          compatible = "shared-dma-pool";
+          reg = <0x00 0x70000000 0x00 0x100000>;
+          no-map;
+        };
+      };
 
-	mcs-remoteproc {
-		compatible = "oe,mcs_remoteproc";
-		// 注意：共享内存区域必须要放在第一段
-		memory-region = <&client_os_dma_memory_region>,
-				<&client_os_reserved>;
-	};
+      mcs-remoteproc {
+        compatible = "oe,mcs_remoteproc";
+        // 注意：共享内存区域必须要放在第一段
+        memory-region = <&client_os_dma_memory_region>,
+            <&client_os_reserved>;
+      };
 
      # 制作最终使用的dtb文件
      $ dtc -I dts -O dtb -o qemu_mcs.dtb qemu.dts
@@ -225,8 +225,8 @@ mcs支持两种构建安装方式：
 
 4. **根据前文的构建安装指导，安装**：
 
-   - 构建出来的 **mcs_km.ko，rpmsg_main**
-   - rpmsg_pty_demo中提供的实时os： **zephyr_qemu.bin / zephyr_rpi.bin**
+   - 构建出来的 **mcs_km.ko，mica_main**
+   - rtos/arm64中提供的实时os： **qemu_zephyr_*.bin / rasp_zephyr_*.bin**
    - 安装依赖库 **libmetal, libopen_amp, libsysfs** 到运行环境上的 /usr/lib64 中
 
 
@@ -242,37 +242,27 @@ mcs支持两种构建安装方式：
    $ insmod mcs_km.ko
    ```
 
-   插入内核模块后，可以通过 `cat /proc/iomem`查看预留出来的 mcs_mem，如：
-   ```shell
-   qemu-aarch64 ~ # cat /proc/iomem
-   ...
-   70000000-7fffffff : reserved
-     70000000-7fffffff : mcs_mem
-   ...
-
-   ```
-
    若mcs_km.ko插入失败，可以通过dmesg看到对应的失败日志，可能的原因有：
    - 使用的交叉工具链与内核版本不匹配
    - 未预留内存资源
    - 使用的bios不支持psci
 
-6. **运行rpmsg_main程序，使用方式如下：**
+6. **运行mica_main程序，使用方式如下：**
 
    ```shell
-   $ ./rpmsg_main -c [cpu_id] -t [target_binfile] -a [target_binaddress]
+   $ ./mica_main -c [cpu_id] -t [target_executable_file] -a [target_executable_address] -d [path_to_executable_containing_debug_symbols]
    eg:
    # qemu
-   $ ./rpmsg_main -c 3 -t zephyr_qemu.bin -a 0x7a000000
+   $ ./mica_main -c 3 -t zephyr_qemu.bin -a 0x7a000000
    
    # Raspberry Pi
-   $ ./rpmsg_main -c 3 -t zephyr_rpi.bin -a 0x7a000000
+   $ ./mica_main -c 3 -t zephyr_rpi.bin -a 0x7a000000
    ```
 
-   若rpmsg_main成功运行，会有如下打印：
+   若mica_main成功运行，会有如下打印：
 
    ```shell
-   qemu-aarch64 ~ # ./rpmsg_main -c 3 -t zephyr.bin -a 0x7a000000
+   qemu-aarch64 ~ # ./mica_main -c 3 -t zephyr.bin -a 0x7a000000
    ...
    start client os
    ...
@@ -281,7 +271,7 @@ mcs支持两种构建安装方式：
    ...
    ```
 
-   此时按`ctrl-c`可以通知client os下线并退出rpmsg_main，下线后支持重复拉起。
+   此时按`ctrl-c`可以通知client os下线并退出mica_main，下线后支持重复拉起。
    也可以根据打印提示，通过`/dev/pts/1`与client os进行shell交互，例如：
 
    ```shell
@@ -297,3 +287,7 @@ mcs支持两种构建安装方式：
    ```
 
    注意，这里的`/dev/pts/1`并非是一个固定的路径，路径的最后的那个数字是一个可以变化的值。如果我们启动了两个实例，那么有可能之后的那个实例的pts路径为`/dev/pts/2`。
+
+## 调试支持 GDB stub 的 Client OS
+
+如果希望使用mica_main调试支持GDB Stub的Client OS，参见[调试支持 GDB stub 的 Client OS](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#gdb-stub-client-os)。
