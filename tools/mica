@@ -11,6 +11,14 @@ CPU_SYSTEM="/sys/devices/system/cpu"
 CLIENT_OS=""
 TARGET_CPU=""
 
+IGB_DRV_PATH="/sys/bus/pci/drivers/igb"
+I210_DRV_PATH="/sys/bus/pci/drivers/i210_eth"
+
+declare -i ETH_ID_UNBIND
+ETH_ID_UNBIND=-1
+
+ETHERNET_NAME=""
+
 # Note: Please set 'memmap=256M\$0x110000000'
 RESERVED_MEM_BASE=0x110000000
 RESERVED_MEM_SIZE=0x10000000
@@ -28,10 +36,11 @@ usage()
 	Usage: $0 { COMMAND | --help }
 
 	  Available commands:
-	    start { CLIENT } [ -d | --debug ]
+	    start { CLIENT } [ -d | --debug ] [ -x | --ethx <id>]
 	          CLIENT            # Specify the client OS to be loaded
 	          -d --debug        # Start the gdb and debug the client OS.
-
+	          -x --ethx <id>    # Use the <id> i210 ethernet adapter for rtos
+	                              default value(-1): the last ethernet adapter
 	    stop                    # Stop the client OS
 
 	  eg,
@@ -52,6 +61,68 @@ die() {
 	exit 1
 }
 
+eth_unbind_igb()
+{
+	# 获取igb驱动绑定的网卡个数
+	pushd "${IGB_DRV_PATH}"
+
+	declare -i eth_cnt
+	eth_cnt=0
+	for entry in `ls ./`; do
+		if [[ "$entry" == *:*:*.* ]]; then
+			eth_cnt=eth_cnt+1
+		fi
+	done
+
+	if [[ eth_cnt == 0 ]]; then
+		popd
+		die "failed to find the network adapter device. Uninstalled?"
+	fi
+
+	# 确定要解绑第几个网卡 -1 表示最后一个
+	declare -i eth_id_unbind
+	eth_id_unbind=(ETH_ID_UNBIND+eth_cnt)%eth_cnt
+	eth_cnt=0
+	for entry in `ls ./`; do
+		if [[ "$entry" == *:*:*.* ]]; then
+			if [[ $eth_cnt == $eth_id_unbind ]]; then
+				echo $entry > unbind
+				ETHERNET_NAME=$entry  # 记录网卡的bdf号，用于i210_eth进行绑定
+			fi
+			eth_cnt=eth_cnt+1
+		fi
+	done
+
+	popd
+}
+
+eth_unbind_i210()
+{
+	pushd "${I210_DRV_PATH}"
+	for entry in `ls ./`; do
+		if [[ "$entry" == *:*:*.* ]]; then
+			echo $entry > unbind
+			ETHERNET_NAME=$entry  # 记录网卡的bdf号，用于igb进行恢复绑定
+			break;
+		fi
+	done
+	popd
+}
+
+eth_bind_igb()
+{
+	pushd "${IGB_DRV_PATH}"
+	echo ${ETHERNET_NAME} > bind
+	popd
+}
+
+eth_bind_i210()
+{
+	pushd "${I210_DRV_PATH}"
+	echo ${ETHERNET_NAME} > bind
+	popd
+}
+
 do_start()
 {
 	if [ ! -f "$(modinfo -F filename mcs_km 2>/dev/null)" ]; then
@@ -61,6 +132,20 @@ do_start()
 	if [ $? != 0 ]; then
 		die "Request mem failed, did you reserve the memory with 'memmap='? Aborting."
 	fi
+
+	if [ ! -f "$(modinfo -F filename eth_i210 2>/dev/null)" ]; then
+		die "Module eth_i210.ko not found in directory /lib/modules. Aborting."
+	fi
+	modprobe eth_i210 load_addr=${TEXT_ADDR}
+	if [ $? != 0 ]; then
+		die "eth i210 init failed, did you reserve ethnet device (intel i210) Aborting."
+	fi
+
+	## 网卡解绑定 原生驱动igb
+	eth_unbind_igb
+
+	## 网卡绑定 自研驱动eth_i210
+	eth_bind_i210
 
 	# step1: stop the target cpu
 	echo 0 > "${CPU_SYSTEM}/cpu${TARGET_CPU}/online"
@@ -99,6 +184,9 @@ do_stop()
 	else
 		echo "UniProton stopped."
 	fi
+
+	eth_unbind_i210
+	eth_bind_igb
 }
 
 get_free_cpu()
@@ -117,7 +205,7 @@ get_free_cpu()
 
 check_opt()
 {
-	ARGS=`getopt -o hd --long help,debug -n "$0" -- "$@"`
+	ARGS=`getopt -o hdx: --long help,debug,ethx: -n "$0" -- "$@"`
 	if [ $? != 0 ]; then
 		usage
 	fi
@@ -133,6 +221,10 @@ check_opt()
 			-d|--debug)
 				DEBUG=" -d "
 				shift
+				;;
+			-x|--ethx)
+				ETH_ID_UNBIND=`expr $2+0`
+				shift 2
 				;;
 			--)
 				shift
