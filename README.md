@@ -119,6 +119,8 @@ linux /bzImage  root=*** rw rootwait quiet maxcpus=3 memmap=256M\$0x110000000 co
 
   - 启动 UniProton：
      运行 `mica start x86_64.bin`
+  - 为Uniproton分配第id个I210网卡，并启动Uniproton（默认最后一张id为-1）：
+     运行 `mica start x86_64.bin [-x id]`
   - 停止 UniProton：
      运行 `mica stop`
 

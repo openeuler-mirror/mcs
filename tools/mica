@@ -65,6 +65,9 @@ die() {
 
 eth_unbind_igb()
 {
+	if [ ! -d ${IGB_DRV_PATH} ]; then
+		return
+	fi
 	# 获取igb驱动绑定的网卡个数
 	pushd "${IGB_DRV_PATH}"
 
@@ -90,6 +93,7 @@ eth_unbind_igb()
 			if [[ $eth_cnt == $eth_id_unbind ]]; then
 				echo $entry > unbind
 				ETHERNET_NAME=$entry  # 记录网卡的bdf号，用于i210_eth进行绑定
+				echo "igb unbind $entry"
 			fi
 			eth_cnt=eth_cnt+1
 		fi
@@ -100,28 +104,48 @@ eth_unbind_igb()
 
 eth_unbind_i210()
 {
+	if [ ! -d ${I210_DRV_PATH} ]; then
+		return
+	fi
+
 	pushd "${I210_DRV_PATH}"
 	for entry in `ls ./`; do
 		if [[ "$entry" == *:*:*.* ]]; then
 			echo $entry > unbind
 			ETHERNET_NAME=$entry  # 记录网卡的bdf号，用于igb进行恢复绑定
+			echo "eth_i210 unbind $entry"
 			break;
 		fi
 	done
 	popd
+	rmmod eth_i210
 }
 
 eth_bind_igb()
 {
+	if [ ! -d ${IGB_DRV_PATH} ]; then
+		return
+	fi
+
 	pushd "${IGB_DRV_PATH}"
-	echo ${ETHERNET_NAME} > bind
+	if [[ ${ETHERNET_NAME} ]]; then
+		echo ${ETHERNET_NAME} > bind
+		echo "igb bind ${ETHERNET_NAME}"
+	fi
 	popd
 }
 
 eth_bind_i210()
 {
+	if [ ! -d ${I210_DRV_PATH} ]; then
+		return
+	fi
+
 	pushd "${I210_DRV_PATH}"
-	echo ${ETHERNET_NAME} > bind
+	if [[ ${ETHERNET_NAME} ]]; then
+		echo ${ETHERNET_NAME} > bind
+		echo "i210 bind ${ETHERNET_NAME}"
+	fi
 	popd
 }
 
@@ -138,6 +162,10 @@ check_status()
 
 do_start()
 {
+	## 如果之前有网卡的配置，这里先恢复
+	eth_unbind_i210
+	eth_bind_igb
+
 	if [ ! -f "$(modinfo -F filename mcs_km 2>/dev/null)" ]; then
 		die "Module mcs_km.ko not found in directory /lib/modules. Aborting."
 	fi
@@ -197,6 +225,7 @@ do_stop()
 		echo "UniProton stopped."
 	fi
 
+	## 如果之前有网卡的配置，这里先恢复
 	eth_unbind_i210
 	eth_bind_igb
 }
