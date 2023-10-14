@@ -14,7 +14,7 @@ struct proxy_server_resources *g_proxy_server_resources;
 /* resources of ring buffer module */
 struct debug_ring_buffer_module_data *g_ring_buffer_module_data;
 
-int debug_start(struct client_os_inst *client_os, char *elf_name)
+int debug_start(struct client_os_inst *client_os, char *exe_name)
 {
     int ret;
     ret = alloc_message_queue();
@@ -56,7 +56,7 @@ int debug_start(struct client_os_inst *client_os, char *elf_name)
         memset(exec_param, 0, sizeof(exec_param));
         int port = GDB_PROXY_PORT;
         sprintf(exec_param, "target remote :%d", port);
-        char *argv[] = {"gdb", elf_name, "-ex", exec_param, NULL};
+        char *argv[] = {"gdb", exe_name, "-ex", exec_param, NULL};
         execvp(argv[0], argv);
         perror("execvp");
         goto err_create_process;

@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include "openamp_module.h"
+#include "mica_elf_loader.h"
 
 static int reserved_mem_init(struct client_os_inst *client)
 {
@@ -16,8 +17,6 @@ static int reserved_mem_init(struct client_os_inst *client)
     void *sh_mem_addr;
     int err;
 
-    /* to-do: check if the starting address of client os is valid */
-    /* to-do: client os must be in the range of shared mem */
     /* shared memory for virtio */
     sh_mem_addr = mmap(NULL, client->shared_mem_size,
             PROT_READ | PROT_WRITE, MAP_SHARED, client->mcs_fd,
@@ -40,30 +39,40 @@ static int reserved_mem_init(struct client_os_inst *client)
     fstat(bin_fd, &buf);
     bin_size = PAGE_ALIGN(buf.st_size);
 
-    /* the address in the shared memory to put bin file */
-    sh_bin_addr = mmap(NULL, bin_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                    client->mcs_fd, client->load_address);
-    if (sh_bin_addr == MAP_FAILED) {
-        printf("mmap reserved mem failed: sh_bin_addr:%p\n",
-                sh_bin_addr);
-        err = errno;
-        goto err_close_bin_fd;
-    }
-    
     /* the address of bin file in Linux */
     file_addr = mmap(NULL, bin_size, PROT_READ, MAP_PRIVATE, bin_fd, 0);
     if (file_addr == MAP_FAILED) {
         printf("mmap failed: file_addr: %p\n", file_addr);
-        err = errno;
-        goto err_ummap_sh_bin_addr;
+        err = -errno;
+        goto err_close_bin_fd;
     }
-    close(bin_fd); 
-    /* load clientos */
-    memcpy(sh_bin_addr, file_addr, bin_size);
 
+    void *e_entry = elf_image_load(file_addr, client->mcs_fd, (char *)client->load_address);
+    if (e_entry == NULL) {
+        if (errno) {
+            printf("load elf failed\n");
+            goto err_ummap_bin_file;
+        }
+        printf("input executable is not in ELF format\n");
+        /* the address in the shared memory to put bin file */
+        sh_bin_addr = mmap(NULL, bin_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        client->mcs_fd, client->load_address);
+        if (sh_bin_addr == MAP_FAILED) {
+            printf("mmap reserved mem failed: sh_bin_addr:%p\n",
+                    sh_bin_addr);
+            err = -errno;
+            goto err_ummap_bin_file;
+        }
+
+        /* load clientos */
+        memcpy(sh_bin_addr, file_addr, bin_size);
+        munmap(sh_bin_addr, bin_size);
+    } else
+        client->load_address = (intptr_t)e_entry;
+    
     /* unmap bin file, both from the Linux and shared memory */
+    close(bin_fd);
     munmap(file_addr, bin_size);
-    munmap(sh_bin_addr, bin_size);
 
     client->virt_shared_mem = sh_mem_addr;
     client->vdev_status_reg = sh_mem_addr;
@@ -72,8 +81,8 @@ static int reserved_mem_init(struct client_os_inst *client)
 
     return 0;
 
-err_ummap_sh_bin_addr:
-    munmap(sh_bin_addr, bin_size);
+err_ummap_bin_file:
+    munmap(file_addr, bin_size);
 err_close_bin_fd:
     close(bin_fd);
 err_ummap_share_mem:

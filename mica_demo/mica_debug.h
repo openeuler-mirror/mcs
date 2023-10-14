@@ -36,7 +36,7 @@
 static int alloc_message_queue();
 static void free_message_queue();
 
-int debug_start(struct client_os_inst *client_os, char *elf_name);
+int debug_start(struct client_os_inst *client_os, char *exe_name);
 static void *server_loop_thread(void *arg);
 
 #endif
