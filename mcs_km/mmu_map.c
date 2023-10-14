@@ -106,7 +106,7 @@ static mmu_map_info clientos_map_info[TABLE_MAX] = {
 		.va = 0xf02600000,
 		.pa = 0x0,
 		.size = 0x400000,
-		.attr = MEM_ATTR_CACHE_RX,
+		.attr = MEM_ATTR_CACHE_RWX,
 		.page_size = PAGE_SIZE_2M,
 	}, {
 		// data
