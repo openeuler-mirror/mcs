@@ -58,6 +58,8 @@ usage()
 
 die() {
 	echo >&2 "$@"
+	echo 1 > "${CPU_SYSTEM}/cpu${TARGET_CPU}/online"
+	echo 0 > "${CPU_SYSTEM}/cpu${TARGET_CPU}/online"
 	exit 1
 }
 
@@ -123,6 +125,17 @@ eth_bind_i210()
 	popd
 }
 
+check_status()
+{
+	sleep 1
+	local pid=$(pidof mica_main)
+	if kill -0 ${pid}; then
+		echo "UniProton start success!"
+	else
+		die "UniProton start failed! Aborting."
+	fi
+}
+
 do_start()
 {
 	if [ ! -f "$(modinfo -F filename mcs_km 2>/dev/null)" ]; then
@@ -151,17 +164,16 @@ do_start()
 	echo 0 > "${CPU_SYSTEM}/cpu${TARGET_CPU}/online"
 
 	# step2: run mica to start client OS
-	mica_main -b ${FIRMWARE_PATH}/ap_boot \
+	if [ -n "${DEBUG}" ]; then
+		mica_main -b ${FIRMWARE_PATH}/ap_boot \
 	  -c ${TARGET_CPU} \
 	  -t ${CLIENT_OS} -a ${TEXT_ADDR} \
-	  ${DEBUG} &
-
-	local pid=$!
-	sleep 5
-	if kill -0 ${pid}; then
-		echo "UniProton start success!"
+	  ${DEBUG}
 	else
-		die "UniProton start failed! Aborting."
+		mica_main -b ${FIRMWARE_PATH}/ap_boot \
+	  -c ${TARGET_CPU} \
+	  -t ${CLIENT_OS} -a ${TEXT_ADDR} &
+	  check_status
 	fi
 }
 
