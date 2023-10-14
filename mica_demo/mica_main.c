@@ -23,9 +23,9 @@ bool g_is_debugging = false;
 
 static void cleanup(int sig)
 {
-    if (g_is_debugging) {
+    if (g_is_debugging)
         return;
-    }
+
     rpmsg_app_stop();
     openamp_deinit(&client_os);
     exit(EXIT_SUCCESS);
@@ -36,15 +36,14 @@ int main(int argc, char **argv)
     int ret;
     int opt;
     char *cpu_id = NULL;
-    char *target_binfile = NULL;
-    char *target_binaddr = NULL;
+    char *target_exe_file = NULL;
+    char *target_exe_addr = NULL;
     char *target_entry = NULL;
-    char *target_elf = NULL;
 
     /* ctrl+c signal, do cleanup before program exit */
     signal(SIGINT, cleanup);
 
-    while ((opt = getopt(argc, argv, "c:b:t:a:e::d:")) != -1) {
+    while ((opt = getopt(argc, argv, "c:b:t:a:e::d")) != -1) {
         switch (opt) {
         case 'c':
             cpu_id = optarg;
@@ -57,16 +56,15 @@ int main(int argc, char **argv)
             strcpy(client_os.boot_bin_path, optarg);
             break;
         case 't':
-            target_binfile = optarg;
+            target_exe_file = optarg;
             break;
         case 'a':
-            target_binaddr = optarg;
+            target_exe_addr = optarg;
             break;
         case 'e':
             target_entry = optarg;
             break;
         case 'd':
-            target_elf = optarg;
             g_is_debugging = true;
             break;
         case '?':
@@ -82,27 +80,22 @@ int main(int argc, char **argv)
         printf("Usage: -c <id of the CPU running client OS>\n");
         is_valid = false;
     }
-    if (target_binfile == NULL) {
+    if (target_exe_file == NULL) {
         printf("Usage: -t <path to the target executable>\n");
         is_valid = false;
     }
-    if (target_binaddr == NULL) {
+    if (target_exe_addr == NULL) {
         printf("Usage: -a <physical address for the executable to be put on>\n");
         is_valid = false;
     }
-    if (g_is_debugging && target_elf == NULL) {
-        printf("Usage: -d <path to the ELF file needed to be debugged>\n");
-        is_valid = false;
-    }
-    if (is_valid == false) {
+    if (is_valid == false)
         return -1;
-    }
 
     client_os.cpu_id = strtol(cpu_id, NULL, STR_TO_DEC);
-    client_os.load_address = strtol(target_binaddr, NULL, STR_TO_HEX);
+    client_os.load_address = strtol(target_exe_addr, NULL, STR_TO_HEX);
     client_os.entry = target_entry ? strtol(target_entry, NULL, STR_TO_HEX) :
                         client_os.load_address;
-    client_os.path = target_binfile;
+    client_os.path = target_exe_file;
 
     /* clientos_map_info[LOG_TABLE].size + [SHAREMEM_TABLE].size */
     if (client_os.entry < UNIPROTON_SHARED_MEM_SHIFT) {
@@ -127,19 +120,17 @@ int main(int argc, char **argv)
     }
 
     if (g_is_debugging) {
-        ret = debug_start(&client_os, target_elf);
-        if (ret < 0) {
+        ret = debug_start(&client_os, target_exe_file);
+        if (ret < 0)
             printf("debug start failed\n");
-        }
-        // exit rpmsg app
-        goto debug_exit;
+
+        g_is_debugging = false;
     }
     printf("wait for rpmsg app exit\n");
     // blocked here in case automatically exit
-    while (1) {
+    while (1)
         sleep(1);
-    }
-debug_exit:
+
     rpmsg_app_stop();
 err_openamp_deinit:
     openamp_deinit(&client_os);
