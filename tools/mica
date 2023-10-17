@@ -9,6 +9,33 @@ RPMSG_TTY="/dev/ttyRPMSG0"
 PRINTK="/proc/sys/kernel/printk"
 LOG_LEVEL="$(cat ${PRINTK})"
 
+usage()
+{
+	cat <<-END >&2
+	Usage: $0 { COMMAND | --help }
+
+	  Available commands:
+	    start { CLIENT } [ -m | --mode MODE ]
+	          CLIENT            # Specify the client OS to be loaded
+	          -m --mode         # Chose the deploy mode:
+	                                phys: on bare-metal, default
+	                                virt: on hypervisor
+
+	    stop                    # Stop the client OS
+
+	  eg,
+	    # deploy zephyr.elf on bare-metal
+	        $0 start zephyr.elf --mode phys
+
+	    # deploy zephyr.elf on hypervisor
+	        $0 start zephyr.elf --mode virt
+
+	    # stop the client OS
+	        $0 stop
+	END
+	exit
+}
+
 die() {
 	echo >&2 "$@"
 	echo ${LOG_LEVEL} > "${PRINTK}"
@@ -34,36 +61,31 @@ do_start()
 			die "Module mcs_remoteproc.ko not found. Aborting."
 		fi
 		modprobe mcs_remoteproc 2>/dev/null
-		echo 0 > /sys/devices/system/cpu/cpu3/online
 		echo ${CLIENT_OS} > /sys/class/remoteproc/remoteproc0/firmware
 		echo start > /sys/class/remoteproc/remoteproc0/state
 	fi
-	sleep 5
+
+	if [ $? != 0 ]; then
+		die "${CLIENT_OS} start failed! Aborting."
+	else
+		echo "${CLIENT_OS} started successfully!"
+	fi
+
+	echo "Please wait for the communication channel to be set up."
+	sleep 2
 	if [ -e "${RPMSG_TTY}" ]; then
-		echo "Please open ${RPMSG_TTY} to talk with client OS"
+		echo "Please open ${RPMSG_TTY} to talk with client OS."
 	fi
 }
 
-usage()
+do_stop()
 {
-	cat <<-END >&2
-	Usage: $0 { COMMAND | --help }
-
-	  Available commands:
-	    start { CLIENT } [ -m | --mode MODE ]
-	          CLIENT            # Specify the client OS to be loaded
-	          -m --mode         # Chose the deploy mode:
-	                                phys: on bare-metal, default
-	                                virt: on hypervisor
-
-	  eg,
-	    # deploy zephyr.elf on bare-metal
-	        $0 start zephyr.elf --mode phys
-
-	    # deploy zephyr.elf on hypervisor
-	        $0 start zephyr.elf --mode virt
-	END
-	exit
+	echo stop > /sys/class/remoteproc/remoteproc0/state
+	if [ $? != 0 ]; then
+		die "Stop failed! Aborting."
+	else
+		echo "Client OS stopped."
+	fi
 }
 
 check_opt()
@@ -117,8 +139,12 @@ case "$1" in
 	start)
 		shift
 		check_opt $@
-		echo "Starting ${CLIENT_OS} on CPU3"
+		echo "Starting ${CLIENT_OS}"
 		do_start
+		;;
+	stop)
+		shift
+		do_stop
 		;;
 	*)
 		usage
