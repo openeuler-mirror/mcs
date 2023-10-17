@@ -11,10 +11,11 @@
 #include "remoteproc_internal.h"
 
 #define CPU_ON_FUNCID	   	0xC4000003
-#define IPI_MCS				8
+#define IPI_MCS			8
 #define RPROC_MEM_MAX		4
 
-/* use resource tables's  reserved[0] to carry some extra information
+/**
+ * use resource tables's reserved[0] to carry some extra information
  * the following IDs come from PSCI definition
  */
 #define CPU_OFF_FUNCID		0x84000002
@@ -40,12 +41,14 @@ struct mcs_rproc_mem {
 /**
  * struct mcs_rproc_data - mcs rproc private data
  * @smccc_conduit: smc or hvc psci conduit
+ * @cpu: the cpu this rproc is affined to
  * @status:	virtual proc status based on rsc table reserved val
  * @mem: reserved memory regions
  * @rproc: pointer to remoteproc instance
  */
 struct mcs_rproc_pdata {
 	enum arm_smccc_conduit smccc_conduit;
+	u32 cpu;
 	u32 __iomem *status;
 	struct mcs_rproc_mem mem[RPROC_MEM_MAX];
 	struct rproc *rproc;
@@ -151,7 +154,7 @@ static int mcs_rproc_start(struct rproc *rproc)
 	/* use resource table's reserved[0] as extra status bit */
 	priv->status = rproc->table_ptr->reserved;
 
-	ret = rproc_cpu_boot(3, rproc->bootaddr, priv->smccc_conduit);
+	ret = rproc_cpu_boot(priv->cpu, rproc->bootaddr, priv->smccc_conduit);
 	if (ret) {
 		remove_mcs_ipi();
 		flush_work(&workqueue);
@@ -164,14 +167,15 @@ static int mcs_rproc_start(struct rproc *rproc)
 /* kick the remote processor */
 static void mcs_rproc_kick(struct rproc *rproc, int vqid)
 {
-	dev_dbg(rproc->dev.parent, "send ipi to cpu 3\n");
-	ipi_send_mask(IPI_MCS, cpumask_of(3));
+	struct mcs_rproc_pdata *priv = rproc->priv;
+
+	dev_dbg(rproc->dev.parent, "send ipi to cpu %d\n", priv->cpu);
+	ipi_send_mask(IPI_MCS, cpumask_of(priv->cpu));
 }
 
 /* power off the remote processor */
 static int mcs_rproc_stop(struct rproc *rproc)
 {
-	static int flg = 0;
 	struct mcs_rproc_pdata *priv = rproc->priv;
 
 	priv->status[0] = CPU_OFF_FUNCID;
@@ -212,9 +216,26 @@ static void *mcs_rproc_da_to_va(struct rproc *rproc, u64 da, size_t len)
 static struct rproc_ops mcs_rproc_ops = {
 	.start		= mcs_rproc_start,
 	.stop		= mcs_rproc_stop,
-	.da_to_va   = mcs_rproc_da_to_va,
+	.da_to_va	= mcs_rproc_da_to_va,
 	.kick		= mcs_rproc_kick,
 };
+
+/**
+ * get_available_cpu - get the last offline CPU number
+ *
+ * Returns 0 if the last cpu is offline, else returns -ENODEV.
+ */
+static int get_available_cpu(struct mcs_rproc_pdata *priv)
+{
+	u32 cpu = num_possible_cpus() - 1;
+
+	if (cpu_online(cpu))
+		return -ENODEV;
+	else
+		priv->cpu = cpu;
+
+	return 0;
+}
 
 static int get_psci_method(struct mcs_rproc_pdata *priv)
 {
@@ -245,7 +266,7 @@ static int get_psci_method(struct mcs_rproc_pdata *priv)
 	else if (!strcmp("smc", method))
 		priv->smccc_conduit = SMCCC_CONDUIT_SMC;
 	else
-	 	return -EOPNOTSUPP;
+		return -EOPNOTSUPP;
 
 	return 0;
 }
@@ -319,6 +340,12 @@ static int mcs_remoteproc_probe(struct platform_device *pdev)
 	}
 	priv = rproc->priv;
 	priv->rproc = rproc;
+
+	ret = get_available_cpu(priv);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to get available cpu, did you reserve the cpu with 'maxcpus='?\n");
+		return ret;
+	}
 
 	ret = get_psci_method(priv);
 	if (ret) {
