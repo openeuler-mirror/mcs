@@ -96,6 +96,43 @@ static unsigned long invoke_psci_fn(unsigned long function_id,
 	return res.a0;
 }
 
+/**
+ * Enumerate the possible CPU set from the device tree
+ * and return the MPIDR values related to the @cpu.
+ * If the @cpu is not found, return -ENODEV.
+ */
+static u64 get_cpu_mpidr(u32 cpu) {
+	struct device_node *dn;
+	u32 cpu_count = 0;
+	u64 hwid;
+	const __be32 *cell;
+
+	for_each_of_cpu_node(dn) {
+		if (cpu_count != cpu) {
+			cpu_count++;
+			continue;
+		}
+
+		cell = of_get_property(dn, "reg", NULL);
+		if (!cell) {
+			pr_err("%pOF: missing reg property\n", dn);
+			return -ENODEV;
+		}
+
+		hwid = of_read_number(cell, of_n_addr_cells(dn));
+		/*
+		 * Non affinity bits must be set to 0 in the DT
+		 */
+		if (hwid & ~MPIDR_HWID_BITMASK) {
+			pr_err("%pOF: invalid reg property\n", dn);
+			return -ENODEV;
+		}
+		return hwid;
+	}
+
+	return -ENODEV;
+}
+
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
 	pr_info("received ipi from client os\n");
@@ -165,6 +202,7 @@ static unsigned int mcs_poll(struct file *file, poll_table *wait)
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	int ret;
+	u64 mpidr;
 	struct cpu_info info;
 
 	if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
@@ -182,7 +220,13 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 		case IOC_CPUON:
 			pr_info("start booting clientos on cpu(%d) addr(0x%llu)\n", info.cpu, info.boot_addr);
-			ret = invoke_psci_fn(CPU_ON_FUNCID, info.cpu, info.boot_addr, 0);
+			mpidr = get_cpu_mpidr(info.cpu);
+			if (mpidr < 0) {
+				pr_err("boot clientos failed, invalid MPIDR\n");
+				return -EINVAL;
+			}
+
+			ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
 			if (ret) {
 				pr_err("boot clientos failed(%d)\n", ret);
 				return -EINVAL;
@@ -190,7 +234,13 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			break;
 
 		case IOC_AFFINITY_INFO:
-			ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, info.cpu, 0, 0);
+			mpidr = get_cpu_mpidr(info.cpu);
+			if (mpidr < 0) {
+				pr_err("cpu state check failed! Invalid MPIDR\n");
+				return -EINVAL;
+			}
+
+			ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, mpidr, 0, 0);
 			if (ret != 1) {
 				pr_err("cpu state check failed! cpu(%d) is not in the OFF state, current state: %d\n",
 				       info.cpu, ret);

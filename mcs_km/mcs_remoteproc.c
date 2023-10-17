@@ -42,13 +42,15 @@ struct mcs_rproc_mem {
  * struct mcs_rproc_data - mcs rproc private data
  * @smccc_conduit: smc or hvc psci conduit
  * @cpu: the cpu this rproc is affined to
- * @status:	virtual proc status based on rsc table reserved val
+ * @mpidr: mpidr of the cpu
+ * @status: virtual proc status based on rsc table reserved val
  * @mem: reserved memory regions
  * @rproc: pointer to remoteproc instance
  */
 struct mcs_rproc_pdata {
 	enum arm_smccc_conduit smccc_conduit;
 	u32 cpu;
+	u64 mpidr;
 	u32 __iomem *status;
 	struct mcs_rproc_mem mem[RPROC_MEM_MAX];
 	struct rproc *rproc;
@@ -116,19 +118,17 @@ static int init_mcs_ipi(void)
 /**
  * Make hvc/smc call to boot the processor
  */
-static int rproc_cpu_boot(unsigned int cpu, unsigned long boot_addr,
+static int rproc_cpu_boot(u64 cpu_mpidr, unsigned long boot_addr,
 			  enum arm_smccc_conduit conduit)
 {
 	struct arm_smccc_res res;
 
 	switch (conduit) {
 	case SMCCC_CONDUIT_HVC:
-		dev_dbg(rproc->dev.parent, "cpu boot at 0x%lx, taget %d\n", boot_addr, cpu);
-		arm_smccc_hvc(CPU_ON_FUNCID, cpu, boot_addr, 0, 0, 0, 0, 0, &res);
+		arm_smccc_hvc(CPU_ON_FUNCID, cpu_mpidr, boot_addr, 0, 0, 0, 0, 0, &res);
 		break;
 	case SMCCC_CONDUIT_SMC:
-		dev_dbg(rproc->dev.parent, "cpu boot at 0x%lx, taget %d\n", boot_addr, cpu);
-		arm_smccc_smc(CPU_ON_FUNCID, cpu, boot_addr, 0, 0, 0, 0, 0, &res);
+		arm_smccc_smc(CPU_ON_FUNCID, cpu_mpidr, boot_addr, 0, 0, 0, 0, 0, &res);
 		break;
 	default:
 		return -EPERM;
@@ -154,7 +154,9 @@ static int mcs_rproc_start(struct rproc *rproc)
 	/* use resource table's reserved[0] as extra status bit */
 	priv->status = rproc->table_ptr->reserved;
 
-	ret = rproc_cpu_boot(priv->cpu, rproc->bootaddr, priv->smccc_conduit);
+	dev_dbg(rproc->dev.parent, "CPU%u: Booting remote processor on physical CPU 0x%010lx, addr 0x%lx\n",
+		priv->cpu, (unsigned long)priv->mpidr, (unsigned long)rproc->bootaddr);
+	ret = rproc_cpu_boot(priv->mpidr, rproc->bootaddr, priv->smccc_conduit);
 	if (ret) {
 		remove_mcs_ipi();
 		flush_work(&workqueue);
@@ -221,18 +223,61 @@ static struct rproc_ops mcs_rproc_ops = {
 };
 
 /**
- * get_available_cpu - get the last offline CPU number
+ * Enumerate the possible CPU set from the device tree
+ * and return the MPIDR values related to the @cpu.
+ * If the @cpu is not found, return -ENODEV.
+ */
+static u64 get_cpu_mpidr(u32 cpu) {
+	struct device_node *dn;
+	u32 cpu_count = 0;
+	u64 hwid;
+	const __be32 *cell;
+
+	for_each_of_cpu_node(dn) {
+		if (cpu_count != cpu) {
+			cpu_count++;
+			continue;
+		}
+
+		cell = of_get_property(dn, "reg", NULL);
+		if (!cell) {
+			pr_err("%pOF: missing reg property\n", dn);
+			return -ENODEV;
+		}
+
+		hwid = of_read_number(cell, of_n_addr_cells(dn));
+		/*
+		 * Non affinity bits must be set to 0 in the DT
+		 */
+		if (hwid & ~MPIDR_HWID_BITMASK) {
+			pr_err("%pOF: invalid reg property\n", dn);
+			return -ENODEV;
+		}
+		return hwid;
+	}
+
+	return -ENODEV;
+}
+
+/**
+ * get_available_cpu - get the last offline CPU id and MPIDR.
  *
- * Returns 0 if the last cpu is offline, else returns -ENODEV.
+ * Returns 0 if the last cpu is offline and the MPIDR is valid, else returns -ENODEV.
  */
 static int get_available_cpu(struct mcs_rproc_pdata *priv)
 {
 	u32 cpu = num_possible_cpus() - 1;
 
-	if (cpu_online(cpu))
+	if (cpu_online(cpu)) {
 		return -ENODEV;
-	else
+	} else {
 		priv->cpu = cpu;
+		priv->mpidr = get_cpu_mpidr(cpu);
+		if (priv->mpidr < 0) {
+			dev_err(&rproc->dev, "Failed to get available CPU: invalid MPIDR of CPU%u\n", cpu);
+			return -ENODEV;
+		}
+	}
 
 	return 0;
 }
