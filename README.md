@@ -12,7 +12,7 @@ mica_demo: 提供OpenAMP用户态程序Linux端样例，支持在Linux上通过p
 
 library: 提供OpenAMP样例必需的模块remoteproc、virtio、rpmsg、openamp。
 
-rtos: 提供样例镜像文件，在每个demo中，qemu_zephyr_*.bin运行在qemu上，rasp_zephyr_*.bin运行在树莓派上，该文件需要被加载至设定的0x7a000000起始地址。启动后会运行OpenAMP Client端的样例程序，并与Linux端进行交互。
+rtos: 提供样例镜像文件，在每个demo中，qemu_zephyr_\*.bin运行在qemu上，rasp_zephyr_\*.bin运行在树莓派上，该文件需要被加载至设定的0x7a000000起始地址。启动后会运行OpenAMP Client端的样例程序，并与Linux端进行交互。
 
 ## 原理简介
 
@@ -37,32 +37,11 @@ mcs支持两种构建安装方式：
 
 - **集成构建**
 
-  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建依赖 oebuild 工具，具体请参考 openEuler Embedded 在线文档章节：[混合关键性系统构建指南](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id1)。在创建镜像的编译配置文件时，需要加上 `-f openeuler-mcs` ，构建步骤如下：
-  ```shell
-  # 初始化oebuild工作目录，通过oebuild下载依赖软件包
-  $ oebuild init oebuild_workdir
-  $ cd oebuild_workdir
-  $ oebuild update
-
-  # 创建镜像的构建目录
-  #  -p 指定构建镜像
-  #  -f 指定镜像所带特性
-  #  -d 指定工作目录
-  # 如：-p raspberrypi4-64 构建树莓派镜像，-p aarch64-std 构建QEMU镜像
-  #     -f openeuler-mcs 会为镜像打包 mcs 相关的软件包
-  $ oebuild generate -p raspberrypi4-64 -f openeuler-mcs -d build_rpi_mcs
-  $ cd build/build_rpi_mcs
-
-  $ oebuild bitbake
-  # 敲以上命令后，进入构建容器
-  # 在构建容器中构建镜像和sdk
-  $ bitbake openeuler-image                   # 构建镜像
-  $ bitbake openeuler-image -c populate_sdk   # 构建SDK
-  ```
+  目前在 openEuler Embedded 版本中已经实现了mcs的**集成构建**，支持一键式构建出包含mcs的**qemu、树莓派镜像**。集成构建依赖 oebuild 工具，具体请参考 openEuler Embedded 在线文档章节：[混合关键性系统（MCS）镜像构建指导](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_build.html)。
 
 - **单独构建**
 
-  按照集成构建方法构建出带mcs功能的SDK后，可以使用SDK快速开发mcs，步骤如下：
+  按照集成构建方法构建出**带mcs特性的SDK**后，可以使用SDK快速开发mcs，步骤如下：
 
   1. 根据[openEuler Embedded使用手册](https://openeuler.gitee.io/yocto-meta-openeuler/master/getting_started/index.html#sdk)安装SDK并设置SDK环境变量。
 
@@ -83,6 +62,14 @@ mcs支持两种构建安装方式：
      make
      ```
 
+     如果需要编译支持 Jailhouse 的 mcs_ivshmem.ko, 请按照 [Jailhouse 构建指导](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/jailhouse.html#mcs-sdk) 构建 Jailhouse，并将 `JAILHOUSE_SRC` 指定为 Jailhouse 的构建目录：
+     ```shell
+     export JAILHOUSE_SRC=/Jailhouse的构建目录
+     make
+     ```
+
+     将编译出来的 ko 放到运行环境的 `/lib/modules/5.10.0/extra` 目录中，并执行 depmod 生成模块映射文件。
+
   4. 交叉编译用户态样例 mica_main，编译方式如下:
      ```shell
      cmake -S . -B build -DDEMO_TARGET=mica_demo -DCONFIG_RING_BUFFER=y -DMICA_DEBUG_LOG=y
@@ -97,197 +84,11 @@ mcs支持两种构建安装方式：
      find . -name libmetal.so*
      find . -name libopen_amp.so*
      find . -name libsysfs.so*
-
-     # 将以上so安装到运行环境中的 /usr/lib64 目录中
      ```
 
-## 启动pty与client os交互
+     将以上so安装到运行环境中的 `/usr/lib64` 目录中。
 
-目前mcs支持在**qemu-aarch64**和**树莓派**上部署运行，部署mcs需要预留出必要的内存、CPU资源，并且还需要bios提供psci支持。
+## 使用说明
 
-若使用树莓派的集成构建镜像，无需进行单独配置，具体的使用方法请参考 openEuler Embedded 在线文档章节：[基于openAMP的MICA框架](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#id2)。
-其他镜像则需要进行下述额外的配置操作：
+目前mcs支持在**qemu-arm64，树莓派4B，Hi3093，ok3568，x86工控机** 等多个平台上运行，具体的使用方法，请参考[混合关键性系统框架](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/index.html)。
 
-1. **通过配置dts预留共享内存**
-
-   - **QEMU**
-
-     QEMU需要制作一份dtb，通过 `-dtb file` 使用，制作步骤如下：
-
-     ```shell
-     # 安装 qemu-system-aarch64、dtc
-     $ apt install qemu-system-arm device-tree-compiler  # ubuntu
-
-     # 获取 QEMU devicetree
-     $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -nographic -smp 4 -M dumpdtb=qemu.dtb
-     $ dtc -I dtb -O dts -o qemu.dts qemu.dtb
-
-     # 修改qemu.dts，添加 reserved-memory、mcs-remoteproc 节点，预留内存
-     reserved-memory {
-        #address-cells = <0x02>;
-        #size-cells = <0x02>;
-        ranges;
-
-        // 划分给client os的内存区域
-        // 对应于client os的启动地址0x7a000000
-        // 为client os分配了64M内存(0x4000000)
-        client_os_reserved: client_os_reserved@7a000000 {
-          compatible = "mcs_mem";
-          reg = <0x00 0x7a000000 0x00 0x4000000>;
-          no-map;
-        };
-
-        // 通信使用的共享内存区域(1M)
-        // 0x70000000 - 0x70100000
-        client_os_dma_memory_region: client_os-dma-memory@70000000 {
-          compatible = "shared-dma-pool";
-          reg = <0x00 0x70000000 0x00 0x100000>;
-          no-map;
-        };
-      };
-
-      mcs-remoteproc {
-        compatible = "oe,mcs_remoteproc";
-        // 注意：共享内存区域必须要放在第一段
-        memory-region = <&client_os_dma_memory_region>,
-            <&client_os_reserved>;
-      };
-
-     # 制作最终使用的dtb文件
-     $ dtc -I dts -O dtb -o qemu_mcs.dtb qemu.dts
-     ```
-
-   - **Raspberry Pi**
-
-     树莓派支持使用 dt-overlay 的方式，制作步骤如下：
-
-     ```shell
-     # 新增 mcs-memreserve-overlay.dts
-         /dts-v1/;
-         /plugin/;
-         / {
-             fragment@0 {
-                 target-path = "/";
-                 __overlay__ {
-                     reserved-memory {
-                         #address-cells = <2>;
-                         #size-cells = <1>;
-                         ranges;
-
-                    mcs@70000000 {
-                             reg = <0x00 0x70000000 0x10000000>;
-                             compatible = "mcs_mem";
-                             no-map;
-                         };
-                     };
-                 };
-             };
-         };
-
-     # 制作使用的dtbo
-     $ dtc -I dts -O dtb -o mcs-memreserve.dtbo mcs-memreserve-overlay.dts
-
-     # 挂载树莓派boot分区，将 mcs-memreserve.dtbo 安装到树莓派boot分区的overlays中：
-     $ cp mcs-memreserve.dtbo ${rpi_boot_path}/overlays/
-
-     # 修改树莓派的config.txt，新增 dtoverlay 使能 mcs-memreserve.dtbo
-     $ echo "dtoverlay=mcs-memreserve" >> ${rpi_boot_path}/config.txt
-     ```
-
-
-2. **隔离cpu用于启动实时OS**
-
-   通过修改内核cmdline，增加`maxcpus=3`隔离3核。
-   - **QEMU**
-
-     在启动qemu时，增加 `-append 'maxcpus=3'`即可。
-
-   - **Raspberry Pi**
-
-     树莓派使用支持 psci 的 uefi 引导固件，因此通过 grub.cfg 配置cmdline，修改 `${rpi_boot_path}/EFI/BOOT/grub.cfg`，添加 `maxcpus=3`即可。
-
-
-3. **使用支持psci的bios启动镜像**
-
-   - **QEMU**
-
-     qemu无需单独配置bios，启动命令如下：
-     ```shell
-     $ qemu-system-aarch64 -M virt,gic-version=3 -m 1G -cpu cortex-a57 -nographic -append 'maxcpus=3' -smp 4 -kernel zImage -initrd *.rootfs.cpio.gz -dtb qemu_mcs.dtb
-     ```
-
-   - **Raspberry Pi**
-
-     树莓派需要使用支持 psci 的 uefi 引导固件，具体参考 openEuler Embedded 在线文档章节：[树莓派的UEFI支持和网络启动](https://openeuler.gitee.io/yocto-meta-openeuler/master/bsp/arm64/raspberrypi4/uefi.html#raspberrypi4-uefi-guide)
-
-
-按照上述3个步骤，准备好运行环境后，接下来就可以进行 mcs 的安装和使用：
-
-4. **根据前文的构建安装指导，安装**：
-
-   - 构建出来的 **mcs_km.ko，mica_main**
-   - rtos/arm64中提供的实时os： **qemu_zephyr_*.bin / rasp_zephyr_*.bin**
-   - 安装依赖库 **libmetal, libopen_amp, libsysfs** 到运行环境上的 /usr/lib64 中
-
-
-5. **调整内核打印等级并插入内核模块**
-
-   为了不影响shell的使用，先屏蔽内核打印：
-   ```shell
-   $ echo "1 4 1 7" > /proc/sys/kernel/printk
-   ```
-
-   插入内核模块：
-   ```shell
-   $ insmod mcs_km.ko
-   ```
-
-   若mcs_km.ko插入失败，可以通过dmesg看到对应的失败日志，可能的原因有：
-   - 使用的交叉工具链与内核版本不匹配
-   - 未预留内存资源
-   - 使用的bios不支持psci
-
-6. **运行mica_main程序，使用方式如下：**
-
-   ```shell
-   $ ./mica_main -c [cpu_id] -t [target_executable_file] -a [target_executable_address] -d [path_to_executable_containing_debug_symbols]
-   eg:
-   # qemu
-   $ ./mica_main -c 3 -t zephyr_qemu.bin -a 0x7a000000
-   
-   # Raspberry Pi
-   $ ./mica_main -c 3 -t zephyr_rpi.bin -a 0x7a000000
-   ```
-
-   若mica_main成功运行，会有如下打印：
-
-   ```shell
-   qemu-aarch64 ~ # ./mica_main -c 3 -t zephyr.bin -a 0x7a000000
-   ...
-   start client os
-   ...
-   pls open /dev/pts/1 to talk with client OS
-   pty_thread for uart is runnning
-   ...
-   ```
-
-   此时按`ctrl-c`可以通知client os下线并退出mica_main，下线后支持重复拉起。
-   也可以根据打印提示，通过`/dev/pts/1`与client os进行shell交互，例如：
-
-   ```shell
-   # 新建一个terminal，登录到运行环境
-   $ ssh user@ip
-
-   # 连接pts设备
-   $ screen /dev/pts/1
-
-   # 敲回车后，可以打开client os的shell，对client os下发命令，例如
-     uart:~$ help
-     uart:~$ kernel version
-   ```
-
-   注意，这里的`/dev/pts/1`并非是一个固定的路径，路径的最后的那个数字是一个可以变化的值。如果我们启动了两个实例，那么有可能之后的那个实例的pts路径为`/dev/pts/2`。
-
-## 调试支持 GDB stub 的 Client OS
-
-如果希望使用mica_main调试支持GDB Stub的Client OS，参见[调试支持 GDB stub 的 Client OS](https://openeuler.gitee.io/yocto-meta-openeuler/master/features/mica/mica_openamp.html#gdb-stub-client-os)。
