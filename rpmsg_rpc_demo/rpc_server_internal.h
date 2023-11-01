@@ -4,11 +4,11 @@
 #include <netdb.h>
 #include <openamp/rpmsg.h>
 
-#define WORKERS 2
+#define WORKERS 5
 #define MAX_QUEUE_SIZE 256
 
 struct rpc_instance;
-typedef int (*rpc_cb_t)(void *params, struct rpc_instance *inst);
+typedef int (*rpc_cb_t)(void *params, struct rpc_instance *inst, void *priv);
 
 struct rpc_service {
     uint32_t id;
@@ -16,7 +16,6 @@ struct rpc_service {
 };
 
 struct rpc_instance {
-    struct rpmsg_endpoint *ept;
     const struct rpc_service *services; /* service table */
     unsigned int n_services; /* number of services */
 };
@@ -25,6 +24,7 @@ typedef struct {
     unsigned char *data;
     const struct rpc_service *service;
     struct rpc_instance *inst;
+    void *priv;
 } req_t;
 
 typedef struct {
@@ -39,11 +39,11 @@ typedef struct {
 extern void enqueue_req(req_t *req);
 
 extern req_t *build_req(unsigned char *data, const struct rpc_service *service,
-                 struct rpc_instance *inst);
+                 struct rpc_instance *inst, void *priv);
 
 extern int workers_init();
 
-extern int rpmsg_service_init(struct rpmsg_device *rdev);
+extern int rpmsg_service_init();
 
 extern void freeaddrlist(struct addrinfo *ai);
 extern int encode_addrlist(const struct addrinfo *ai, char *buf, int *buflen);

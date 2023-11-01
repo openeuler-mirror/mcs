@@ -13,6 +13,8 @@
 #include <string.h>
 #include <pthread.h>
 
+#include <openamp/rpmsg_rpc_client_server.h>
+
 #include "openamp_module.h"
 #include "rpmsg_pty.h"
 
@@ -20,6 +22,10 @@
 #define KEY_CTRL_D      4
 
 struct rpmsg_app_resource g_rpmsg_app_resource;
+
+int rpmsg_endpoint_server_cb(struct rpmsg_endpoint *, void *, size_t, uint32_t, void *);
+int rpc_server_send(unsigned int ept_id, uint32_t rpc_id, int status, void *request_param, size_t param_size);
+int rpmsg_service_init();
 
 static void pty_endpoint_exit(struct pty_ep_data *pty_ep)
 {
@@ -42,6 +48,11 @@ static void pty_endpoint_unbind_cb(struct rpmsg_endpoint *ept)
 static int pty_endpoint_cb(struct rpmsg_endpoint *ept, void *data,
 		size_t len, uint32_t src, void *priv)
 {
+    rpmsg_endpoint_server_cb(ept, data, len, src, priv);
+}
+
+int pty_write(void *data, size_t len, void *priv)
+{
     int ret, i, j;
     struct pty_ep_data *pty_ep = (struct pty_ep_data *)priv;
     char msg[len * 2 + 1];
@@ -55,7 +66,7 @@ static int pty_endpoint_cb(struct rpmsg_endpoint *ept, void *data,
         }
         msg[i + j] = *msg_data;
     }
-    
+
     len = i + j;
     msg[len] = '\0';
     ret = write(pty_ep->fd_master, msg, len);
@@ -139,7 +150,7 @@ static void *pty_thread(void *arg)
             break;
         }
 
-        ret = rpmsg_service_send(pty_ep->ep_id, cmd, ret);
+        ret = rpc_server_send(pty_ep->ep_id, 0, RPMSG_RPC_OK, cmd, ret);
         if (ret < 0) {
             printf("rpmsg_service_send error %d\n", ret);
             ret = -1;
@@ -212,6 +223,12 @@ int rpmsg_app_start(struct client_os_inst *client)
     if (g_rpmsg_app_resource.pty_ep_console == NULL) {
         ret = -1;
         goto err_free_uart;
+    }
+
+    ret = rpmsg_service_init();
+    if (ret != 0) {
+        ret = -errno;
+        goto err_free_console;
     }
 
     if (pthread_create(&g_rpmsg_app_resource.rpmsg_loop_thread, NULL, rpmsg_loop_thread, client) != 0) {

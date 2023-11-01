@@ -10,10 +10,13 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include "openamp_module.h"
 
 #if defined __cplusplus
 extern "C" {
 #endif
+
+#define RPMSG_CONSOLE_BUFFER_SIZE 2048
 
 struct pty_ep_data {
 	unsigned int ep_id; /* endpoint id */

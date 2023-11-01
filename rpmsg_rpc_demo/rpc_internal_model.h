@@ -21,7 +21,7 @@
 #define POLL_ID            104UL
 #define GETPEERNAME_ID     105UL
 #define GETHOSTNAME_ID     106UL
-#define GETSOCKNAME_ID     107UL 
+#define GETSOCKNAME_ID     107UL
 #define GETSOCKOPT_ID      108UL
 #define SELECT_ID          109UL
 #define ACCEPT_ID          110UL
@@ -455,7 +455,7 @@ typedef struct rpc_recvfrom_outp {
 typedef struct rpc_send_req {
     unsigned long func_id;
     uint32_t trace_id;
-    int fd; 
+    int fd;
     size_t len;
     int flags;
     char buf[MAX_SBUF_LEN];
@@ -469,7 +469,7 @@ typedef rpc_csret_outp_t rpc_send_outp_t;
 typedef struct rpc_sendto_req {
     unsigned long func_id;
     uint32_t trace_id;
-    int fd; 
+    int fd;
     size_t len;
     int flags;
     socklen_t addrlen;

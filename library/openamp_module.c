@@ -131,9 +131,8 @@ int openamp_init(struct client_os_inst *client)
     }
 
     virtio_init(client);
-#ifndef RPMSG_RPC_DEMO
     rpmsg_sys_service_init();
-#endif
+
     printf("start client os\n");
     ret = remoteproc_start(&client->rproc);
     if (ret < 0) {

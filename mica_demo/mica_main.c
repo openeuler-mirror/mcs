@@ -11,6 +11,14 @@
 #define UNIPROTON_LOG_LENGTH 0x200000
 #define UNIPROTON_SHARED_MEM_SHIFT (UNIPROTON_SHARED_MEM_LENGTH + UNIPROTON_LOG_LENGTH)
 
+/* max buffer size 2048 */
+#define RPMSG_VIRTIO_CONFIG            \
+    (&(const struct rpmsg_virtio_config) {     \
+        .h2r_buf_size = 2048, \
+        .r2h_buf_size = 2048, \
+        .split_shpool = false,             \
+})
+
 static struct client_os_inst client_os = {
     /* size of shared device mem */
     .shared_mem_size = 0x30000,
@@ -96,6 +104,7 @@ int main(int argc, char **argv)
     client_os.entry = target_entry ? strtol(target_entry, NULL, STR_TO_HEX) :
                         client_os.load_address;
     client_os.path = target_exe_file;
+    client_os.config = RPMSG_VIRTIO_CONFIG;
 
     /* clientos_map_info[LOG_TABLE].size + [SHAREMEM_TABLE].size */
     if (client_os.entry < UNIPROTON_SHARED_MEM_SHIFT) {

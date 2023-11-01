@@ -79,7 +79,7 @@ void enqueue_req(req_t *req)
     enqueue(&rx_q, req);
 }
 
-req_t *build_req(unsigned char *data, const struct rpc_service *service, struct rpc_instance *inst)
+req_t *build_req(unsigned char *data, const struct rpc_service *service, struct rpc_instance *inst, void *priv)
 {
     req_t *req = (req_t *)malloc(sizeof(req_t));
     if (req == NULL) {
@@ -88,6 +88,7 @@ req_t *build_req(unsigned char *data, const struct rpc_service *service, struct 
     req->data = data;
     req->inst = inst;
     req->service = service;
+    req->priv = priv;
     return req;
 }
 
@@ -103,7 +104,7 @@ static void *worker_thread(void *args) {
         }
         service = req->service;
         if (service != NULL && service->cb_function != NULL) {
-            service->cb_function(req->data, req->inst);
+            service->cb_function(req->data, req->inst, req->priv);
         }
         free(req);
     }
