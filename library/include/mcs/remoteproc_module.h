@@ -37,6 +37,7 @@ struct client_os_inst {
 	unsigned int vring_size;
 	void *virt_tx_addr;
 	void *virt_rx_addr;
+	const struct rpmsg_virtio_config *config;
 
 	/* generic data structure */
 	char *path;			/* client os firmware path */

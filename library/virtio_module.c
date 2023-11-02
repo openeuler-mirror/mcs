@@ -114,8 +114,12 @@ void virtio_init(struct client_os_inst *client)
 	rpmsg_virtio_init_shm_pool(&client->shpool, share_mem_start,
 			client->shared_mem_size - 2 * client->vdev_status_size);
 
-	status = rpmsg_init_vdev(&client->rvdev, &client->vdev, ns_bind_cb,
-			 client->io, &client->shpool);
+	if(client->config == NULL)
+		status = rpmsg_init_vdev(&client->rvdev, &client->vdev, ns_bind_cb,
+				client->io, &client->shpool);
+	else
+		status = rpmsg_init_vdev_with_config(&client->rvdev, &client->vdev, ns_bind_cb,
+				client->io, &client->shpool, client->config);
 	if (status != 0) {
 		printf("rpmsg_init_vdev failed %d\n", status);
 		free(client->io);
