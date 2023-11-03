@@ -42,6 +42,7 @@ elseif(DEMO_TARGET MATCHES "mica_demo")
 	list(APPEND SRC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpmsg_rpc_demo/rpc_helper.c")
 	list(APPEND SRC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpmsg_rpc_demo/rpmsg_workers.c")
 	list(APPEND SRC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpmsg_rpc_demo/rpmsg_backend.c")
+	list(APPEND SRC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpmsg_rpc_demo/ethercat_cmd/mq_master.c")
 	# enable debug log
 	if(DEFINED MICA_DEBUG_LOG)
 		add_definitions(-DMICA_DEBUG_LOG)

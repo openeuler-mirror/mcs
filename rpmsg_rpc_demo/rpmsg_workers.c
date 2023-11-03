@@ -36,6 +36,7 @@ static int __dequeue(rpc_queue_t *rq, req_t **ppreq)
 static int __enqueue(rpc_queue_t *rq, req_t *req)
 {
     if ((rq->tail + 1) % rq->size == rq->head) {
+        lprintf("ERROR: queue is full!\n");
         return -1;
     }
     rq->q[rq->tail++] = req;

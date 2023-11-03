@@ -3,6 +3,7 @@
 
 #include <netdb.h>
 #include <openamp/rpmsg.h>
+#include "../mica_demo/rpmsg_pty.h"
 
 #define WORKERS 5
 #define MAX_QUEUE_SIZE 256
@@ -42,13 +43,18 @@ extern req_t *build_req(unsigned char *data, const struct rpc_service *service,
                  struct rpc_instance *inst, void *priv);
 
 extern int workers_init();
+extern int cmd_workers_init(struct pty_ep_data *pty_ep);
 
 extern int rpmsg_service_init();
+extern int lprintf(const char *fmt, ...);
 
 extern void freeaddrlist(struct addrinfo *ai);
 extern int encode_addrlist(const struct addrinfo *ai, char *buf, int *buflen);
 extern int decode_addrlist(const char *buf, int cnt, int buflen, struct addrinfo **out);
 extern int decode_hostent(struct hostent **ppht, char *src_buf, int buflen);
 extern int encode_hostent(struct hostent *ht, char *buf, int buflen);
+
+int rpc_server_send(unsigned int ept_id, uint32_t rpc_id, int status, void *request_param, size_t param_size);
+int rpmsg_endpoint_server_cb(struct rpmsg_endpoint *, void *, size_t, uint32_t, void *);
 
 #endif /* _RPC_SERVER_INTERNAL_H */

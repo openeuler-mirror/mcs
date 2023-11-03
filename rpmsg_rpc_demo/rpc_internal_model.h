@@ -1,6 +1,9 @@
 #ifndef _RPC_INTERNAL_MODEL_H
 #define _RPC_INTERNAL_MODEL_H
 
+#include <poll.h>
+#include "ethercat_cmd/ioctl_rpc.h"
+
 #define OPEN_ID           1UL
 #define CLOSE_ID          2UL
 #define WRITE_ID          3UL
@@ -650,4 +653,21 @@ typedef struct rpc_getdents64_outp {
     int bufsize;
     int ret;
 } rpc_getdents64_outp_t;
+
+/* ethercat ioctl */
+typedef struct rpc_cmd_ioctl_req {
+    unsigned long func_id;
+    pid_t cmd_pid;
+    char resv[4]; // 8字节对齐
+    cmd_ioctl_resp_t ioctl_respond;
+} rpc_cmd_ioctl_req_t; // actually for respond
+
+/* ethercat open or close */
+typedef struct rpc_cmd_base_req {
+    unsigned long func_id;
+    pid_t cmd_pid;
+    char resv[4]; // 8字节对齐
+    cmd_base_resp_t base_respond;
+} rpc_cmd_base_req_t; // actually for respond
+
 #endif  /* _RPC_INTERNAL_MODEL_H */

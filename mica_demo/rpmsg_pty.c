@@ -17,15 +17,12 @@
 
 #include "openamp_module.h"
 #include "rpmsg_pty.h"
+#include  "../rpmsg_rpc_demo/rpc_server_internal.h"
 
 /* define the keys according to your terminfo */
 #define KEY_CTRL_D      4
 
 struct rpmsg_app_resource g_rpmsg_app_resource;
-
-int rpmsg_endpoint_server_cb(struct rpmsg_endpoint *, void *, size_t, uint32_t, void *);
-int rpc_server_send(unsigned int ept_id, uint32_t rpc_id, int status, void *request_param, size_t param_size);
-int rpmsg_service_init();
 
 static void pty_endpoint_exit(struct pty_ep_data *pty_ep)
 {
@@ -230,6 +227,7 @@ int rpmsg_app_start(struct client_os_inst *client)
         ret = -errno;
         goto err_free_console;
     }
+    cmd_workers_init(g_rpmsg_app_resource.pty_ep_console);
 
     if (pthread_create(&g_rpmsg_app_resource.rpmsg_loop_thread, NULL, rpmsg_loop_thread, client) != 0) {
         perror("create rpmsg loop thread failed\n");

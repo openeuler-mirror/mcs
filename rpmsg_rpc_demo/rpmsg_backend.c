@@ -55,8 +55,6 @@ int rpc_server_send(unsigned int ept_id, uint32_t rpc_id, int status, void *requ
     return rpmsg_service_send(ept_id, &msg, MAX_FUNC_ID_LEN + param_size);
 }
 
-int rpmsg_endpoint_server_cb(struct rpmsg_endpoint *, void *,
-                    size_t, uint32_t, void *);
 static int rpmsg_handle_open(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_read(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_write(void *data, struct rpc_instance *inst, void *priv);
@@ -89,6 +87,8 @@ static int rpmsg_handle_setsockopt(void *data, struct rpc_instance *inst, void *
 static int rpmsg_handle_shutdown(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_socket(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_printf(void *data, struct rpc_instance *inst, void *priv);
+int rpmsg_handle_cmd_ioctl(void *data, struct rpc_instance *inst, void *priv);
+int rpmsg_handle_cmd_base(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -124,6 +124,9 @@ static struct rpc_service service_table[] = {
     {SHUTDOWN_ID, &rpmsg_handle_shutdown},
     {SOCKET_ID, &rpmsg_handle_socket},
     {PRINTF_ID, &rpmsg_handle_printf},
+    {IGH_IOCTL_ID, &rpmsg_handle_cmd_ioctl},
+    {IGH_OPEN_ID, &rpmsg_handle_cmd_base},
+    {IGH_CLOSE_ID, &rpmsg_handle_cmd_base},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -143,7 +146,7 @@ static int __lprintf(const char *fmt, va_list list)
     return write(lfd, buf, len);
 }
 
-static int lprintf(const char *fmt, ...)
+int lprintf(const char *fmt, ...)
 {
     va_list list;
     int count;
@@ -1087,7 +1090,7 @@ static int rpmsg_handle_getsockopt(void *data, struct rpc_instance *inst, void *
     lprintf("==getsockopt send rsp(%d)\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
- }
+}
 
 int pty_write(void *data, size_t len, void *priv);
 
@@ -1137,4 +1140,4 @@ static int rpmsg_handle_getdents64(void *data, struct rpc_instance *inst, void *
     lprintf("==getdents64 send rsp(%d), new pos: %ld\n", ret, resp.pos);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
- }
+}
