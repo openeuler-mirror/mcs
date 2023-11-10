@@ -99,7 +99,7 @@ static unsigned long invoke_psci_fn(unsigned long function_id,
 /**
  * Enumerate the possible CPU set from the device tree
  * and return the MPIDR values related to the @cpu.
- * If the @cpu is not found, return -ENODEV.
+ * If the @cpu is not found or the hwid is invalid, return INVALID_HWID.
  */
 static u64 get_cpu_mpidr(u32 cpu) {
 	struct device_node *dn;
@@ -116,7 +116,7 @@ static u64 get_cpu_mpidr(u32 cpu) {
 		cell = of_get_property(dn, "reg", NULL);
 		if (!cell) {
 			pr_err("%pOF: missing reg property\n", dn);
-			return -ENODEV;
+			return INVALID_HWID;
 		}
 
 		hwid = of_read_number(cell, of_n_addr_cells(dn));
@@ -125,12 +125,12 @@ static u64 get_cpu_mpidr(u32 cpu) {
 		 */
 		if (hwid & ~MPIDR_HWID_BITMASK) {
 			pr_err("%pOF: invalid reg property\n", dn);
-			return -ENODEV;
+			return INVALID_HWID;
 		}
 		return hwid;
 	}
 
-	return -ENODEV;
+	return INVALID_HWID;
 }
 
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
@@ -221,7 +221,7 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		case IOC_CPUON:
 			pr_info("start booting clientos on cpu(%d) addr(0x%llu)\n", info.cpu, info.boot_addr);
 			mpidr = get_cpu_mpidr(info.cpu);
-			if (mpidr < 0) {
+			if (mpidr == INVALID_HWID) {
 				pr_err("boot clientos failed, invalid MPIDR\n");
 				return -EINVAL;
 			}
@@ -235,7 +235,7 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 		case IOC_AFFINITY_INFO:
 			mpidr = get_cpu_mpidr(info.cpu);
-			if (mpidr < 0) {
+			if (mpidr == INVALID_HWID) {
 				pr_err("cpu state check failed! Invalid MPIDR\n");
 				return -EINVAL;
 			}
