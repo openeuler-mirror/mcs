@@ -39,13 +39,13 @@ void *elf_image_load(char *elf_start, int mcs_fd, char *dst_p_addr)
     int i = 0;
 
     hdr = (Elf64_Ehdr *) elf_start;
-    
+
     if (is_image_valid(hdr)) {
-        printf("Invalid ELF image\n");
         errno = 0;
         return NULL;
     }
 
+    printf("Loading an ELF image\n");
     // Entries in the program header table
     phdr = (Elf64_Phdr *)(elf_start + hdr->e_phoff);
 
@@ -78,7 +78,7 @@ void *elf_image_load(char *elf_start, int mcs_fd, char *dst_p_addr)
                     dst_seg_v_addr);
             return NULL;
         }
-        
+
         // the beginning virtual address of each program segment
         start = elf_start + phdr[i].p_offset;
         memmove(dst_seg_v_addr, start, phdr[i].p_filesz);

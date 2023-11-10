@@ -53,7 +53,7 @@ static int reserved_mem_init(struct client_os_inst *client)
             printf("load elf failed\n");
             goto err_ummap_bin_file;
         }
-        printf("input executable is not in ELF format\n");
+        printf("Loading a binary image\n");
         /* the address in the shared memory to put bin file */
         sh_bin_addr = mmap(NULL, bin_size, PROT_READ | PROT_WRITE, MAP_SHARED,
                         client->mcs_fd, client->load_address);
@@ -67,9 +67,9 @@ static int reserved_mem_init(struct client_os_inst *client)
         /* load clientos */
         memcpy(sh_bin_addr, file_addr, bin_size);
         munmap(sh_bin_addr, bin_size);
-    } else
+    } else {
         client->load_address = (intptr_t)e_entry;
-    
+    }
     /* unmap bin file, both from the Linux and shared memory */
     close(bin_fd);
     munmap(file_addr, bin_size);
