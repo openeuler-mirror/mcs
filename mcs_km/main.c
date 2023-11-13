@@ -128,7 +128,14 @@ static void remove_mcs_ipi(void)
 
 static int init_mcs_ipi(void)
 {
+	u64 msr;
 	int err = 0;
+
+	rdmsrl(MSR_IA32_APICBASE, msr);
+	if (!(msr & X2APIC_ENABLE)) {
+		pr_err("Only supported on x2apic mode! Please enable the x2apic option in the BIOS setup\n");
+		return -EPERM;
+	}
 
 	err = set_mcs_ipi_handler(handle_clientos_ipi);
 
