@@ -95,13 +95,9 @@ static int init_mcs_doorbell(struct rproc *rproc)
 	struct mcs_rproc_pdata *priv = rproc->priv;
 
 	vectors = pci_alloc_irq_vectors(pci_dev, desired_vectors,
-					desired_vectors, PCI_IRQ_MSIX);
-	if (vectors != desired_vectors) {
-		vectors = pci_alloc_irq_vectors(pci_dev, 1, 2,
-						PCI_IRQ_LEGACY | PCI_IRQ_MSIX);
-		if (vectors < 0)
-			return vectors;
-	}
+					desired_vectors, PCI_IRQ_LEGACY);
+	if (vectors < 0)
+		return vectors;
 
 	err = request_irq(pci_irq_vector(pci_dev, 0), mcs_remoteproc_interrupt, 0,
 			  "MCS DOORBELL", NULL);
