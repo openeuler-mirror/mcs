@@ -19,7 +19,7 @@ extern "C" {
 #define RPMSG_CONSOLE_BUFFER_SIZE 2048
 
 struct pty_ep_data {
-	unsigned int ep_id; /* endpoint id */
+    unsigned int ep_id; /* endpoint id */
     int fd_master;  /* pty master fd */
     FILE *f;
     pthread_t pty_thread; /* thread id */

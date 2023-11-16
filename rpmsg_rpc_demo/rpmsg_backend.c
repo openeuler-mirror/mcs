@@ -44,9 +44,9 @@ static struct rpmsg_endpoint g_ept;
 
 int rpc_server_send(unsigned int ept_id, uint32_t rpc_id, int status, void *request_param, size_t param_size)
 {
-    struct rpmsg_rpc_answer msg;
+    struct rpmsg_proxy_answer msg;
 
-    if (param_size > (RPMSG_CONSOLE_BUFFER_SIZE - sizeof(msg.status)))
+    if (param_size > PROXY_MAX_BUF_LEN)
         return -EINVAL;
 
     msg.id = rpc_id;
@@ -116,6 +116,9 @@ static int rpmsg_handle_getwc(void *data, struct rpc_instance *inst, void *priv)
 static int rpmsg_handle_putwc(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_putc(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_ungetwc(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_stat(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_lstat(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_getcwd(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -172,6 +175,9 @@ static struct rpc_service service_table[] = {
     {RENAME_ID, &rpmsg_handle_rename},
     {REMOVE_ID, &rpmsg_handle_remove},
     {MKSTMP_ID, &rpmsg_handle_mkstemp},
+    {STAT_ID, &rpmsg_handle_stat},
+    {LSTAT_ID, &rpmsg_handle_lstat},
+    {GETCWD_ID, &rpmsg_handle_getcwd},
     {PRINTF_ID, &rpmsg_handle_printf},
     {IGH_IOCTL_ID, &rpmsg_handle_cmd_ioctl},
     {IGH_OPEN_ID, &rpmsg_handle_cmd_base},
@@ -351,6 +357,13 @@ static inline FILE *handle2file(uintptr_t fhandle, void *priv)
         return ((struct pty_ep_data *)priv)->f;
     }
     return (FILE *)fhandle;
+}
+
+static int is_pty_fd(uintptr_t fhandle)
+{
+    return (fhandle == STDOUT_FILENO + STDFILE_BASE ||
+        fhandle == STDIN_FILENO + STDFILE_BASE ||
+        fhandle == STDERR_FILENO + STDFILE_BASE);
 }
 
 static inline int file2fd(FILE *f)
@@ -1407,11 +1420,15 @@ static int rpmsg_handle_fprintf(void *data, struct rpc_instance *inst, void *pri
     }
 
     rpc_fprintf_req_t *req = (rpc_fprintf_req_t *)data;
-    FILE *f = handle2file(req->fhandle, priv);
     int ret = 0;
 
-    ret = fwrite(req->buf, sizeof(char), req->len, f);
-    lprintf("==fprintf(%d), ret(%d)\n", req->len, ret);
+    if (is_pty_fd(req->fhandle)) {
+        ret = pty_write(req->buf, MIN(sizeof(req->buf), req->len), priv);
+        lprintf("==fprintf printf(%d), ret(%d)\n", req->len, ret);
+    } else {
+        ret = fwrite(req->buf, sizeof(char), req->len, (FILE *)req->fhandle);
+        lprintf("==fprintf(%d), ret(%d)\n", req->len, ret);
+    }
 
     CLEANUP(data);
     return ret > 0 ? 0 : ret;
@@ -1801,6 +1818,101 @@ static int rpmsg_handle_ungetwc(void *data, struct rpc_instance *inst, void *pri
     ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), UNGETWC_ID, RPMSG_RPC_OK,
         &resp, payload_size);
     lprintf("==ungetwc send rsp(%d)\n", wret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static inline void set_stat_buff(rpc_stat_resp_t *resp, struct stat *statbuff)
+{
+    resp->st_dev = statbuff->st_dev;
+    resp->st_ino = statbuff->st_ino;
+    resp->st_nlink = statbuff->st_nlink;
+    resp->st_mode = statbuff->st_mode;
+    resp->st_uid = statbuff->st_uid;
+    resp->st_gid = statbuff->st_gid;
+    resp->st_rdev = statbuff->st_rdev;
+    resp->st_size = statbuff->st_size;
+    resp->st_blksize = statbuff->st_blksize;
+    resp->st_blocks = statbuff->st_blocks;
+
+    resp->st_atime_sec = statbuff->st_atim.tv_sec;
+    resp->st_atime_nsec = statbuff->st_atim.tv_nsec;
+    resp->st_mtime_sec = statbuff->st_mtim.tv_sec;
+    resp->st_mtime_nsec = statbuff->st_mtim.tv_nsec;
+    resp->st_ctime_sec = statbuff->st_ctim.tv_sec;
+    resp->st_ctime_nsec = statbuff->st_ctim.tv_nsec;
+}
+
+static int rpmsg_handle_stat(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(stat)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    struct stat statbuff = {0};
+    lprintf("==stat(%s)\n", req->path);
+    ret = stat(req->path, &statbuff);
+    lprintf("==stat(%d)\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_stat_buff(&resp, &statbuff);
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), STAT_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==stat send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_lstat(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(stat)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    struct stat statbuff = {0};
+    lprintf("==lstat(%s)\n", req->path);
+    ret = lstat(req->path, &statbuff);
+    lprintf("==lstat(%d)\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_stat_buff(&resp, &statbuff);
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), LSTAT_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==lstat send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_getcwd(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(getcwd)
+
+    if (!req || !inst || req->size > sizeof(resp.buf))
+        return -EINVAL;
+    
+    lprintf("==getcwd(%ld)\n", req->size);
+    char *buf = getcwd(resp.buf, req->size);
+    if (buf != NULL) {
+        lprintf("==getcwd(%s)\n", resp.buf);
+        resp.isNull = 0;
+    } else {
+        lprintf("==getcwd(NULL) %s\n", strerror(errno));
+        resp.isNull = 1;
+    }
+    set_rsp_base(&resp.super, req->trace_id);
+    payload_size = payload_size - sizeof(resp.buf) + req->size;
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), GETCWD_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==getcwd send rsp(%d)\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }

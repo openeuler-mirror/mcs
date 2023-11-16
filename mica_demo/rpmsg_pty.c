@@ -178,6 +178,7 @@ static struct pty_ep_data *pty_service_create(const char * ep_name)
     if (ret != 0) {
         goto err_free_resource_struct;
     }
+
     pty_ep->f = fdopen(pty_ep->fd_master, "r+");
     if (pty_ep->f == NULL) {
         close(pty_ep->fd_master);
