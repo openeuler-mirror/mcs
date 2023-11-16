@@ -1,6 +1,7 @@
 #ifndef _RPC_INTERNAL_MODEL_H
 #define _RPC_INTERNAL_MODEL_H
-
+#include <wctype.h>
+#include <wchar.h>
 #include <poll.h>
 #include "ethercat_cmd/ioctl_rpc.h"
 
@@ -36,6 +37,12 @@
 #define REMOVE_ID         30UL
 #define MKSTMP_ID         31UL
 
+#define FFLUSH_ID         34UL
+#define GETWC_ID          35UL
+#define PUTWC_ID          36UL
+#define PUTC_ID           37UL
+#define UNGETWC_ID        38UL
+
 #define NCPYWRITE_ID      43UL
 #define NCPYREAD_ID       44UL
 
@@ -46,7 +53,7 @@
 #define POLL_ID            104UL
 #define GETPEERNAME_ID     105UL
 #define GETHOSTNAME_ID     106UL
-#define GETSOCKNAME_ID     107UL
+#define GETSOCKNAME_ID     107UL 
 #define GETSOCKOPT_ID      108UL
 #define SELECT_ID          109UL
 #define ACCEPT_ID          110UL
@@ -83,22 +90,22 @@ typedef unsigned int uint32_t;
 typedef unsigned long fileHandle;
 
 typedef struct iaddrinfo {
-  int ai_flags;
-  int ai_family;
-  int ai_socktype;
-  int ai_protocol;
-  socklen_t ai_addrlen;
-  int namelen;
+    int ai_flags;
+    int ai_family;
+    int ai_socktype;
+    int ai_protocol;
+    socklen_t ai_addrlen;
+    int namelen;
 } iaddrinfo_t;
 
 typedef struct ihostent {
-  int h_name_idx;
-  int h_aliases_idx;
-  short aliaslen;
-  short addrlen;
-  int h_addrtype;
-  int h_length;
-  int h_addr_list_idx;
+    int h_name_idx;
+    int h_aliases_idx;
+    short aliaslen;
+    short addrlen;
+    int h_addrtype;
+    int h_length;
+    int h_addr_list_idx;
 } ihostent_t;
 
 typedef struct rpc_resp_base {
@@ -421,7 +428,6 @@ typedef struct rpc_bind_req {
     uint32_t trace_id;
     int sockfd;
     socklen_t addrlen;
-    int errnum;
     char addr_buf[MAX_SBUF_LEN];
 } rpc_bind_req_t;
 
@@ -695,7 +701,6 @@ typedef struct rpc_getdents64_outp {
     int bufsize;
     int ret;
 } rpc_getdents64_outp_t;
-
 /* ethercat ioctl */
 typedef struct rpc_cmd_ioctl_req {
     unsigned long func_id;
@@ -805,6 +810,10 @@ typedef struct rpc_fgets_outp {
 /* fflush */
 typedef rpc_fcommon_req_t rpc_fflush_req_t;
 
+typedef rpc_common_resp_t rpc_fflush_resp_t;
+
+typedef rpc_common_outp_t rpc_fflush_outp_t;
+
 /* feof */
 typedef rpc_fcommon_req_t rpc_feof_req_t;
 
@@ -868,6 +877,10 @@ typedef struct rpc_ungetc_req {
     fileHandle fhandle;
 } rpc_ungetc_req_t;
 
+typedef rpc_common_resp_t rpc_ungetc_resp_t;
+
+typedef rpc_common_outp_t rpc_ungetc_outp_t;
+
 /* setvbuf */
 typedef struct rpc_setvbuf_req {
     unsigned long func_id;
@@ -897,8 +910,8 @@ typedef struct rpc_fseeko_req {
     unsigned long func_id;
     uint32_t trace_id;
     fileHandle fhandle;
-    long a;
-    int b;
+    long offset;
+    int whence;
 } rpc_fseeko_req_t;
 
 /* ftello */
@@ -935,5 +948,49 @@ typedef struct rpc_mkstemp_req {
     uint32_t trace_id;
     char tmp[MAX_FILE_NAME_LEN];
 } rpc_mkstemp_req_t;
+
+/* getwc */
+typedef rpc_fflush_req_t rpc_getwc_req_t;
+
+typedef struct rpc_getwc_resp {
+    rpc_resp_base_t super;
+    wint_t ret;
+} rpc_getwc_resp_t;
+
+typedef struct rpc_getwc_outp {
+    rpc_outp_base_t super;
+    wint_t ret;
+} rpc_getwc_outp_t;
+
+/* putwc */
+typedef struct rpc_putwc_req {
+    unsigned long func_id;
+    uint32_t trace_id;
+    wchar_t wc;
+    fileHandle fhandle;
+} rpc_putwc_req_t;
+
+typedef rpc_getwc_resp_t rpc_putwc_resp_t;
+
+typedef rpc_getwc_outp_t rpc_putwc_outp_t;
+
+/* ungetwc */
+typedef struct rpc_ungetwc_req {
+    unsigned long func_id;
+    uint32_t trace_id;
+    wint_t wc;
+    fileHandle fhandle;
+} rpc_ungetwc_req_t;
+
+typedef rpc_getwc_resp_t rpc_ungetwc_resp_t;
+
+typedef rpc_getwc_outp_t rpc_ungetwc_outp_t;
+
+/* putc */
+typedef rpc_ungetc_req_t rpc_putc_req_t;
+
+typedef rpc_common_resp_t rpc_putc_resp_t;
+
+typedef rpc_common_outp_t rpc_putc_outp_t;
 
 #endif  /* _RPC_INTERNAL_MODEL_H */

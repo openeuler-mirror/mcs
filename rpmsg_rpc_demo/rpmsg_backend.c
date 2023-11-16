@@ -111,6 +111,11 @@ static int rpmsg_handle_ftello(void *data, struct rpc_instance *inst, void *priv
 static int rpmsg_handle_rename(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_remove(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_mkstemp(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_fflush(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_getwc(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_putwc(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_putc(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_ungetwc(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -171,6 +176,11 @@ static struct rpc_service service_table[] = {
     {IGH_IOCTL_ID, &rpmsg_handle_cmd_ioctl},
     {IGH_OPEN_ID, &rpmsg_handle_cmd_base},
     {IGH_CLOSE_ID, &rpmsg_handle_cmd_base},
+    {FFLUSH_ID, &rpmsg_handle_fflush},
+    {GETWC_ID, &rpmsg_handle_getwc},
+    {PUTWC_ID, &rpmsg_handle_putwc},
+    {PUTC_ID, &rpmsg_handle_putc},
+    {UNGETWC_ID, &rpmsg_handle_ungetwc},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -331,6 +341,25 @@ void terminate_rpc_app(void)
 {
     lprintf("Destroying endpoint.\r\n");
 }
+#define STDFILE_BASE 1
+
+static inline FILE *handle2file(uintptr_t fhandle, void *priv)
+{
+    if (fhandle == STDOUT_FILENO + STDFILE_BASE ||
+        fhandle == STDIN_FILENO + STDFILE_BASE ||
+        fhandle == STDERR_FILENO + STDFILE_BASE) {
+        return ((struct pty_ep_data *)priv)->f;
+    }
+    return (FILE *)fhandle;
+}
+
+static inline int file2fd(FILE *f)
+{
+    if (f == NULL) {
+        return -1;
+    }
+    return f->_fileno;
+}
 
 static int rpmsg_handle_open(void *data, struct rpc_instance *inst, void *priv)
 {
@@ -345,7 +374,7 @@ static int rpmsg_handle_open(void *data, struct rpc_instance *inst, void *priv)
     /* Open remote fd */
     fd = open(buf, req->flags, req->mode);
     lprintf("==open ret:%d\n", fd);
-    lerror(ret, errno);
+    lerror(fd, errno);
     /* Construct rpc response */
     resp.ret = fd;
     set_rsp_base(&resp.super, req->trace_id);
@@ -399,7 +428,7 @@ static int rpmsg_handle_read(void *data, struct rpc_instance *inst, void *priv)
         sret = read(req->fd, resp.buf, req->count);
     }
     lprintf("==read ret %ld\n", sret);
-    lerror(ret, errno);
+    lerror((int)sret, errno);
     /* Construct rpc response */
     resp.ret = sret;
     set_rsp_base(&resp.super, req->trace_id);
@@ -428,7 +457,7 @@ static int rpmsg_handle_write(void *data, struct rpc_instance *inst, void *priv)
     /* Write to remote fd */
     sret = write(req->fd, req->buf, req->count);
     lprintf("==write ret:%ld\n", sret);
-    lerror(ret, errno);
+    lerror((int)sret, errno);
     /* Construct rpc response */
     resp.ret = sret;
     set_rsp_base(&resp.super, req->trace_id);
@@ -451,7 +480,7 @@ static int rpmsg_handle_lseek(void *data, struct rpc_instance *inst, void *priv)
     lprintf("==lseek(%d, %ld, %d)\n", req->fd, req->offset, req->whence);
     off = lseek(req->fd, req->offset, req->whence);
     lprintf("==lseek ret:%ld\n", off);
-    lerror(ret, errno);
+    lerror((int)off, errno);
     resp.ret = off;
     set_rsp_base(&resp.super, req->trace_id);
 
@@ -1216,9 +1245,10 @@ static int rpmsg_handle_fclose(void *data, struct rpc_instance *inst, void *priv
 
     rpc_fclose_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==fclose(0x%x)\n", req->fhandle);
-    int ret = fclose((FILE *)req->fhandle);
+    int ret = fclose(f);
     lprintf("==fclose ret(%d)\n", ret);
     lerror(ret, errno);
 
@@ -1239,14 +1269,15 @@ static int rpmsg_handle_fread(void *data, struct rpc_instance *inst, void *priv)
 
     rpc_fread_req_t *req = data;
     rpc_fread_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==fread(0x%x, %u, %u)\n", req->fhandle, req->size, req->count);
-    size_t sz = fread(resp.buf, req->size, req->count, (FILE *)(req->fhandle));
+    size_t sz = fread(resp.buf, req->size, req->count, f);
     lprintf("==fread ret(%u)\n", sz);
-
+    size_t payload_size = sizeof(resp) - sizeof(resp.buf) + sz;
     resp.ret = sz;
     set_rsp_base(&resp.super, req->trace_id);
-    int ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FREAD_ID, RPMSG_RPC_OK, &resp, sizeof(resp));
+    int ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FREAD_ID, RPMSG_RPC_OK, &resp, payload_size);
     lprintf("==fread send rsp:0x%x, %d\n", req->fhandle, ret);
 
     CLEANUP(data);
@@ -1261,15 +1292,16 @@ static int rpmsg_handle_fwrite(void *data, struct rpc_instance *inst, void *priv
 
     rpc_fwrite_req_t *req = data;
     rpc_fwrite_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==fwrite(0x%x, %u, %u)\n", req->fhandle, req->size, req->count);
-    size_t sz = fwrite(req->buf, req->size, req->count, (FILE *)(req->fhandle));
+    size_t sz = fwrite(req->buf, req->size, req->count, f);
     lprintf("==fwrite ret(%u)\n", sz);
 
     resp.ret = sz;
     set_rsp_base(&resp.super, req->trace_id);
     int ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FWRITE_ID, RPMSG_RPC_OK, &resp, sizeof(resp));
-    lprintf("==fread send rsp:0x%x, %d\n", req->fhandle, ret);
+    lprintf("==fwrite send rsp:0x%x, %d\n", req->fhandle, ret);
 
     CLEANUP(data);
     return ret > 0 ? 0 : ret;
@@ -1283,9 +1315,10 @@ static int rpmsg_handle_freopen(void *data, struct rpc_instance *inst, void *pri
 
     rpc_freopen_req_t *req = data;
     rpc_fcommon_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==freopen(%s, %s)\n", req->filename, req->mode);
-    FILE *fd = freopen(req->filename, req->mode, (FILE *)(req->fhandle));
+    FILE *fd = freopen(req->filename, req->mode, f);
     lprintf("==freopen %s.\n", (fd == 0 ? "fail" : "success"));
 
     resp.fhandle = (fileHandle)fd;
@@ -1306,8 +1339,9 @@ static int rpmsg_handle_fputs(void *data, struct rpc_instance *inst, void *priv)
     rpc_fputs_req_t *req = data;
     rpc_common_resp_t resp = {0};
 
+    FILE *f = handle2file(req->fhandle, priv);
     lprintf("==fputs(0x%x)\n", req->fhandle);
-    int ret = fputs(req->str, (FILE *)(req->fhandle));
+    int ret = fputs(req->str, f);
     lprintf("==fputs ret(%d)\n", ret);
 
     resp.ret = ret;
@@ -1327,9 +1361,10 @@ static int rpmsg_handle_fgets(void *data, struct rpc_instance *inst, void *priv)
 
     rpc_fgets_req_t *req = data;
     rpc_fgets_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==fgets(0x%x)\n", req->fhandle);
-    char *retStr = fgets(resp.str, req->size, (FILE *)(req->fhandle));
+    char *retStr = fgets(resp.str, req->size, f);
     lprintf("==fgets ret(%s)\n", (retStr == NULL ? "end" : "continue"));
 
     resp.isEof = (retStr == NULL ? 1 : 0);
@@ -1350,9 +1385,10 @@ static int rpmsg_handle_feof(void *data, struct rpc_instance *inst, void *priv)
 
     rpc_feof_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==feof(0x%x)\n", req->fhandle);
-    int ret = feof((FILE *)(req->fhandle));
+    int ret = feof(f);
     lprintf("==feof ret(%d)\n", ret);
 
     resp.ret = ret;
@@ -1371,9 +1407,10 @@ static int rpmsg_handle_fprintf(void *data, struct rpc_instance *inst, void *pri
     }
 
     rpc_fprintf_req_t *req = (rpc_fprintf_req_t *)data;
+    FILE *f = handle2file(req->fhandle, priv);
     int ret = 0;
 
-    ret = fwrite(req->buf, sizeof(char), req->len, (FILE *)(req->fhandle));
+    ret = fwrite(req->buf, sizeof(char), req->len, f);
     lprintf("==fprintf(%d), ret(%d)\n", req->len, ret);
 
     CLEANUP(data);
@@ -1388,9 +1425,10 @@ static int rpmsg_handle_getc(void *data, struct rpc_instance *inst, void *priv)
 
     rpc_getc_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==getc(0x%x)\n", req->fhandle);
-    int ret = getc((FILE *)(req->fhandle));
+    int ret = getc(f);
     lprintf("==getc ret(%d)\n", ret);
 
     resp.ret = ret;
@@ -1410,9 +1448,10 @@ static int rpmsg_handle_ferror(void *data, struct rpc_instance *inst, void *priv
 
     rpc_ferror_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==ferror(0x%x)\n", req->fhandle);
-    int ret = ferror((FILE *)(req->fhandle));
+    int ret = ferror(f);
     lprintf("==ferror ret(%d)\n", ret);
 
     resp.ret = ret;
@@ -1432,9 +1471,10 @@ static int rpmsg_handle_getc_unlocked(void *data, struct rpc_instance *inst, voi
 
     rpc_getc_unlocked_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==getc_unlocked(0x%x)\n", req->fhandle);
-    int ret = getc_unlocked((FILE *)(req->fhandle));
+    int ret = getc_unlocked(f);
     lprintf("==getc_unlocked ret(%d)\n", ret);
 
     resp.ret = ret;
@@ -1454,9 +1494,10 @@ static int rpmsg_handle_pclose(void *data, struct rpc_instance *inst, void *priv
 
     rpc_pclose_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==pclose(0x%x)\n", req->fhandle);
-    int ret = pclose((FILE *)(req->fhandle));
+    int ret = pclose(f);
     lprintf("==pclose ret(%d)\n", ret);
 
     resp.ret = ret;
@@ -1496,9 +1537,9 @@ static int rpmsg_handle_clearerr(void *data, struct rpc_instance *inst, void *pr
     }
 
     rpc_clearerr_req_t *req = data;
-
+    FILE *f = handle2file(req->fhandle, priv);
     lprintf("==clearerr(0x%x)\n", req->fhandle);
-    clearerr((FILE *)req->fhandle);
+    clearerr(f);
 
     CLEANUP(data);
     return 0;
@@ -1534,9 +1575,10 @@ static int rpmsg_handle_ungetc(void *data, struct rpc_instance *inst, void *priv
 
     rpc_ungetc_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==ungetc(%d)\n", req->c);
-    resp.ret = ungetc(req->c, (FILE *)req->fhandle);
+    resp.ret = ungetc(req->c, f);
     lprintf("==ungetc %d.\n", resp.ret);
 
     set_rsp_base(&resp.super, req->trace_id);
@@ -1556,9 +1598,10 @@ static int rpmsg_handle_fseeko(void *data, struct rpc_instance *inst, void *priv
 
     rpc_fseeko_req_t *req = data;
     rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
-    lprintf("==fseeko(%d, %d)\n", req->a, req->b);
-    resp.ret = fseeko((FILE *)req->fhandle, req->a, req->b);
+    lprintf("==fseeko(%ld, %d)\n", req->offset, req->whence);
+    resp.ret = fseeko(f, req->offset, req->whence);
     lprintf("==fseeko %d.\n", resp.ret);
 
     set_rsp_base(&resp.super, req->trace_id);
@@ -1577,9 +1620,10 @@ static int rpmsg_handle_ftello(void *data, struct rpc_instance *inst, void *priv
 
     rpc_ftello_req_t *req = data;
     rpc_ftello_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
 
     lprintf("==ftello\n");
-    resp.ret = ftello((FILE *)req->fhandle);
+    resp.ret = ftello(f);
     lprintf("==ftello %d.\n", resp.ret);
 
     set_rsp_base(&resp.super, req->trace_id);
@@ -1651,4 +1695,112 @@ static int rpmsg_handle_mkstemp(void *data, struct rpc_instance *inst, void *pri
 
     CLEANUP(data);
     return ret > 0 ? 0 : ret;
+}
+
+static int rpmsg_handle_fflush(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(fflush)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    FILE *f = handle2file(req->fhandle, priv);
+    lprintf("==fflush(fileno: %d)\n", file2fd(f));
+
+    ret = fflush(f);
+
+    lprintf("==fflush(%d)\n", ret);
+    lerror(ret, errno);
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FFLUSH_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==fflush send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_getwc(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(getwc)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    FILE *f = handle2file(req->fhandle, priv);
+    lprintf("==getwc(fileno: %d)\n", file2fd(f));
+    wint_t wret = getwc(f);
+    lprintf("==getwc(%d)\n", wret);
+
+    resp.ret = wret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), GETWC_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==getwc send rsp(%d)\n", wret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_putwc(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(putwc)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    FILE *f = handle2file(req->fhandle, priv);
+    lprintf("==putwc(%d, fileno: %d)\n", req->wc, file2fd(f));
+    wint_t wret = putwc(req->wc, f);
+    lprintf("==putwc(%d)\n", wret);
+
+    resp.ret = wret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), PUTWC_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==putwc send rsp(%d)\n", wret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_putc(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(putc)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    FILE *f = handle2file(req->fhandle, priv);
+    lprintf("==putc(%d, fileno: %d)\n", req->c, file2fd(f));
+    ret = putc(req->c, f);
+    lprintf("==putc(%d)\n", ret);
+
+    lerror(ret, errno);
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), PUTC_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==putc send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_ungetwc(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(ungetwc)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    FILE *f = handle2file(req->fhandle, priv);
+    lprintf("==ungetwc(%d, fileno: %d)\n", req->wc, file2fd(f));
+    wint_t wret = ungetwc(req->wc, f);
+    lprintf("==ungetwc(%d)\n", wret);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), UNGETWC_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==ungetwc send rsp(%d)\n", wret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
 }

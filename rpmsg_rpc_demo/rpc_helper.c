@@ -4,6 +4,7 @@
 #include <sys/poll.h>
 #include <sys/select.h>
 #include <sys/un.h>
+#include <stdint.h>
 
 #include "rpc_internal_model.h"
 #include "rpc_err.h"

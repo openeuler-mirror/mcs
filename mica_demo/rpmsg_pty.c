@@ -178,6 +178,11 @@ static struct pty_ep_data *pty_service_create(const char * ep_name)
     if (ret != 0) {
         goto err_free_resource_struct;
     }
+    pty_ep->f = fdopen(pty_ep->fd_master, "r+");
+    if (pty_ep->f == NULL) {
+        close(pty_ep->fd_master);
+        goto err_free_resource_struct;
+    }
 
     pty_ep->ep_id = rpmsg_service_register_endpoint(ep_name, pty_endpoint_cb,
                                             pty_endpoint_unbind_cb, pty_ep);
@@ -202,7 +207,7 @@ err_cancel_thread:
 err_unregister_endpoint:
     rpmsg_service_unregister_endpoint(pty_ep->ep_id);
 err_close_pty:
-    close(pty_ep->fd_master);
+    fclose(pty_ep->f);
 err_free_resource_struct:
     free(pty_ep);
     return NULL;
