@@ -119,6 +119,10 @@ static int rpmsg_handle_ungetwc(void *data, struct rpc_instance *inst, void *pri
 static int rpmsg_handle_stat(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_lstat(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_getcwd(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_fstat(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_fdopen(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_fileno(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_setvbuf(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -187,6 +191,10 @@ static struct rpc_service service_table[] = {
     {PUTWC_ID, &rpmsg_handle_putwc},
     {PUTC_ID, &rpmsg_handle_putc},
     {UNGETWC_ID, &rpmsg_handle_ungetwc},
+    {FSTAT_ID, &rpmsg_handle_fstat},
+    {FDOPEN_ID, &rpmsg_handle_fdopen},
+    {FILENO_ID, &rpmsg_handle_fileno},
+    {SETVBUF_ID, &rpmsg_handle_setvbuf},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -1913,6 +1921,102 @@ static int rpmsg_handle_getcwd(void *data, struct rpc_instance *inst, void *priv
     ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), GETCWD_ID, RPMSG_RPC_OK,
         &resp, payload_size);
     lprintf("==getcwd send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_fstat(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(fstat)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    struct stat statbuff = {0};
+    lprintf("==fstat(%d)\n", req->fd);
+    ret = fstat(req->fd, &statbuff);
+    lprintf("==fstat(%d)\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_stat_buff(&resp, &statbuff);
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FSTAT_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==fstat send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_fdopen(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(fdopen)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    struct stat statbuff = {0};
+
+    lprintf("==fdopen(%d)\n", req->fd);
+    FILE *f = fdopen(req->fd, req->mode);
+    lprintf("==fstat(%p)\n", f);
+    if (f == NULL) {
+        lprintf("errstr:%s\n", strerror(errno));
+    }
+
+    resp.fhandle = (fileHandle)f;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FDOPEN_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==fdopen send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_fileno(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(fileno)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==fileno(0x%lx)\n", req->fhandle);
+    ret = fileno((FILE *)req->fhandle);
+    lprintf("==fileno(%d)\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FILENO_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==fileno send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_setvbuf(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(setvbuf)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==setvbuf(0x%lx) [_IONBF]\n", req->fhandle);
+
+    // only support unbuffered mode
+    ret = setvbuf((FILE *)req->fhandle, NULL, _IONBF, 0);
+    lprintf("==setvbuf(%d)\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), SETVBUF_ID, RPMSG_RPC_OK,
+        &resp, payload_size);
+    lprintf("==setvbuf send rsp(%d)\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }
