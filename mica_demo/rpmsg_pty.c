@@ -21,6 +21,16 @@
 
 /* define the keys according to your terminfo */
 #define KEY_CTRL_D      4
+#define CMD_KEY_ESC_VALUE 0x1b
+#define CMD_KEY_COMBINATION_VALUE 0x5b
+
+enum {
+    STAT_NOMAL_KEY,
+    STAT_ESC_KEY,
+    STAT_CSI_KEY
+};
+
+static int g_escape_state = 0;
 
 struct rpmsg_app_resource g_rpmsg_app_resource;
 
@@ -119,11 +129,37 @@ err_close_pty:
     close(fdm);
 }
 
+static int is_final_byte(char c) {
+    // csi序列结束符
+    return (c > 0x39 && c < 0x7F);
+}
+
+// 只能识别csi序列
+static int in_escape_sequence(int fdm, char c)
+{
+    if (g_escape_state == STAT_NOMAL_KEY) {
+        if (c == CMD_KEY_ESC_VALUE) {
+            g_escape_state = STAT_ESC_KEY;
+        }
+    } else if (g_escape_state == STAT_ESC_KEY) {
+        if (c == CMD_KEY_COMBINATION_VALUE) {
+            g_escape_state = STAT_CSI_KEY;
+        } else {
+            printf("unrecognized escape\n");
+            g_escape_state = STAT_NOMAL_KEY;
+        }
+    } else if (is_final_byte(c)) {
+        g_escape_state = STAT_NOMAL_KEY;
+        return 1;
+    }
+    return (g_escape_state != STAT_NOMAL_KEY);
+}
+
 static void *pty_thread(void *arg)
 {
     int ret;
     int fdm;
-    unsigned char cmd[128];
+    unsigned char cmd[1];
     struct pty_ep_data * pty_ep;
 
     pty_ep = (struct pty_ep_data *)arg;
@@ -135,16 +171,28 @@ static void *pty_thread(void *arg)
     while(!rpmsg_service_endpoint_is_bound(pty_ep->ep_id));
 
     while (1) {
-        ret = read(fdm, cmd, 128);   /* get command from ptmx */
+        ret = read(fdm, cmd, 1);   /* get command from ptmx */
         if (ret <= 0) {
             printf("shell_user: get from ptmx failed: %d\n", ret);
             ret = -1;
             break;
         }
 
-        if (cmd[ret - 1] == KEY_CTRL_D) {  /* special key: ctrl+d */
+        if (cmd[0] == KEY_CTRL_D) {  /* special key: ctrl+d */
             ret = 0;  /* exit this thread, the same as pthread_exit */
             break;
+        }
+
+        int in_escape = in_escape_sequence(fdm, cmd[0]);
+        // echo input char
+        if (!in_escape) {
+            if (cmd[0] == '\n') {
+                write(fdm, "\r\n[TEST]", 8);
+            } else if (cmd[0] == 0x09) { /* 0x09: tab */
+                // no echo for tab
+            } else {
+                write(fdm, cmd, ret);
+            }
         }
 
         ret = rpc_server_send(pty_ep->ep_id, 0, RPMSG_RPC_OK, cmd, ret);
