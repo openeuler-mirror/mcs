@@ -26,7 +26,7 @@
     void *req_ptr = data;                        \
     rpc_##name##_req_t *req = req_ptr;           \
     rpc_##name##_resp_t resp;                    \
-    int payload_size = sizeof(resp);             \
+    size_t payload_size = sizeof(resp);          \
     int ret;
 
 #ifdef MULTI_WORKERS
@@ -123,7 +123,8 @@ static int rpmsg_handle_fstat(void *data, struct rpc_instance *inst, void *priv)
 static int rpmsg_handle_fdopen(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_fileno(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_setvbuf(void *data, struct rpc_instance *inst, void *priv);
-
+static int rpmsg_handle_system(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_readlink(void *data, struct rpc_instance *inst, void *priv);
 /* Service table */
 static struct rpc_instance service_inst;
 static struct rpc_service service_table[] = {
@@ -195,6 +196,8 @@ static struct rpc_service service_table[] = {
     {FDOPEN_ID, &rpmsg_handle_fdopen},
     {FILENO_ID, &rpmsg_handle_fileno},
     {SETVBUF_ID, &rpmsg_handle_setvbuf},
+    {SYSTEM_ID, &rpmsg_handle_system},
+    {READLINK_ID, &rpmsg_handle_readlink},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -1956,8 +1959,6 @@ static int rpmsg_handle_fdopen(void *data, struct rpc_instance *inst, void *priv
     if (!req || !inst)
         return -EINVAL;
 
-    struct stat statbuff = {0};
-
     lprintf("==fdopen(%d)\n", req->fd);
     FILE *f = fdopen(req->fd, req->mode);
     lprintf("==fstat(%p)\n", f);
@@ -2017,6 +2018,55 @@ static int rpmsg_handle_setvbuf(void *data, struct rpc_instance *inst, void *pri
     ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), SETVBUF_ID, RPMSG_RPC_OK,
         &resp, payload_size);
     lprintf("==setvbuf send rsp(%d)\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_readlink(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(readlink)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==readlink(%s, %lu)\n",req->pathname, req->bufsiz);
+    ssize_t sret = readlink(req->pathname, resp.buf, MIN(sizeof(resp.buf), req->bufsiz));
+    lprintf("==readlink ret:%ld\n", sret);
+    lerror((int)sret, errno);
+
+    resp.ret = sret;
+    set_rsp_base(&resp.super, req->trace_id);
+    payload_size -= sizeof(resp.buf);
+    if (sret > 0) {
+        payload_size += sret;
+    }
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), READLINK_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+
+    lprintf("==readlink send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_system(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(system)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==system(%s)\n", req->buf);
+    ret = system(req->buf);
+    lprintf("==system ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), SYSTEM_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+
+    lprintf("==system send rsp, %d\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }
