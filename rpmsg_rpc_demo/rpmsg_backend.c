@@ -125,6 +125,9 @@ static int rpmsg_handle_fileno(void *data, struct rpc_instance *inst, void *priv
 static int rpmsg_handle_setvbuf(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_system(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_readlink(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_access(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_dup2(void *data, struct rpc_instance *inst, void *priv);
+
 /* Service table */
 static struct rpc_instance service_inst;
 static struct rpc_service service_table[] = {
@@ -198,6 +201,8 @@ static struct rpc_service service_table[] = {
     {SETVBUF_ID, &rpmsg_handle_setvbuf},
     {SYSTEM_ID, &rpmsg_handle_system},
     {READLINK_ID, &rpmsg_handle_readlink},
+    {ACCESS_ID, &rpmsg_handle_access},
+    {DUP2_ID, &rpmsg_handle_dup2},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -2067,6 +2072,48 @@ static int rpmsg_handle_system(void *data, struct rpc_instance *inst, void *priv
                     &resp, payload_size);
 
     lprintf("==system send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_access(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(access)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==access(%s,%d)\n", req->pathname, req->mode);
+    ret = access(req->pathname, req->mode);
+    lprintf("==access ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), ACCESS_ID, RPMSG_RPC_OK,
+                &resp, payload_size);
+    lprintf("==access send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_dup2(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(dup2)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==dup2(%d,%d)\n", req->oldfd, req->newfd);
+    ret = dup2(req->oldfd, req->newfd);
+    lprintf("==dup2 ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), DUP2_ID, RPMSG_RPC_OK,
+                &resp, payload_size);
+    lprintf("==dup2 send rsp, %d\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }
