@@ -108,6 +108,8 @@ static int rpmsg_handle_popen(void *data, struct rpc_instance *inst, void *priv)
 static int rpmsg_handle_ungetc(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_fseeko(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_ftello(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_fseek(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_ftell(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_rename(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_remove(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_mkstemp(void *data, struct rpc_instance *inst, void *priv);
@@ -128,6 +130,11 @@ static int rpmsg_handle_readlink(void *data, struct rpc_instance *inst, void *pr
 static int rpmsg_handle_access(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_dup2(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_mkfifo(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_chmod(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_chdir(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_mkdir(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_rmdir(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_pipe(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -181,6 +188,8 @@ static struct rpc_service service_table[] = {
     {UNGETC_ID, &rpmsg_handle_ungetc},
     {FSEEKO_ID, &rpmsg_handle_fseeko},
     {FTELLO_ID, &rpmsg_handle_ftello},
+    {FSEEK_ID, &rpmsg_handle_fseek},
+    {FTELL_ID, &rpmsg_handle_ftell},
     {RENAME_ID, &rpmsg_handle_rename},
     {REMOVE_ID, &rpmsg_handle_remove},
     {MKSTMP_ID, &rpmsg_handle_mkstemp},
@@ -205,6 +214,11 @@ static struct rpc_service service_table[] = {
     {ACCESS_ID, &rpmsg_handle_access},
     {DUP2_ID, &rpmsg_handle_dup2},
     {MKFIFO_ID, &rpmsg_handle_mkfifo},
+    {CHMOD_ID, &rpmsg_handle_chmod},
+    {CHDIR_ID, &rpmsg_handle_chdir},
+    {MKDIR_ID, &rpmsg_handle_mkdir},
+    {RMDIR_ID, &rpmsg_handle_rmdir},
+    {PIPE_ID, &rpmsg_handle_pipe},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -1669,6 +1683,50 @@ static int rpmsg_handle_ftello(void *data, struct rpc_instance *inst, void *priv
     return ret > 0 ? 0 : ret;
 }
 
+static int rpmsg_handle_fseek(void *data, struct rpc_instance *inst, void *priv)
+{
+    if (data == NULL || inst == NULL || priv == NULL) {
+        return -EINVAL;
+    }
+
+    rpc_fseeko_req_t *req = data;
+    rpc_common_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
+
+    lprintf("==fseek(%ld, %d)\n", req->offset, req->whence);
+    resp.ret = fseek(f, req->offset, req->whence);
+    lprintf("==fseek %d.\n", resp.ret);
+
+    set_rsp_base(&resp.super, req->trace_id);
+    int ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FSEEK_ID, RPMSG_RPC_OK, &resp, sizeof(resp));
+    lprintf("==fseek send rsp:%d\n", ret);
+
+    CLEANUP(data);
+    return ret > 0 ? 0 : ret;
+}
+
+static int rpmsg_handle_ftell(void *data, struct rpc_instance *inst, void *priv)
+{
+    if (data == NULL || inst == NULL || priv == NULL) {
+        return -EINVAL;
+    }
+
+    rpc_ftello_req_t *req = data;
+    rpc_ftello_resp_t resp = {0};
+    FILE *f = handle2file(req->fhandle, priv);
+
+    lprintf("==ftello\n");
+    resp.ret = ftello(f);
+    lprintf("==ftello %d.\n", resp.ret);
+
+    set_rsp_base(&resp.super, req->trace_id);
+    int ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FTELL_ID, RPMSG_RPC_OK, &resp, sizeof(resp));
+    lprintf("==ftello send rsp:%d\n", ret);
+
+    CLEANUP(data);
+    return ret > 0 ? 0 : ret;
+}
+
 static int rpmsg_handle_rename(void *data, struct rpc_instance *inst, void *priv)
 {
     if (data == NULL || inst == NULL || priv == NULL) {
@@ -2137,6 +2195,115 @@ static int rpmsg_handle_mkfifo(void *data, struct rpc_instance *inst, void *priv
     ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), MKFIFO_ID, RPMSG_RPC_OK,
                 &resp, payload_size);
     lprintf("==mkfifo send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_chmod(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(chmod)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==chmod(%s,%d)\n", req->pathname, req->mode);
+    ret = chmod(req->pathname, req->mode);
+    lprintf("==chmod ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), CHMOD_ID, RPMSG_RPC_OK,
+                &resp, payload_size);
+    lprintf("==chmod send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_chdir(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(chdir)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==chdir(%s)\n", req->buf);
+    ret = chdir(req->buf);
+    lprintf("==chdir ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), CHDIR_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+
+    lprintf("==chdir send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_mkdir(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(mkdir)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==mkdir(%s,%d)\n", req->pathname, req->mode);
+    ret = mkdir(req->pathname, req->mode);
+    lprintf("==mkdir ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), MKDIR_ID, RPMSG_RPC_OK,
+                &resp, payload_size);
+    lprintf("==mkdir send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_rmdir(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(rmdir)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==rmdir(%s)\n", req->buf);
+    ret = rmdir(req->buf);
+    lprintf("==rmdir ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), RMDIR_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+
+    lprintf("==rmdir send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_pipe(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(pipe)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==pipe\n");
+    ret = pipe(resp.fd);
+    lprintf("==pipe ret:%d fd[2]:%d %d\n", ret, resp.fd[0], resp.fd[1]);
+    lerror(ret, errno);
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), PIPE_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+    lprintf("==pipe send rsp, %d\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }
