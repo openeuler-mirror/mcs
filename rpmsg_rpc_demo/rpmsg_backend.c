@@ -127,6 +127,7 @@ static int rpmsg_handle_system(void *data, struct rpc_instance *inst, void *priv
 static int rpmsg_handle_readlink(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_access(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_dup2(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_mkfifo(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -203,6 +204,7 @@ static struct rpc_service service_table[] = {
     {READLINK_ID, &rpmsg_handle_readlink},
     {ACCESS_ID, &rpmsg_handle_access},
     {DUP2_ID, &rpmsg_handle_dup2},
+    {MKFIFO_ID, &rpmsg_handle_mkfifo},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -1127,7 +1129,7 @@ static int rpmsg_handle_select(void *data, struct rpc_instance *inst, void *priv
     memcpy(&(resp.writefds), &(req->writefds), sizeof(fd_set));
     memcpy(&(resp.exceptfds), &(req->exceptfds), sizeof(fd_set));
     memcpy(&(resp.timeout), &(req->timeout), sizeof(struct timeval));
-    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), POLL_ID, RPMSG_RPC_OK,
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), SELECT_ID, RPMSG_RPC_OK,
                     &resp, payload_size);
     lprintf("==select send rsp:%d\n", ret);
     CLEANUP(data);
@@ -2114,6 +2116,27 @@ static int rpmsg_handle_dup2(void *data, struct rpc_instance *inst, void *priv)
     ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), DUP2_ID, RPMSG_RPC_OK,
                 &resp, payload_size);
     lprintf("==dup2 send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_mkfifo(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(mkfifo)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==mkfifo(%s,%u)\n", req->pathname, req->mode);
+    ret = mkfifo(req->pathname, req->mode);
+    lprintf("==mkfifo ret:%d\n", ret);
+    lerror(ret, errno);
+
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), MKFIFO_ID, RPMSG_RPC_OK,
+                &resp, payload_size);
+    lprintf("==mkfifo send rsp, %d\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }
