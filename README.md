@@ -97,8 +97,8 @@ ____
 
 #### 预留CPU及内存
 
-部署UniProton之前，需要为UniProton预留出必要的内存、CPU资源。如四核CPU建议预留一个核，内存建议预留256M，
-可通过修改boot分区的grub.cfg配置内核启动参数，新增 `maxcpus=3 memmap=256M\$0x110000000` 参数，参考如下：
+部署UniProton之前，需要为UniProton预留出必要的内存、CPU资源。如四核CPU建议预留一个核，内存建议预留512M，
+可通过修改boot分区的grub.cfg配置内核启动参数，新增 `maxcpus=3 memmap=512M\$0x110000000` 参数，参考如下：
 ```shell
 openEuler-Embedded ~ # mount /dev/sda1 /boot
 openEuler-Embedded ~ # cat /boot/efi/boot/grub.cfg
@@ -108,7 +108,7 @@ default=boot
 timeout=10
 
 menuentry 'boot'{
-linux /bzImage  root=*** rw rootwait quiet maxcpus=3 memmap=256M\$0x110000000 console=ttyS0,115200 console=tty0
+linux /bzImage  root=*** rw rootwait quiet maxcpus=3 memmap=512M\$0x110000000 console=ttyS0,115200 console=tty0
 }
 ```
 

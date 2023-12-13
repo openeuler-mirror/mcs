@@ -44,6 +44,7 @@ enum {
 	LOG_TABLE,
 	TEXT_TABLE,
 	DATA_TABLE,
+	OSCILLO_MEM_TABLE,
 	TABLE_MAX
 };
 
@@ -55,6 +56,7 @@ const char* mem_name[] = {
 	"SHAREMEM_TABLE",
 	"LOG_TABLE",
 	"TEXT_TABLE",
+	"OSCILLO_MEM_TABLE",
 	"DATA_TABLE",
 };
 
@@ -114,6 +116,13 @@ static mmu_map_info clientos_map_info[TABLE_MAX] = {
 		.pa = 0x0,
 		.size = 0x8000000, // 128MB
 		.attr = MEM_ATTR_CACHE_RWX,
+		.page_size = PAGE_SIZE_2M,
+	}, {
+		// oscillograph sharemem
+		.va = 0xf0aa00000,
+		.pa = 0x0,
+		.size = 0x6000000, // 96MB
+		.attr = MEM_ATTR_UNCACHE_RWX,
 		.page_size = PAGE_SIZE_2M,
 	}
 };
