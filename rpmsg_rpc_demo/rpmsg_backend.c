@@ -2,6 +2,8 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <net/if.h>
+#include <sys/uio.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <unistd.h>
@@ -136,6 +138,11 @@ static int rpmsg_handle_mkdir(void *data, struct rpc_instance *inst, void *priv)
 static int rpmsg_handle_rmdir(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_pipe(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_fscanfx(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_ifnameindex(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_putchar(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_gaistrerror(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_accept4(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_writev(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -221,6 +228,11 @@ static struct rpc_service service_table[] = {
     {RMDIR_ID, &rpmsg_handle_rmdir},
     {PIPE_ID, &rpmsg_handle_pipe},
     {FSCANFX_ID, &rpmsg_handle_fscanfx},
+    {IFNAMEINDEX_ID, &rpmsg_handle_ifnameindex},
+    {PUTCHAR_ID, &rpmsg_handle_putchar},
+    {GAISTRERROR_ID, &rpmsg_handle_gaistrerror},
+    {ACCEPT4_ID, &rpmsg_handle_accept4},
+    {WRITEV_ID, &rpmsg_handle_writev},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -616,7 +628,7 @@ static int rpmsg_handle_getaddrinfo(void *data, struct rpc_instance *inst, void 
 {
     DEFINE_VARS(getaddrinfo)
     char *node = NULL, *service = NULL;
-    struct addrinfo *hints = NULL, *res;
+    struct addrinfo *hints = NULL, *res = NULL;
 
     if (!req || !inst || req->node >= req->buflen || req->service >= req->buflen)
         return -EINVAL;
@@ -637,10 +649,14 @@ static int rpmsg_handle_getaddrinfo(void *data, struct rpc_instance *inst, void 
     lprintf("==getaddrinfo(%s, %s)\n", node, service);
     ret = getaddrinfo(node, service, hints, &res);
     lprintf("==getaddrinfo ret:%d\n", ret);
+    if (ret < 0) {
+        goto response;
+    }
     lerror(ret, errno);
     resp.cnt = 0;
     resp.buflen = sizeof(resp.buf);
     payload_size -= sizeof(resp.buf);
+    
     if (res != NULL) {
         resp.cnt = encode_addrlist(res, resp.buf, &resp.buflen);
         payload_size += resp.buflen;
@@ -648,10 +664,11 @@ static int rpmsg_handle_getaddrinfo(void *data, struct rpc_instance *inst, void 
         resp.cnt = 0;
         resp.buflen = 0;
     }
-    if (!ret) {
+    
+response:
+    if (res != NULL) {
         freeaddrinfo(res);
     }
-response:
     resp.ret = ret;
     set_rsp_base(&resp.super, req->trace_id);
 
@@ -2310,7 +2327,6 @@ static int rpmsg_handle_pipe(void *data, struct rpc_instance *inst, void *priv)
     return ret > 0 ?  0 : ret;
 }
 
-
 static int rpmsg_handle_fscanfx(void *data, struct rpc_instance *inst, void *priv)
 {
     if (data == NULL || inst == NULL || priv == NULL) {
@@ -2333,6 +2349,149 @@ static int rpmsg_handle_fscanfx(void *data, struct rpc_instance *inst, void *pri
     ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FSCANFX_ID, RPMSG_RPC_OK,
                     &resp, payload_size);
     lprintf("==fscanfx send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_ifnameindex(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(if_nameindex)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==ifnameindex\n");
+    struct if_nameindex *ifNameIndex = if_nameindex();
+    struct if_nameindex *p;
+    int cnt = 0;
+
+    if(ifNameIndex != NULL){
+        for (p = ifNameIndex; ! (p->if_index == 0 && p->if_name == NULL); p++){
+            resp.if_index[cnt].if_index = p->if_index;
+            memcpy(resp.if_index[cnt].if_name, p->if_name, strlen(p->if_name)+1);
+            cnt++;
+        }
+    }
+
+    resp.cnt = cnt;
+
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), IFNAMEINDEX_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+    lprintf("==ifnameindex send rsp, %d\n", ret);
+    if_freenameindex(ifNameIndex);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_putchar(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(putchar)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==putchar\n");
+    ret = putchar(req->ch);
+    lprintf("==putchar ret:%d\n", ret);
+    lerror(ret, errno);
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), PUTCHAR_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+    lprintf("==putchar send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+    
+}
+
+static int rpmsg_handle_gaistrerror(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(gai_strerror)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==gaistrerror\n");
+    const char *retStr = gai_strerror(req->error);
+    if (retStr != NULL) {
+        memcpy(resp.buf, retStr, strlen(retStr)+1);
+        lprintf("==gaistrerror(%s)\n", resp.buf);
+        resp.isNull = 0;
+    } else {
+        lprintf("==gaistrerror(NULL) %s\n", strerror(errno));
+        resp.isNull = 1;
+    }
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), GAISTRERROR_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+    lprintf("==gaistrerror send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_accept4(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(accept4)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==accept4(%d, %d)\n", req->sockfd, req->addrlen);
+    if (req->addrlen > 0) {
+        ret = accept4(req->sockfd, (struct sockaddr *)req->addr_buf, &req->addrlen, req->flags);
+    } else {
+        ret = accept4(req->sockfd, NULL, NULL, req->flags);
+    }
+    lprintf("==accept4 ret:%d, addrlen:%d\n", ret, req->addrlen);
+    lerror(ret, errno);
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+    resp.addrlen = req->addrlen;
+    payload_size -= sizeof(resp.addrlen);
+
+    if (req->addrlen > 0) {
+        memcpy(resp.buf, req->addr_buf, req->addrlen);
+        payload_size += req->addrlen;
+    }
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), ACCEPT4_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+    lprintf("==accept4 send rsp,%d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+static int rpmsg_handle_writev(void *data, struct rpc_instance *inst, void *priv)
+{
+    DEFINE_VARS(writev)
+
+    if (!req || !inst)
+        return -EINVAL;
+
+    lprintf("==writev\n");
+    struct iovec iov[req->iovcnt];
+    for(int i = 0; i < req->iovcnt; i++){
+        iov[i].iov_base = (void *)malloc(sizeof(char) * MAX_IOV_SIZE);
+        memcpy(iov[i].iov_base,req->buf[i].iov, req->buf[i].len);
+        iov[i].iov_len = req->buf[i].len;
+    }
+
+    ret = writev(req->fd, (const struct iovec *)&iov[0], req->iovcnt);
+    lprintf("==writev ret:%d\n", ret);
+    for(int i = 0; i < req->iovcnt; i++){
+        free(iov[i].iov_base);
+    }
+    lerror(ret, errno);
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), WRITEV_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+    lprintf("==writev send rsp, %d\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }
