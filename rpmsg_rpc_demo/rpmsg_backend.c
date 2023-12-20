@@ -135,6 +135,7 @@ static int rpmsg_handle_chdir(void *data, struct rpc_instance *inst, void *priv)
 static int rpmsg_handle_mkdir(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_rmdir(void *data, struct rpc_instance *inst, void *priv);
 static int rpmsg_handle_pipe(void *data, struct rpc_instance *inst, void *priv);
+static int rpmsg_handle_fscanfx(void *data, struct rpc_instance *inst, void *priv);
 
 /* Service table */
 static struct rpc_instance service_inst;
@@ -219,6 +220,7 @@ static struct rpc_service service_table[] = {
     {MKDIR_ID, &rpmsg_handle_mkdir},
     {RMDIR_ID, &rpmsg_handle_rmdir},
     {PIPE_ID, &rpmsg_handle_pipe},
+    {FSCANFX_ID, &rpmsg_handle_fscanfx},
 };
 
 #define LOG_PATH "/tmp/accesslog"
@@ -2304,6 +2306,33 @@ static int rpmsg_handle_pipe(void *data, struct rpc_instance *inst, void *priv)
     ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), PIPE_ID, RPMSG_RPC_OK,
                     &resp, payload_size);
     lprintf("==pipe send rsp, %d\n", ret);
+    CLEANUP(data);
+    return ret > 0 ?  0 : ret;
+}
+
+
+static int rpmsg_handle_fscanfx(void *data, struct rpc_instance *inst, void *priv)
+{
+    if (data == NULL || inst == NULL || priv == NULL) {
+        return -EINVAL;
+    }
+
+    int ret;
+    rpc_fscanfx_req_t *req = data;
+    rpc_fscanfx_resp_t resp = {0};
+    size_t payload_size = sizeof(resp);
+    FILE *f = handle2file(req->fhandle, priv);
+
+    lprintf("==fscanfx(0x%x, %s)\n", req->fhandle, req->fmt);
+    ret = fscanf(f, req->fmt, &(resp.data));
+    lprintf("==fscanfx ret:%d data:0x%llx\n", ret, resp.data);
+    lerror(ret, errno);
+    resp.ret = ret;
+    set_rsp_base(&resp.super, req->trace_id);
+
+    ret = rpc_server_send((((struct pty_ep_data *)priv)->ep_id), FSCANFX_ID, RPMSG_RPC_OK,
+                    &resp, payload_size);
+    lprintf("==fscanfx send rsp, %d\n", ret);
     CLEANUP(data);
     return ret > 0 ?  0 : ret;
 }
