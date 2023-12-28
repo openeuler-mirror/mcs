@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2023. All rights reserved
+ *
+ * SPDX-License-Identifier: GPL-2.0
+ */
+
 #include <linux/remoteproc.h>
 #include <linux/firmware.h>
 #include <linux/elf.h>
