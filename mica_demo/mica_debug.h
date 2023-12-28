@@ -30,8 +30,8 @@
 #define MAX_PARAM_LENGTH 100
 
 /*
-    the message queues between proxy server and shared memory
-    transferred module.
+	the message queues between proxy server and shared memory
+	transferred module.
 */
 static int alloc_message_queue();
 static void free_message_queue();

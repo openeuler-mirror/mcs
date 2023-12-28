@@ -27,13 +27,13 @@
 #define RING_BUFFER_LEN 0x1000
 
 struct debug_ring_buffer_module_data{
-    void *rx_buffer;
-    void *tx_buffer;
-    int len;
-    mqd_t to_server;
-    mqd_t from_server;
-    pthread_t data_to_rtos_thread;
-    pthread_t data_to_server_thread;
+	void *rx_buffer;
+	void *tx_buffer;
+	int len;
+	mqd_t to_server;
+	mqd_t from_server;
+	pthread_t data_to_rtos_thread;
+	pthread_t data_to_server_thread;
 };
 
 /* Deliver packets from server to RTOS */

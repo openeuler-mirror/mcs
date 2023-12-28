@@ -37,13 +37,13 @@ struct rpmsg_rpc_data {
 } METAL_PACKED_END;
 
 struct rpmsg_rpc_instance {
-    unsigned int ep_id; /* endpoint id */
+	unsigned int ep_id; /* endpoint id */
 	const struct rpmsg_rpc_service *services; /* service table */
 	unsigned int n_services; /* number of services */
 };
 
 int rpmsg_rpc_service_init(struct rpmsg_rpc_instance *inst, const struct rpmsg_rpc_service *services,
-                            unsigned int n_services);
+							unsigned int n_services);
 int rpmsg_rpc_send(struct rpmsg_rpc_instance *inst, uint32_t rpc_id, void *params, size_t len);
 
 #if defined __cplusplus

@@ -56,7 +56,7 @@ void virtio_init(struct client_os_inst *client)
 	int status = 0;
 	void *share_mem_start;
 
-    printf("\nInitialize the virtio, virtqueue and rpmsg device\n");
+	printf("\nInitialize the virtio, virtqueue and rpmsg device\n");
 
 	client->io = malloc(sizeof(struct metal_io_region));
 	if (!client->io) {
@@ -71,20 +71,20 @@ void virtio_init(struct client_os_inst *client)
 		client->shared_mem_size - client->vdev_status_size, -1, 0, NULL);
 
 	printf("virt add:%p, status_reg:%p, tx:%p, rx:%p, mempool:%p\n",
-    	client->virt_shared_mem, client->vdev_status_reg, client->virt_tx_addr,
-    	client->virt_rx_addr, share_mem_start);
+		client->virt_shared_mem, client->vdev_status_reg, client->virt_tx_addr,
+		client->virt_rx_addr, share_mem_start);
 
 	/* setup vdev */
 	client->vq[0] = virtqueue_allocate(client->vring_size);
 	if (client->vq[0] == NULL) {
 		printf("virtqueue_allocate failed to alloc vq[0]\n");
-        free(client->io);
+		free(client->io);
 		return;
 	}
 	client->vq[1] = virtqueue_allocate(client->vring_size);
 	if (client->vq[1] == NULL) {
 		printf("virtqueue_allocate failed to alloc vq[1]\n");
-        free(client->io);
+		free(client->io);
 		return;
 	}
 
@@ -136,7 +136,7 @@ void virtio_deinit(struct client_os_inst *client)
 	 */
 	/* rpmsg_deinit_vdev(&client->rvdev); */
 
-    if (client->io) {
-        free(client->io);
+	if (client->io) {
+		free(client->io);
 	}
 }

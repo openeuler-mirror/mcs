@@ -17,14 +17,14 @@ extern "C" {
 
 struct pty_ep_data {
 	unsigned int ep_id; /* endpoint id */
-    int fd_master;  /* pty master fd */
-    pthread_t pty_thread; /* thread id */
+	int fd_master;  /* pty master fd */
+	pthread_t pty_thread; /* thread id */
 };
 
 struct rpmsg_app_resource {
-    struct pty_ep_data *pty_ep_uart;
-    struct pty_ep_data *pty_ep_console;
-    pthread_t rpmsg_loop_thread;
+	struct pty_ep_data *pty_ep_uart;
+	struct pty_ep_data *pty_ep_console;
+	pthread_t rpmsg_loop_thread;
 };
 
 /* entrance for starting rpmsg applications */

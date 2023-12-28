@@ -28,14 +28,14 @@
 #define MAX_PARALLEL_CONNECTIONS 3
 
 struct proxy_server_resources {
-    int server_socket_fd;
-    int client_socket_fd;
-    pthread_t recv_from_shared_mem_thread;
+	int server_socket_fd;
+	int client_socket_fd;
+	pthread_t recv_from_shared_mem_thread;
 };
 
 struct proxy_server_recv_args {
-    mqd_t to_server;
-    int client_socket_fd;
+	mqd_t to_server;
+	int client_socket_fd;
 };
 
 int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out);

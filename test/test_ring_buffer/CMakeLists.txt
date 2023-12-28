@@ -1,5 +1,5 @@
 add_executable(${TEST_DEBUG_BACKEND}
-    test_ring_buffer.c
+	test_ring_buffer.c
 )
 
 include_directories(
