@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
-#include "mica_debug_ring_buffer.h"
+#include "mcs/mica_debug_ring_buffer.h"
+#include "mcs/mcs_common.h"
 
 /* Deliver packets from server to RTOS */
 int transfer_data_to_rtos(struct debug_ring_buffer_module_data *data)

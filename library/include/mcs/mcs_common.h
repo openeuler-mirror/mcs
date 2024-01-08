@@ -11,9 +11,6 @@
 
 #define MCS_DEVICE_NAME    "/dev/mcs"
 
-#define IOC_SENDIPI        _IOW('A', 0, int)
-#define IOC_CPUON          _IOW('A', 1, int)
-#define IOC_AFFINITY_INFO  _IOW('A', 2, int)
 
 #define STR_TO_HEX         16
 #define STR_TO_DEC         10
@@ -41,10 +38,5 @@
 */
 #define INT_TO_PTR(x) ((void *)(intptr_t)(x))
 #define PTR_TO_INT(x) ((int)(intptr_t)(x))
-
-struct cpu_info {
-	uint32_t cpu;
-	uint64_t boot_addr;
-};
 
 #endif /* MCS_COMMON_H */

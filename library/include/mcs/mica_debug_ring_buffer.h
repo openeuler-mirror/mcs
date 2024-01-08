@@ -17,9 +17,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "mcs_common.h"
-#include "mica_debug_common.h"
-#include "openamp_module.h"
+#include "mica/mica_client.h"
+#include "mcs/mica_debug_common.h"
 #include "ring_buffer.h"
 
 /* the shared memory space used for communication */

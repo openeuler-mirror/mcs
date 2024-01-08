@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
-#include "mica_gdb_server.h"
+#include "mcs/mica_gdb_server.h"
+#include "mcs/mcs_common.h"
 
 void free_resources_for_proxy_server(struct proxy_server_resources *resources)
 {

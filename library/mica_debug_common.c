@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
-#include "mica_debug_common.h"
+#include "mcs/mica_debug_common.h"
 
 FILE *log_file;
 
