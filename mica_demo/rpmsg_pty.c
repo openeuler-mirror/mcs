@@ -13,7 +13,8 @@
 #include <string.h>
 #include <pthread.h>
 
-#include "openamp_module.h"
+#include "mica/mica.h"
+#include "mcs/mcs_common.h"
 #include "rpmsg_pty.h"
 
 /* define the keys according to your terminfo */
@@ -130,6 +131,7 @@ static void *pty_thread(void *arg)
 			break;
 		}
 
+		printf("hzc debug, get command from pty, send to remote\n");
 		ret = rpmsg_service_send(pty_ep->ep_id, cmd, ret);
 		if (ret < 0) {
 			printf("rpmsg_service_send error %d\n", ret);
@@ -162,6 +164,7 @@ static struct pty_ep_data *pty_service_create(const char * ep_name)
 		goto err_free_resource_struct;
 	}
 
+	printf("hzc debug, register endpoint %s\n", ep_name);
 	pty_ep->ep_id = rpmsg_service_register_endpoint(ep_name, pty_endpoint_cb,
 											pty_endpoint_unbind_cb, pty_ep);
 	if (pty_ep->ep_id < 0) {
@@ -194,7 +197,7 @@ err_free_resource_struct:
 int rpmsg_app_start(struct client_os_inst *client)
 {
 	int ret;
-	g_rpmsg_app_resource.pty_ep_uart = pty_service_create("uart");
+	g_rpmsg_app_resource.pty_ep_uart = pty_service_create("rpmsg-tty");
 	if (g_rpmsg_app_resource.pty_ep_uart == NULL) {
 		return -1;
 	}

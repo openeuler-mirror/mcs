@@ -17,11 +17,12 @@
 #include <stdlib.h>
 #include <sys/wait.h>
 
-#include "openamp_module.h"
-#include "mica_gdb_server.h"
+#include "mica/mica.h"
+#include "mcs/mica_gdb_server.h"
+#include "mcs/mcs_common.h"
 
 #ifdef CONFIG_RING_BUFFER
-#include "mica_debug_ring_buffer.h"
+#include "mcs/mica_debug_ring_buffer.h"
 #endif
 
 #define TO_SHARED_MEM_QUEUE_NAME "/to_shared_mem_queue"
