@@ -107,6 +107,8 @@ int create_client(struct client_os_inst *client)
 		return -EINVAL;
 	}
 
+	metal_list_init(&client->services);
+
 	return 0;
 }
 

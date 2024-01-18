@@ -32,13 +32,15 @@ struct client_os_inst {
 	metal_phys_addr_t	static_mem_base;
 	unsigned int		static_mem_size;
 
-	/* generic data structure */
-	char			*path;	/* client os firmware path */
-	unsigned int		cpu_id;	/* related arg: cpu id */
-	enum			rproc_mode mode;/* The mechanism used to manage the lifecycle of a remoteproc */
+	/* client os firmware path */
+	char			*path;
+	/* the target CPU */
+	unsigned int		cpu_id;
 
-	/* data structure needed by remote proc */
-	struct remoteproc rproc;		/* remoteproc instance */
+	/* The mechanism used to manage the lifecycle of a remoteproc */
+	enum			rproc_mode mode;
+	/* remoteproc instance */
+	struct remoteproc rproc;
 
 	/* shared memory buffer */
 	/* TODO: add a lock for client */
@@ -55,6 +57,41 @@ struct client_os_inst {
 	struct rpmsg_device		*rpdev;
 	/* notification waiter */
 	int				(*wait_event)(void);
+
+	/* the bound services */
+	struct metal_list services;
+};
+
+/**
+ * struct mica_service
+ * This structure presents the rpmsg/user-defined service
+ *
+ * @node:	List of service structures.
+ * @name:	service name.
+ * @priv:	Private data of the service.
+ * @init:	The init() function gets called when the service is registered.
+ * @remove:	The remove() function gets called when the client is stopped.
+ * @rpmsg_ns_match: A match optional callback for rpmsg service, used to support "dynamic" name service.
+ * @rpmsg_ns_bind_cb: rpmsg name service bind callback.
+ */
+struct mica_service {
+	struct metal_list node;
+	char name[RPROC_MAX_NAME_LEN];
+	void *priv;
+
+	/*For user-defined service */
+	int (*init) (void *priv);
+	void (*remove) (void *priv);
+
+	/*For rpmsg service */
+	bool (*rpmsg_ns_match) (struct rpmsg_device *rdev,
+				const char *name,
+				uint32_t dest,
+				void *priv);
+	void (*rpmsg_ns_bind_cb) (struct rpmsg_device *rdev,
+				  const char *name,
+				  uint32_t dest,
+				  void *priv);
 };
 
 #if defined __cplusplus

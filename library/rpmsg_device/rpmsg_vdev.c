@@ -14,7 +14,7 @@
 #include "mica/mica.h"
 #include "memory/shm_pool.h"
 #include "rpmsg/rpmsg_vdev.h"
-#include "rpmsg/rpmsg_endpoint.h"
+#include "rpmsg/rpmsg_service.h"
 
 static int setup_vdev(struct client_os_inst *client)
 {
@@ -106,7 +106,7 @@ int create_rpmsg_device(struct client_os_inst *client)
 		goto err1;
 	}
 
-	ret =  rpmsg_init_vdev(rpmsg_vdev, vdev, ns_bind_cb,
+	ret =  rpmsg_init_vdev(rpmsg_vdev, vdev, mica_ns_bind_cb,
 			       client->shbuf_io,
 			       &client->vdev_shpool);
 	if (ret) {

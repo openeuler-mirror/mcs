@@ -12,7 +12,7 @@
 
 #include "mica/mica_client.h"
 #include "memory/shm_pool.h"
-#include "rpmsg/rpmsg_endpoint.h"
+#include "rpmsg/rpmsg_service.h"
 
 #if defined __cplusplus
 extern "C" {
