@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-int create_rpmsg_device(struct client_os_inst *client);
+int create_rpmsg_device(struct mica_client *client);
 
 #if defined __cplusplus
 }

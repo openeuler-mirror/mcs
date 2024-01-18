@@ -59,7 +59,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 				     const struct remoteproc_ops *ops, void *arg)
 {
 	int ret;
-	struct client_os_inst *client = arg;
+	struct mica_client *client = arg;
 
 	if (!client)
 		return NULL;
@@ -158,7 +158,7 @@ err_unmap:
 static int rproc_start(struct remoteproc *rproc)
 {
 	int ret;
-	struct client_os_inst *client = rproc->priv;
+	struct mica_client *client = rproc->priv;
 	struct cpu_info info = {
 		.cpu = client->cpu_id,
 		.boot_addr = rproc->bootaddr
@@ -186,7 +186,7 @@ static int rproc_shutdown(struct remoteproc *rproc)
 static int rproc_notify(struct remoteproc *rproc, uint32_t id)
 {
 	int ret;
-	struct client_os_inst *client = (struct client_os_inst *)rproc->priv;
+	struct mica_client *client = (struct mica_client *)rproc->priv;
 	struct cpu_info info = {
 		.cpu = client->cpu_id,
 	};

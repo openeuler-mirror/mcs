@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-int mica_start(struct client_os_inst *client);
+int mica_start(struct mica_client *client);
 
 #if defined __cplusplus
 }

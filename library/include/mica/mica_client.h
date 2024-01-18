@@ -25,7 +25,7 @@ enum rproc_mode {
 	RPROC_MODE_BARE_METAL = 0,
 };
 
-struct client_os_inst {
+struct mica_client {
 	const struct rpmsg_virtio_config *config;
 
 	/* The static memory is deprecated and will be removed soon */
@@ -54,7 +54,7 @@ struct client_os_inst {
 	/* virtio buffer */
 	struct rpmsg_virtio_shm_pool	vdev_shpool;
 	/* rpmsg device */
-	struct rpmsg_device		*rpdev;
+	struct rpmsg_device		*rdev;
 	/* notification waiter */
 	int				(*wait_event)(void);
 

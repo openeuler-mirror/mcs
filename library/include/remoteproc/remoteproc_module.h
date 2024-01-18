@@ -24,12 +24,12 @@ struct img_store
 };
 
 /* create remoteproc */
-int create_client(struct client_os_inst *client);
-int load_client_image(struct client_os_inst *client);
-int start_client(struct client_os_inst *client);
+int create_client(struct mica_client *client);
+int load_client_image(struct mica_client *client);
+int start_client(struct mica_client *client);
 
 /* destory remoteproc */
-void destory_client(struct client_os_inst *client);
+void destory_client(struct mica_client *client);
 
 #if defined __cplusplus
 }

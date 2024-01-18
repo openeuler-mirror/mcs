@@ -14,7 +14,7 @@ struct proxy_server_resources *g_proxy_server_resources;
 /* resources of ring buffer module */
 struct debug_ring_buffer_module_data *g_ring_buffer_module_data;
 
-int debug_start(struct client_os_inst *client_os, char *exe_name)
+int debug_start(struct mica_client *client_os, char *exe_name)
 {
 	int ret;
 	ret = alloc_message_queue();

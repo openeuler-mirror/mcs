@@ -10,21 +10,21 @@
 
 #include "memory/shm_pool.h"
 
-void *shm_pool_phys_to_virt(struct client_os_inst *client, metal_phys_addr_t phys)
+void *shm_pool_phys_to_virt(struct mica_client *client, metal_phys_addr_t phys)
 {
 	struct metal_io_region *io = client->shbuf_io;
 
 	return metal_io_phys_to_virt(io, phys);
 }
 
-metal_phys_addr_t shm_pool_virt_to_phys(struct client_os_inst *client, void *va)
+metal_phys_addr_t shm_pool_virt_to_phys(struct mica_client *client, void *va)
 {
 	struct metal_io_region *io = client->shbuf_io;
 
 	return metal_io_virt_to_phys(io, va);
 }
 
-int init_shmem_pool(struct client_os_inst *client, metal_phys_addr_t pa, size_t size)
+int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t size)
 {
 	int ret;
 	void *va;
@@ -49,7 +49,7 @@ int init_shmem_pool(struct client_os_inst *client, metal_phys_addr_t pa, size_t 
 	return 0;
 }
 
-void *get_free_shmem(struct client_os_inst *client, size_t size)
+void *get_free_shmem(struct mica_client *client, size_t size)
 {
 	void *va;
 

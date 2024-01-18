@@ -10,7 +10,7 @@
 #include "remoteproc/remoteproc_module.h"
 #include "rpmsg/rpmsg_vdev.h"
 
-int mica_start(struct client_os_inst *client)
+int mica_start(struct mica_client *client)
 {
 	int ret;
 

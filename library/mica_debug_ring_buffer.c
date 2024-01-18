@@ -110,7 +110,7 @@ static void *data_to_server_thread(void *args)
 	return INT_TO_PTR(ret);
 }
 
-int start_ring_buffer_module(struct client_os_inst *client, mqd_t from_server, mqd_t to_server, struct debug_ring_buffer_module_data **data_out)
+int start_ring_buffer_module(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct debug_ring_buffer_module_data **data_out)
 {
 	int ret;
 	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)calloc(sizeof(struct debug_ring_buffer_module_data), 1);

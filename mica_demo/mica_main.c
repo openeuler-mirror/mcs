@@ -8,7 +8,7 @@
 #include "mica_debug.h"
 #include "rpmsg_pty.h"
 
-static struct client_os_inst client_os = {
+static struct mica_client client_os = {
 	/* physical address start of shared device mem */
 	.static_mem_base = 0x70000000,
 	/* size of shared device mem */

@@ -14,7 +14,7 @@ extern "C" {
 #endif
 
 /* register a rpmsg/user-defined service */
-int mica_register_service(struct client_os_inst *client, struct mica_service *svc);
+int mica_register_service(struct mica_client *client, struct mica_service *svc);
 
 /* name service callback */
 void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest);

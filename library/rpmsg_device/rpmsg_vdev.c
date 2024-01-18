@@ -16,7 +16,7 @@
 #include "rpmsg/rpmsg_vdev.h"
 #include "rpmsg/rpmsg_service.h"
 
-static int setup_vdev(struct client_os_inst *client)
+static int setup_vdev(struct mica_client *client)
 {
 	struct remoteproc *rproc;
 	void *rsc_table, *buf;
@@ -79,7 +79,7 @@ static int setup_vdev(struct client_os_inst *client)
 	return 0;
 }
 
-int create_rpmsg_device(struct client_os_inst *client)
+int create_rpmsg_device(struct mica_client *client)
 {
 	int ret;
 	struct rpmsg_virtio_device *rpmsg_vdev;
@@ -113,7 +113,7 @@ int create_rpmsg_device(struct client_os_inst *client)
 		fprintf(stderr, "init rpmsg device failed, err: %d\n", ret);
 		goto err2;
 	}
-	client->rpdev = rpmsg_virtio_get_rpmsg_device(rpmsg_vdev);
+	client->rdev = rpmsg_virtio_get_rpmsg_device(rpmsg_vdev);
 	return ret;
 
 err2:

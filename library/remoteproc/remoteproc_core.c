@@ -91,7 +91,7 @@ static const struct image_store_ops mem_image_store_ops =
 	.features = SUPPORT_SEEK,
 };
 
-int create_client(struct client_os_inst *client)
+int create_client(struct mica_client *client)
 {
 	struct remoteproc *rproc;
 	const struct remoteproc_ops *ops;
@@ -112,7 +112,7 @@ int create_client(struct client_os_inst *client)
 	return 0;
 }
 
-int load_client_image(struct client_os_inst *client)
+int load_client_image(struct mica_client *client)
 {
 	struct remoteproc *rproc = &client->rproc;
 	struct img_store store = { 0 };
@@ -121,14 +121,14 @@ int load_client_image(struct client_os_inst *client)
 	return remoteproc_load(rproc, client->path, &store, &mem_image_store_ops, NULL);
 }
 
-int start_client(struct client_os_inst *client)
+int start_client(struct mica_client *client)
 {
 	struct remoteproc *rproc = &client->rproc;
 
 	return remoteproc_start(rproc);
 }
 
-void destory_client(struct client_os_inst *client)
+void destory_client(struct mica_client *client)
 {
 	if (client != NULL) {
 		remoteproc_shutdown(&client->rproc);

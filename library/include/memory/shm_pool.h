@@ -22,7 +22,7 @@ extern "C" {
  * @param[in]	phys	Physical address.
  * @return	NULL if out of range, or corresponding virtual address.
  */
-void *shm_pool_phys_to_virt(struct client_os_inst *client, metal_phys_addr_t phys);
+void *shm_pool_phys_to_virt(struct mica_client *client, metal_phys_addr_t phys);
 
 /**
  * Use the client's shbuf_io to convert a virtual address to physical address.
@@ -31,7 +31,7 @@ void *shm_pool_phys_to_virt(struct client_os_inst *client, metal_phys_addr_t phy
  * @param[in]	va	Virtual address within segment.
  * @return	METAL_BAD_PHYS if out of range, or corresponding physical address.
  */
-metal_phys_addr_t shm_pool_virt_to_phys(struct client_os_inst *client, void *va);
+metal_phys_addr_t shm_pool_virt_to_phys(struct mica_client *client, void *va);
 
 /**
  * Initialize a shared memory pool for a client.
@@ -41,7 +41,7 @@ metal_phys_addr_t shm_pool_virt_to_phys(struct client_os_inst *client, void *va)
  * @param[in]	size	The size of shared memory pool.
  * @return	Return 0 on success, negative errno on failure.
  */
-int init_shmem_pool(struct client_os_inst *client, metal_phys_addr_t pa, size_t size);
+int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t size);
 
 /**
  * get a free shared memory region from the client's shared memory pool.
@@ -50,7 +50,7 @@ int init_shmem_pool(struct client_os_inst *client, metal_phys_addr_t pa, size_t 
  * @param[in]	size	The desired size of the shared memory to be obtained.
  * @return	NULL if out of range, or the virtual starting address of shared memory pool.
  */
-void *get_free_shmem(struct client_os_inst *client, size_t size);
+void *get_free_shmem(struct mica_client *client, size_t size);
 
 #if defined __cplusplus
 }

@@ -19,7 +19,7 @@ struct remote_ept
 	struct metal_list node;
 };
 
-int mica_register_service(struct client_os_inst *client, struct mica_service *svc)
+int mica_register_service(struct mica_client *client, struct mica_service *svc)
 {
 	struct metal_list *node, *tmp_node;
 	struct remote_ept *r_ept;
@@ -43,8 +43,8 @@ int mica_register_service(struct client_os_inst *client, struct mica_service *sv
 	metal_list_for_each(&remote_ept_list, node) {
 		r_ept = metal_container_of(node, struct remote_ept, node);
 
-		if (svc->rpmsg_ns_match(client->rpdev, r_ept->name, r_ept->dest, priv)) {
-			svc->rpmsg_ns_bind_cb(client->rpdev, r_ept->name, r_ept->dest, priv);
+		if (svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->dest, priv)) {
+			svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->dest, priv);
 			tmp_node = node;
 			node = tmp_node->prev;
 			metal_list_del(tmp_node);
@@ -63,7 +63,7 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	struct rpmsg_virtio_device *rvdev;
 	struct remoteproc_virtio *rpvdev;
 	struct remoteproc *rproc;
-	struct client_os_inst *client;
+	struct mica_client *client;
 	struct metal_list *node;
 
 	rvdev = metal_container_of(rdev, struct rpmsg_virtio_device, rdev);
@@ -103,7 +103,7 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 
 void *rpmsg_service_receive_loop(void *arg)
 {
-	struct client_os_inst *client = arg;
+	struct mica_client *client = arg;
 
 	while (client->wait_event() != -1)
 		remoteproc_get_notification(&client->rproc, 0);
