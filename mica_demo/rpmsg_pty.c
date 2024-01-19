@@ -1,247 +1,258 @@
 /*
- * Copyright (c) Huawei Technologies Co., Ltd. 2023. All rights reserved
+ * Copyright (c) Huawei Technologies Co., Ltd. 2024. All rights reserved
  *
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
-#define _XOPEN_SOURCE 600
-#include <stdlib.h>
+#define _XOPEN_SOURCE	600
 #include <stdio.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <unistd.h>
+#include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 
 #include "mica/mica.h"
-#include "mcs/mcs_common.h"
 #include "rpmsg_pty.h"
 
-/* define the keys according to your terminfo */
-#define KEY_CTRL_D      4
+#define RPMSG_TTY_NAME		"rpmsg-tty"
+#define RPMSG_TTY_DEV		"/dev/ttyRPMSG"
+#define RPMSG_TTY_DEV_LEN	20
+#define RPMSG_TTY_MAX_DEV	10
+#define BUF_SIZE		256
 
-struct rpmsg_app_resource g_rpmsg_app_resource;
+static int tty_id[RPMSG_TTY_MAX_DEV] = { [ 0 ... (RPMSG_TTY_MAX_DEV-1) ] = -1 };
 
-static void pty_endpoint_exit(struct pty_ep_data *pty_ep)
+struct rpmsg_tty_service
 {
-	/* release the resources */
-	close(pty_ep->fd_master);
-	pthread_cancel(pty_ep->pty_thread);
-	rpmsg_service_unregister_endpoint(pty_ep->ep_id);
-	free(pty_ep);
+	int active;
+	struct rpmsg_endpoint ept;
+	int pty_master_fd;
+	int pty_slave_fd;
+	int tty_index;
+	char tty_dev[RPMSG_TTY_DEV_LEN];
+};
+
+static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
+{
+	struct rpmsg_tty_service *svc = ept->priv;
+
+	svc->active = 0;
+	rpmsg_destroy_ept(ept);
+	free(svc);
 }
 
-static void pty_endpoint_unbind_cb(struct rpmsg_endpoint *ept)
+static int rpmsg_tty_new_index(void)
 {
-	printf("%s: get unbind request from client side\n", ept->name);
+	int i;
 
-	struct pty_ep_data *pty_ep = (struct pty_ep_data *)ept->priv;
+	for (i = 0; i < RPMSG_TTY_MAX_DEV; i++) {
+		if (tty_id[i] == -1) {
+			tty_id[i] = 1;
+			return i;
+		}
+	}
 
-	pty_endpoint_exit(pty_ep);
+	return -1;
 }
 
-static int pty_endpoint_cb(struct rpmsg_endpoint *ept, void *data,
-		size_t len, uint32_t src, void *priv)
+/**
+ * opens an unused pseudo terminal, and create a link to this
+ * with the name RPMSG_TTY_DEV.
+ */
+static int create_tty_device(struct rpmsg_tty_service *svc)
 {
 	int ret;
-	struct pty_ep_data *pty_ep = (struct pty_ep_data *)priv;
+	int master_fd, slave_fd;
+	char pts_name[RPROC_MAX_NAME_LEN] = {0};
+
+	ret = rpmsg_tty_new_index();
+	if (ret == -1)
+		return ret;
+
+	svc->tty_index = ret;
+
+	ret = posix_openpt(O_RDWR | O_NOCTTY);
+	if (ret == -1)
+		return ret;
+
+	master_fd = ret;
+	ret = grantpt(master_fd);
+	if (ret != 0)
+		goto err;
+
+	ret = unlockpt(master_fd);
+	if (ret != 0)
+		goto err;
+
+	ret = ptsname_r(master_fd, pts_name, sizeof(pts_name));
+	if (ret != 0)
+		goto err;
+
+        snprintf(svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%d",
+		 RPMSG_TTY_DEV, svc->tty_index);
+
+	ret = symlink(pts_name, svc->tty_dev);
+	if (ret != 0)
+		goto err;
+
+	/* keep open a handle to the slave to prevent EIO */
+	slave_fd = open(pts_name, O_RDWR);
+	if (slave_fd == -1) {
+		unlink(pts_name);
+		goto err;
+	}
+
+	svc->pty_master_fd = master_fd;
+	svc->pty_slave_fd = slave_fd;
+	return ret;
+err:
+	close(master_fd);
+	svc->pty_master_fd = -1;
+	svc->pty_slave_fd = -1;
+	tty_id[svc->tty_index] = -1;
+	svc->tty_index = -1;
+	memset(svc->tty_dev, 0, sizeof(svc->tty_dev));
+	return ret;
+}
+
+/**
+ * RX callbacks for remote messages.
+ */
+static int rpmsg_rx_tty_callback(struct rpmsg_endpoint *ept, void *data,
+				 size_t len, uint32_t src, void *priv)
+{
+	int ret;
+	struct rpmsg_tty_service *svc = priv;
+
+	if (svc->active != 1)
+		return -EAGAIN;
 
 	while (len) {
-		ret = write(pty_ep->fd_master, data, len);
+		ret = write(svc->pty_master_fd, data, len);
 		if (ret < 0) {
-			printf("write pty master error:%d\n", ret);
+			fprintf(stderr, "write %s error:%d\n", svc->tty_dev, ret);
 			break;
 		}
 		len -= ret;
 		data = (char *)data + ret;
 	}
-
 	return 0;
 }
 
-int open_pty(int *pfdm)
-{
-	int ret = -1;
-	int fdm;
-	char pts_name[20] = {0};
-
-	/* Open the master side of the PTY */
-	fdm = posix_openpt(O_RDWR | O_NOCTTY);
-	if (fdm < 0) {
-		printf("Error %d on posix_openpt()\n", errno);
-		return ret;
-	}
-
-	printf("pty master fd is :%d\n", fdm);
-
-	ret = grantpt(fdm);
-	if (ret != 0) {
-		printf("Error %d on grantpt()\n", errno);
-		goto err_close_pty;
-	}
-
-	ret = unlockpt(fdm);
-	if (ret != 0) {
-		printf("Error %d on unlockpt()\n", errno);
-		goto err_close_pty;
-	}
-
-	/* Open the slave side of the PTY */
-	ret = ptsname_r(fdm, pts_name, sizeof(pts_name));
-	if (ret != 0) {
-		printf("Error %d on ptsname_r()\n", errno);
-		goto err_close_pty;
-	}
-
-	printf("pls open %s to talk with client OS\n", pts_name);
-
-	*pfdm = fdm;
-
-	return 0;
-
-err_close_pty:
-	close(fdm);
-}
-
-static void *pty_thread(void *arg)
+/*
+ * TX thread. Listens for the tty device, and
+ * send the messages to remote.
+ */
+void *rpmsg_tty_tx_task(void *arg)
 {
 	int ret;
-	int fdm;
-	unsigned char cmd[128];
-	struct pty_ep_data * pty_ep;
+	struct rpmsg_tty_service *svc = arg;
+	char buf[BUF_SIZE];
+	struct pollfd fds = {
+		.fd = svc->pty_master_fd,
+		.events = POLLIN
+	};
 
-	pty_ep = (struct pty_ep_data *)arg;
+	svc->active = 1;
 
-	printf("pty_thread for %s is runnning\n", rpmsg_service_endpoint_name(pty_ep->ep_id));
-	fdm = pty_ep->fd_master;
-
-	/* wait endpoint bound */
-	while(!rpmsg_service_endpoint_is_bound(pty_ep->ep_id));
-
-	while (1) {
-		ret = read(fdm, cmd, 128);   /* get command from ptmx */
-		if (ret <= 0) {
-			printf("shell_user: get from ptmx failed: %d\n", ret);
-			ret = -1;
+	while (svc->active) {
+		ret = poll(&fds, 1, -1);
+		if (ret == -1) {
+			fprintf(stderr, "%s failed: %s\n", __func__, strerror(errno));
 			break;
 		}
 
-		if (cmd[ret - 1] == KEY_CTRL_D) {  /* special key: ctrl+d */
-			ret = 0;  /* exit this thread, the same as pthread_exit */
-			break;
-		}
+		if (fds.revents & POLLIN) {
+			ret = read(svc->pty_master_fd, buf, BUF_SIZE);
+			if (ret <= 0) {
+				fprintf(stderr, "shell_user: get from ptmx failed: %d\n", ret);
+				break;
+			}
 
-		printf("hzc debug, get command from pty, send to remote\n");
-		ret = rpmsg_service_send(pty_ep->ep_id, cmd, ret);
-		if (ret < 0) {
-			printf("rpmsg_service_send error %d\n", ret);
-			ret = -1;
-			break;
+			ret = rpmsg_send(&svc->ept, buf, ret);
+			if (ret < 0) {
+				fprintf(stderr, "%s: rpmsg_send failed: %d\n", __func__, ret);
+				break;
+			}
 		}
 	}
 
-	pty_endpoint_exit(pty_ep);
-
-	return INT_TO_PTR(ret);
+	if (svc->active)
+		rpmsg_tty_unbind(&svc->ept);
 }
 
-static struct pty_ep_data *pty_service_create(const char * ep_name)
-{
-	if (ep_name == NULL) {
-		return NULL;
-	}
-
-	int ret;
-	struct pty_ep_data * pty_ep;
-
-	pty_ep = (struct pty_ep_data * )malloc(sizeof(struct pty_ep_data));
-	if (pty_ep == NULL) {
-		return NULL;
-	}
-
-	ret = open_pty(&pty_ep->fd_master);
-	if (ret != 0) {
-		goto err_free_resource_struct;
-	}
-
-	printf("hzc debug, register endpoint %s\n", ep_name);
-	pty_ep->ep_id = rpmsg_service_register_endpoint(ep_name, pty_endpoint_cb,
-											pty_endpoint_unbind_cb, pty_ep);
-	if (pty_ep->ep_id < 0) {
-		printf("register endpoint %s failed\n", ep_name);
-		goto err_close_pty;
-	}
-
-	if (pthread_create(&pty_ep->pty_thread, NULL, pty_thread, pty_ep) != 0) {
-		printf("pty thread create failed\n");
-		goto err_unregister_endpoint;
-	}
-	if (pthread_detach(pty_ep->pty_thread) != 0) {
-		printf("pty thread detach failed\n");
-		goto err_cancel_thread;
-	}
-
-	return pty_ep;
-
-err_cancel_thread:
-	pthread_cancel(pty_ep->pty_thread);
-err_unregister_endpoint:
-	rpmsg_service_unregister_endpoint(pty_ep->ep_id);
-err_close_pty:
-	close(pty_ep->fd_master);
-err_free_resource_struct:
-	free(pty_ep);
-	return NULL;
-}
-
-int rpmsg_app_start(struct client_os_inst *client)
+/**
+ * Init function for rpmsg-tty.
+ * Create a pty and an rpmsg tty endpoint.
+ */
+static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
+			   uint32_t dest, void *priv)
 {
 	int ret;
-	g_rpmsg_app_resource.pty_ep_uart = pty_service_create("rpmsg-tty");
-	if (g_rpmsg_app_resource.pty_ep_uart == NULL) {
-		return -1;
-	}
+	pthread_t tty_thread;
+	struct rpmsg_tty_service *tty_svc;
 
-	g_rpmsg_app_resource.pty_ep_console = pty_service_create("console");
-	if (g_rpmsg_app_resource.pty_ep_console == NULL) {
-		ret = -1;
-		goto err_free_uart;
-	}
+	tty_svc = malloc(sizeof(struct rpmsg_tty_service));
+	if (!tty_svc)
+		return;
+	tty_svc->ept.priv = tty_svc;
 
-	if (pthread_create(&g_rpmsg_app_resource.rpmsg_loop_thread, NULL, rpmsg_loop_thread, client) != 0) {
-		perror("create rpmsg loop thread failed\n");
-		ret = -errno;
-		goto err_free_console;
-	}
-	if (pthread_detach(g_rpmsg_app_resource.rpmsg_loop_thread) != 0) {
-		perror("detach rpmsg loop thread failed\n");
-		ret = -errno;
-		goto err_cancel_thread;
-	}
+	ret = create_tty_device(tty_svc);
+	if (ret)
+		goto free_mem;
 
-	return 0;
+	ret = rpmsg_create_ept(&tty_svc->ept, rdev, name, RPMSG_ADDR_ANY, dest,
+			       rpmsg_rx_tty_callback, rpmsg_tty_unbind);
+	if (ret)
+		goto free_mem;
 
-err_cancel_thread:
-	pthread_cancel(g_rpmsg_app_resource.rpmsg_loop_thread);
-err_free_console:
-	pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_console);
-err_free_uart:
-	pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_uart);
-	return ret;
+	/* Create a tx task to listen for a pty and send pty messages to the remote */
+	ret = pthread_create(&tty_thread, NULL, rpmsg_tty_tx_task, tty_svc);
+	if (ret)
+		goto free_ept;
+
+	ret = pthread_detach(tty_thread);
+	if (ret)
+		goto free_pthread;
+
+	fprintf(stdout, "Please open %s to talk with client OS\n", tty_svc->tty_dev);
+	return;
+
+free_pthread:
+	pthread_cancel(tty_thread);
+free_ept:
+	rpmsg_destroy_ept(&tty_svc->ept);
+free_mem:
+	free(tty_svc);
+	return;
 }
 
-static void *rpmsg_loop_thread(void *args)
+/**
+ * Allow for wildcard matches.
+ * It is possible to support "rpmsg-tty*", i.e:
+ *    rpmsg-tty0
+ *    rpmsg-tty1
+ */
+static bool rpmsg_tty_match(struct rpmsg_device *rdev, const char *name,
+			    uint32_t dest, void *priv)
 {
-	struct client_os_inst *client = (struct client_os_inst *)args;
-	printf("start polling for remote interrupts\n");
-	rpmsg_service_receive_loop(client);
-	return NULL;
+	int len0, len1;
+
+	len0 = strlen(name);
+	len1 = strlen(RPMSG_TTY_NAME);
+	len0 = len0 < len1 ? len0 : len1;
+
+	return !strncmp(name, RPMSG_TTY_NAME, len0);
 }
 
-void rpmsg_app_stop(void)
+static struct mica_service rpmsg_tty_service = {
+	.name = RPMSG_TTY_NAME,
+	.rpmsg_ns_match = rpmsg_tty_match,
+	.rpmsg_ns_bind_cb = rpmsg_tty_init,
+};
+
+int create_rpmsg_tty(struct mica_client *client)
 {
-	pthread_cancel(g_rpmsg_app_resource.rpmsg_loop_thread);
-	pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_uart);
-	pty_endpoint_exit(g_rpmsg_app_resource.pty_ep_console);
-	printf("rpmsg apps have stopped\n");
+	return mica_register_service(client, &rpmsg_tty_service);
 }

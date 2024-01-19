@@ -71,9 +71,11 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	rproc = rpvdev->priv;
 	client = rproc->priv;
 
+	DEBUG_PRINT("remote ept: name %s, dest: %d\n", name, dest);
 	metal_list_for_each(&client->services, node) {
 		svc = metal_container_of(node, struct mica_service, node);
 
+		DEBUG_PRINT("bind service: local: %s, remote: %s\n", svc->name, name);
 		if (svc->rpmsg_ns_match == NULL)
 			continue;
 		if (svc->rpmsg_ns_bind_cb == NULL) {
@@ -99,12 +101,4 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	r_ept->dest = dest;
 	strlcpy(r_ept->name, name, RPMSG_NAME_SIZE);
 	metal_list_add_tail(&remote_ept_list, &r_ept->node);
-}
-
-void *rpmsg_service_receive_loop(void *arg)
-{
-	struct mica_client *client = arg;
-
-	while (client->wait_event() != -1)
-		remoteproc_get_notification(&client->rproc, 0);
 }

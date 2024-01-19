@@ -7,6 +7,7 @@
 #ifndef MICA_H
 #define MICA_H
 
+#include <openamp/open_amp.h>
 #include <openamp/remoteproc.h>
 #include <openamp/rpmsg_virtio.h>
 

@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <pthread.h>
 #include <metal/alloc.h>
 #include <metal/io.h>
 #include <openamp/remoteproc.h>
@@ -91,8 +92,23 @@ static const struct image_store_ops mem_image_store_ops =
 	.features = SUPPORT_SEEK,
 };
 
+static void *wait_client_event(void *arg)
+{
+	struct mica_client *client = arg;
+
+	if (client->wait_event == NULL) {
+		fprintf(stderr, "wait_event ops is NULL\n");
+		return NULL;
+	}
+
+	while (client->wait_event() != -1)
+		remoteproc_get_notification(&client->rproc, 0);
+}
+
 int create_client(struct mica_client *client)
 {
+	int ret;
+	pthread_t thread;
 	struct remoteproc *rproc;
 	const struct remoteproc_ops *ops;
 
@@ -107,9 +123,21 @@ int create_client(struct mica_client *client)
 		return -EINVAL;
 	}
 
-	metal_list_init(&client->services);
+	ret = pthread_create(&thread, NULL, wait_client_event, client);
+	if (ret)
+		goto err;
 
+	ret = pthread_detach(thread);
+	if (ret) {
+		pthread_cancel(thread);
+		goto err;
+	}
+
+	metal_list_init(&client->services);
 	return 0;
+err:
+	remoteproc_remove(&client->rproc);
+	return ret;
 }
 
 int load_client_image(struct mica_client *client)

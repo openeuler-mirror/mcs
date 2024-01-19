@@ -23,7 +23,6 @@ static void cleanup(int sig)
 	if (g_is_debugging)
 		return;
 
-	rpmsg_app_stop();
 	// openamp_deinit(&client_os);
 	exit(EXIT_SUCCESS);
 }
@@ -78,26 +77,13 @@ int main(int argc, char **argv)
 		printf("mica start failed:%d\n", ret);
 		return ret;
 	}
-	ret = rpmsg_app_start(&client_os);
-	if (ret) {
-		printf("rpmsg app start failed: %d\n", ret);
-		goto err_openamp_deinit;
-	}
 
-	if (g_is_debugging) {
-		ret = debug_start(&client_os, target_exe_file);
-		if (ret < 0)
-			printf("debug start failed\n");
+	ret = create_rpmsg_tty(&client_os);
+	if (ret)
+		printf("create_rpmsg_tty failed: %d\n", ret);
 
-		g_is_debugging = false;
-	}
-	printf("wait for rpmsg app exit\n");
-	// blocked here in case automatically exit
 	while (1)
 		sleep(1);
 
-	rpmsg_app_stop();
-err_openamp_deinit:
-	// openamp_deinit(&client_os);
 	return ret;
 }
