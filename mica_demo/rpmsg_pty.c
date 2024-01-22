@@ -39,6 +39,9 @@ static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
 
 	svc->active = 0;
 	rpmsg_destroy_ept(ept);
+	tty_id[svc->tty_index] = -1;
+	close(svc->pty_master_fd);
+	close(svc->pty_slave_fd);
 	free(svc);
 }
 
@@ -108,11 +111,7 @@ static int create_tty_device(struct rpmsg_tty_service *svc)
 	return ret;
 err:
 	close(master_fd);
-	svc->pty_master_fd = -1;
-	svc->pty_slave_fd = -1;
 	tty_id[svc->tty_index] = -1;
-	svc->tty_index = -1;
-	memset(svc->tty_dev, 0, sizeof(svc->tty_dev));
 	return ret;
 }
 

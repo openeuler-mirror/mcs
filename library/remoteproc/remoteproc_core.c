@@ -24,6 +24,10 @@ static int store_open(void *store, const char *path, const void **image_data)
 	struct img_store *image = store;
 
 	image->file = fopen(path, "r");
+	if (!image->file) {
+		fprintf(stderr, "Cannot open the file:%s\n", path);
+		return -EINVAL;
+	}
 
 	fseek(image->file, 0, SEEK_END);
 	fsize = ftell(image->file);
