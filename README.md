@@ -72,9 +72,9 @@ mcs支持两种构建安装方式：
 
   4. 交叉编译用户态样例 mica_main，编译方式如下:
      ```shell
-     cmake -S . -B build -DDEMO_TARGET=mica_demo
+     cmake -S . -B build
      ## 注：若希望构建带调试信息的二进制，请配置 CMAKE_BUILD_TYPE，例如：
-     ## cmake -S . -B build -DDEMO_TARGET=mica_demo -DCMAKE_BUILD_TYPE=Debug
+     ## cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 
      cd build
      make

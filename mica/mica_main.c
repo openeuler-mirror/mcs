@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
-#include "mica/mica.h"
+#include <mica/mica.h>
 #include "mica_debug.h"
 #include "rpmsg_pty.h"
 
