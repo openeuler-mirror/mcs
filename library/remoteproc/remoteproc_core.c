@@ -107,6 +107,8 @@ static void *wait_client_event(void *arg)
 
 	while (client->wait_event() != -1)
 		remoteproc_get_notification(&client->rproc, 0);
+
+	pthread_exit(NULL);
 }
 
 int create_client(struct mica_client *client)

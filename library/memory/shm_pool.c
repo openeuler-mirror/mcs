@@ -26,7 +26,6 @@ metal_phys_addr_t shm_pool_virt_to_phys(struct mica_client *client, void *va)
 
 int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t size)
 {
-	int ret;
 	void *va;
 
 	if (client->phys_shmem_start != 0) {

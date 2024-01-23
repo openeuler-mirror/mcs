@@ -179,6 +179,8 @@ void *rpmsg_tty_tx_task(void *arg)
 
 	if (svc->active)
 		rpmsg_tty_unbind(&svc->ept);
+
+	pthread_exit(NULL);
 }
 
 /**

@@ -31,10 +31,10 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 	if (svc->init)
 		svc->init(priv);
 
-	if (svc->rpmsg_ns_match == NULL) {
+	if (svc->rpmsg_ns_match == NULL)
 		return 0;
 
-	if (svc->rpmsg_ns_bind_cb == NULL)
+	if (svc->rpmsg_ns_bind_cb == NULL) {
 		fprintf(stderr, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
 		return -EINVAL;
 	}

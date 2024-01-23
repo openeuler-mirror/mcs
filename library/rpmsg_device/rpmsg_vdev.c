@@ -21,7 +21,7 @@ static int setup_vdev(struct mica_client *client)
 	struct remoteproc *rproc;
 	void *rsc_table, *buf;
 	struct fw_rsc_vdev *vdev_rsc;
-	struct fw_rsc_vdev_vring *vring_rsc;
+	struct fw_rsc_vdev_vring *vring_rsc = NULL;
 	size_t vdev_rsc_offset, bufsz;
 	unsigned int num_vrings, i;
 
@@ -66,6 +66,8 @@ static int setup_vdev(struct mica_client *client)
 	/*
 	 * TODO: suppot rpmsg_virtio_config
 	 */
+	if (!vring_rsc)
+		return -ENODEV;
 	bufsz = 512 * vring_rsc->num * 2;
 	buf = get_free_shmem(client, bufsz);
 	if (!buf)
