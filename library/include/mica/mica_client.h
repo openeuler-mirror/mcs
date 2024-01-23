@@ -7,6 +7,7 @@
 #ifndef MICA_CLIENT_H
 #define MICA_CLIENT_H
 
+#include <syslog.h>
 #include <openamp/remoteproc.h>
 #include <openamp/rpmsg_virtio.h>
 
@@ -15,8 +16,8 @@ extern "C" {
 #endif
 
 #ifdef DEBUG
-#define DEBUG_PRINT(fmt, ...) do{ fprintf(stderr, "%s:%d:%s():\n\t" fmt, __FILE__, \
-				     __LINE__, __func__, __VA_ARGS__); } while (0)
+#define DEBUG_PRINT(fmt, args...) do{ syslog(LOG_DEBUG, "DEBUG: %s:%d:%s(): " fmt, \
+				      __FILE__, __LINE__, __func__, ##args); } while (0)
 #else
 #define DEBUG_PRINT(fmt, ...) do{ } while (0)
 #endif

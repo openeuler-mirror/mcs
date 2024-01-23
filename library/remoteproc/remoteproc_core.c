@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <syslog.h>
 #include <pthread.h>
 #include <metal/alloc.h>
 #include <metal/io.h>
@@ -25,7 +26,7 @@ static int store_open(void *store, const char *path, const void **image_data)
 
 	image->file = fopen(path, "r");
 	if (!image->file) {
-		fprintf(stderr, "Cannot open the file:%s\n", path);
+		syslog(LOG_ERR, "Cannot open the file:%s\n", path);
 		return -EINVAL;
 	}
 
@@ -61,7 +62,7 @@ static int store_load(void *store, size_t offset, size_t size,
 
 	if (pa == METAL_BAD_PHYS) {
 		if (data == NULL) {
-			fprintf(stderr, "%s failed: data is NULL while pa is ANY\n", __func__);
+			syslog(LOG_ERR, "%s failed: data is NULL while pa is ANY\n", __func__);
 			return -EINVAL;
 		}
 
@@ -101,7 +102,7 @@ static void *wait_client_event(void *arg)
 	struct mica_client *client = arg;
 
 	if (client->wait_event == NULL) {
-		fprintf(stderr, "wait_event ops is NULL\n");
+		syslog(LOG_ERR, "wait_event ops is NULL\n");
 		return NULL;
 	}
 
@@ -125,7 +126,7 @@ int create_client(struct mica_client *client)
 
 	rproc = remoteproc_init(&client->rproc, ops, client);
 	if (!rproc) {
-		fprintf(stderr, "remoteproc init failed\n");
+		syslog(LOG_ERR, "remoteproc init failed\n");
 		return -EINVAL;
 	}
 

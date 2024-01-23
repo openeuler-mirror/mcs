@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <syslog.h>
 #include <metal/atomic.h>
 #include <metal/alloc.h>
 
@@ -29,7 +30,7 @@ int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t siz
 	void *va;
 
 	if (client->phys_shmem_start != 0) {
-		fprintf(stderr, "%s failed: the shared memory of this client has been registered\n",
+		syslog(LOG_ERR, "%s failed: the shared memory of this client has been registered\n",
 			__func__);
 		return -EPERM;
 	}
@@ -53,7 +54,7 @@ void *get_free_shmem(struct mica_client *client, size_t size)
 	void *va;
 
 	if (client->unused_shmem_start + size > client->virt_shmem_end) {
-		fprintf(stderr, "%s failed: no free shared memory found\n", __func__);
+		syslog(LOG_ERR, "%s failed: no free shared memory found\n", __func__);
 		DEBUG_PRINT("free shmem: 0x%p - 0x%p (size: 0x%lx), alloc size: 0x%lx\n",
 			     client->unused_shmem_start, client->virt_shmem_end,
 			     (size_t)(client->virt_shmem_end - client->unused_shmem_start), size);

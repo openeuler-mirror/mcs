@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <syslog.h>
 
 #include "mica/mica.h"
 #include "remoteproc/remoteproc_module.h"
@@ -16,26 +17,26 @@ int mica_start(struct mica_client *client)
 
 	ret = create_client(client);
 	if (ret) {
-		fprintf(stderr, "create remoteproc failed, err: %d\n", ret);
+		syslog(LOG_ERR, "create remoteproc failed, err: %d\n", ret);
 		return ret;
 	}
 
 	ret = load_client_image(client);
 	if (ret) {
-		fprintf(stderr, "load client image failed, err: %d\n", ret);
+		syslog(LOG_ERR, "load client image failed, err: %d\n", ret);
 		return ret;
 	}
 
 	ret = create_rpmsg_device(client);
 	if (ret) {
-		fprintf(stderr, "create rpmsg device failed, err: %d\n", ret);
+		syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
 		return ret;
 	}
 
 	/* TODO: free rpmsg device */
 	ret = start_client(client);
 	if (ret)
-		fprintf(stderr, "start client OS failed, err: %d\n", ret);
+		syslog(LOG_ERR, "start client OS failed, err: %d\n", ret);
 
 	return ret;
 }

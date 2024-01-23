@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
+#include <syslog.h>
 
 #include <metal/alloc.h>
 #include <metal/io.h>
@@ -44,7 +45,7 @@ static int rproc_wait_event(void)
 	while (1) {
 		ret = poll(&fds, 1, -1);
 		if (ret == -1) {
-			fprintf(stderr, "%s failed: %s\n", __func__, strerror(errno));
+			syslog(LOG_ERR, "%s failed: %s\n", __func__, strerror(errno));
 			break;
 		}
 
@@ -70,7 +71,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	/* open mcs device for rproc->ops */
 	mcs_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
 	if (mcs_fd < 0) {
-		fprintf(stderr, "open %s device failed, err %d\n", MCS_DEVICE_NAME, mcs_fd);
+		syslog(LOG_ERR, "open %s device failed, err %d\n", MCS_DEVICE_NAME, mcs_fd);
 		return NULL;
 	}
 
@@ -84,7 +85,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	ret = init_shmem_pool(client, client->static_mem_base, client->static_mem_size);
 	if (ret){
 		close(mcs_fd);
-		fprintf(stderr, "init shared memory pool failed, err %d\n", ret);
+		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
 		return NULL;
 	}
 
@@ -125,7 +126,7 @@ static void *rproc_mmap(struct remoteproc *rproc,
 
 	va = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE, MAP_SHARED, mcs_fd, aligned_addr);
 	if (va == MAP_FAILED) {
-		fprintf(stderr, "mmap(0x%lx-0x%lx) failed: %s\n",
+		syslog(LOG_ERR, "mmap(0x%lx-0x%lx) failed: %s\n",
 			aligned_addr, aligned_addr + aligned_size, strerror(errno));
 		return NULL;
 	}
@@ -166,7 +167,7 @@ static int rproc_start(struct remoteproc *rproc)
 
 	ret = ioctl(mcs_fd, IOC_CPUON, &info);
 	if (ret < 0) {
-		fprintf(stderr, "boot client os on CPU%d failed, err: %d\n", info.cpu, ret);
+		syslog(LOG_ERR, "boot client os on CPU%d failed, err: %d\n", info.cpu, ret);
 		return ret;
 	}
 
@@ -179,7 +180,7 @@ static int rproc_shutdown(struct remoteproc *rproc)
 	 * Delete all the registered remoteproc memories
 	 * and tell clientos shut itself down by PSCI
 	 */
-	printf("shutdown rproc\n");
+	DEBUG_PRINT("shutdown rproc\n");
 	return 0;
 }
 
@@ -194,7 +195,7 @@ static int rproc_notify(struct remoteproc *rproc, uint32_t id)
 	(void)id;
 	ret = ioctl(mcs_fd, IOC_SENDIPI, &info);
 	if (ret < 0) {
-		fprintf(stderr, "send ipi to CPU%d failed, err: %d\n", info.cpu, ret);
+		syslog(LOG_ERR, "send ipi to CPU%d failed, err: %d\n", info.cpu, ret);
 		return ret;
 	}
 

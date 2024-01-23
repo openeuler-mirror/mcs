@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <syslog.h>
 #include <metal/alloc.h>
 #include <metal/io.h>
 #include <openamp/virtio.h>
@@ -93,7 +94,7 @@ int create_rpmsg_device(struct mica_client *client)
 
 	ret = setup_vdev(client);
 	if (ret != 0) {
-		fprintf(stderr, "setup virtio device failed, err: %d\n", ret);
+		syslog(LOG_ERR, "setup virtio device failed, err: %d\n", ret);
 		goto err1;
 	}
 
@@ -103,7 +104,7 @@ int create_rpmsg_device(struct mica_client *client)
 	 */
 	vdev = remoteproc_create_virtio(&client->rproc, 0, VIRTIO_DEV_DRIVER, NULL);
 	if (!vdev) {
-		fprintf(stderr, "create virtio device failed\n");
+		syslog(LOG_ERR, "create virtio device failed\n");
 		ret = -EINVAL;
 		goto err1;
 	}
@@ -112,7 +113,7 @@ int create_rpmsg_device(struct mica_client *client)
 			       client->shbuf_io,
 			       &client->vdev_shpool);
 	if (ret) {
-		fprintf(stderr, "init rpmsg device failed, err: %d\n", ret);
+		syslog(LOG_ERR, "init rpmsg device failed, err: %d\n", ret);
 		goto err2;
 	}
 	client->rdev = rpmsg_virtio_get_rpmsg_device(rpmsg_vdev);

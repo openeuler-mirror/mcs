@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <syslog.h>
 #include <openamp/remoteproc_virtio.h>
 
 #include "mica/mica.h"
@@ -35,7 +36,7 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 		return 0;
 
 	if (svc->rpmsg_ns_bind_cb == NULL) {
-		fprintf(stderr, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
+		syslog(LOG_ERR, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
 		return -EINVAL;
 	}
 
@@ -75,11 +76,11 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	metal_list_for_each(&client->services, node) {
 		svc = metal_container_of(node, struct mica_service, node);
 
-		DEBUG_PRINT("bind service: local: %s, remote: %s\n", svc->name, name);
+		DEBUG_PRINT("binding service. local: %s, remote: %s\n", svc->name, name);
 		if (svc->rpmsg_ns_match == NULL)
 			continue;
 		if (svc->rpmsg_ns_bind_cb == NULL) {
-			fprintf(stderr, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
+			syslog(LOG_ERR, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
 			return;
 		}
 		if (svc->rpmsg_ns_match(rdev, name, dest, svc->priv)) {
@@ -94,7 +95,7 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	 */
 	r_ept = metal_allocate_memory(sizeof(*r_ept));
 	if (!r_ept) {
-		fprintf(stderr, "%s failed: remote_ept node creation failed, no memory\n", __func__);
+		syslog(LOG_ERR, "%s failed: remote_ept node creation failed, no memory\n", __func__);
 		return;
 	}
 
