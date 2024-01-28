@@ -1,0 +1,13 @@
+[Unit]
+Description=Mixed Criticality System Service
+
+[Service]
+Type=forking
+PIDFile=/run/micad.pid
+ExecStart=/usr/bin/micad
+TimeoutStartSec=0
+Restart=on-failure
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

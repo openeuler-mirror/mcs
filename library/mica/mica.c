@@ -11,7 +11,7 @@
 #include "remoteproc/remoteproc_module.h"
 #include "rpmsg/rpmsg_vdev.h"
 
-int mica_start(struct mica_client *client)
+int mica_create(struct mica_client *client)
 {
 	int ret;
 
@@ -28,16 +28,26 @@ int mica_start(struct mica_client *client)
 	}
 
 	ret = create_rpmsg_device(client);
-	if (ret) {
+	if (ret)
 		syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
-		return ret;
-	}
 
-	/* TODO: free rpmsg device */
+	return ret;
+}
+
+int mica_start(struct mica_client *client)
+{
+	int ret;
+
 	ret = start_client(client);
 	if (ret)
 		syslog(LOG_ERR, "start client OS failed, err: %d\n", ret);
+		/* TODO: free rpmsg device */
 
 	return ret;
+}
+
+const char *mica_status(struct mica_client *client)
+{
+	return show_client_status(client);
 }
 

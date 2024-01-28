@@ -170,3 +170,22 @@ void destory_client(struct mica_client *client)
 		remoteproc_remove(&client->rproc);
 	}
 }
+
+const char *show_client_status(struct mica_client *client)
+{
+	/* Match with rproc_state */
+	static const char* const client_status[RPROC_LAST] = {
+		[RPROC_OFFLINE]		= "Offline",
+		[RPROC_CONFIGURED]	= "Configured",
+		[RPROC_READY]		= "Ready",
+		[RPROC_RUNNING]		= "Running",
+		[RPROC_SUSPENDED]	= "Suspended",
+		[RPROC_ERROR]		= "Error",
+		[RPROC_STOPPED]		= "Stopped",
+        };
+
+	if (client->rproc.state >= RPROC_OFFLINE && client->rproc.state < RPROC_LAST)
+		return client_status[client->rproc.state];
+	else
+		return NULL;
+}

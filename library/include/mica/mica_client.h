@@ -15,6 +15,8 @@
 extern "C" {
 #endif
 
+#define MAX_FIRMWARE_PATH_LEN	128
+
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...) do{ syslog(LOG_DEBUG, "DEBUG: %s:%d:%s(): " fmt, \
 				      __FILE__, __LINE__, __func__, ##args); } while (0)
@@ -34,7 +36,7 @@ struct mica_client {
 	unsigned int		static_mem_size;
 
 	/* client os firmware path */
-	char			*path;
+	char			path[MAX_FIRMWARE_PATH_LEN];
 	/* the target CPU */
 	unsigned int		cpu_id;
 

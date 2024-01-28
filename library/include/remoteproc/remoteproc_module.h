@@ -31,6 +31,8 @@ int start_client(struct mica_client *client);
 /* destory remoteproc */
 void destory_client(struct mica_client *client);
 
+const char *show_client_status(struct mica_client *client);
+
 #if defined __cplusplus
 }
 #endif
