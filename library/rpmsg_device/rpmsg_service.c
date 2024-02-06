@@ -20,6 +20,21 @@ struct remote_ept
 	struct metal_list node;
 };
 
+void print_device_of_service(struct mica_client *client, char *str, size_t size)
+{
+	struct metal_list *node;
+	struct mica_service *svc;
+
+	metal_list_for_each(&client->services, node) {
+		svc = metal_container_of(node, struct mica_service, node);
+
+		if (svc->get_match_device != NULL)
+			svc->get_match_device(str + strlen(str), size - strlen(str), svc->priv);
+		else
+			snprintf(str + strlen(str), size - strlen(str), "%s", svc->name);
+	}
+}
+
 int mica_register_service(struct mica_client *client, struct mica_service *svc)
 {
 	struct metal_list *node, *tmp_node;

@@ -76,6 +76,7 @@ struct mica_client {
  * @remove:	The remove() function gets called when the client is stopped.
  * @rpmsg_ns_match: A match optional callback for rpmsg service, used to support "dynamic" name service.
  * @rpmsg_ns_bind_cb: rpmsg name service bind callback.
+ * @get_match_device: get the devices associated with this service.
  */
 struct mica_service {
 	struct metal_list node;
@@ -95,6 +96,7 @@ struct mica_service {
 				  const char *name,
 				  uint32_t dest,
 				  void *priv);
+	void (*get_match_device) (char *str, size_t size, void *priv);
 };
 
 #if defined __cplusplus

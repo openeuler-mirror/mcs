@@ -23,6 +23,7 @@
 
 static int tty_id[RPMSG_TTY_MAX_DEV] = { [ 0 ... (RPMSG_TTY_MAX_DEV-1) ] = -1 };
 
+static METAL_DECLARE_LIST(tty_dev_list);
 struct rpmsg_tty_service
 {
 	int active;
@@ -31,6 +32,7 @@ struct rpmsg_tty_service
 	int pty_slave_fd;
 	int tty_index;
 	char tty_dev[RPMSG_TTY_DEV_LEN];
+	struct metal_list node;
 };
 
 static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
@@ -42,6 +44,7 @@ static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
 	tty_id[svc->tty_index] = -1;
 	close(svc->pty_master_fd);
 	close(svc->pty_slave_fd);
+	metal_list_del(&svc->node);
 	free(svc);
 }
 
@@ -208,6 +211,12 @@ static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
 	if (ret)
 		goto free_mem;
 
+	/*
+	 * If the ept is successfully created, append the device to tty_dev_list
+	 * to make it easier to get the associated device.
+	 */
+	metal_list_add_tail(&tty_dev_list, &tty_svc->node);
+
 	/* Create a tx task to listen for a pty and send pty messages to the remote */
 	ret = pthread_create(&tty_thread, NULL, rpmsg_tty_tx_task, tty_svc);
 	if (ret)
@@ -224,6 +233,7 @@ free_pthread:
 	pthread_cancel(tty_thread);
 free_ept:
 	rpmsg_destroy_ept(&tty_svc->ept);
+	metal_list_del(&tty_svc->node);
 free_mem:
 	free(tty_svc);
 	return;
@@ -247,10 +257,23 @@ static bool rpmsg_tty_match(struct rpmsg_device *rdev, const char *name,
 	return !strncmp(name, RPMSG_TTY_NAME, len0);
 }
 
+static void get_rpmsg_tty_dev(char *str, size_t size, void *priv)
+{
+	struct rpmsg_tty_service *tty_svc;
+	struct metal_list *node;
+
+	metal_list_for_each(&tty_dev_list, node) {
+		tty_svc = metal_container_of(node, struct rpmsg_tty_service, node);
+		snprintf(str + strlen(str), size - strlen(str), "%s(%s) ",
+			 tty_svc->ept.name, tty_svc->tty_dev);
+	}
+}
+
 static struct mica_service rpmsg_tty_service = {
 	.name = RPMSG_TTY_NAME,
 	.rpmsg_ns_match = rpmsg_tty_match,
 	.rpmsg_ns_bind_cb = rpmsg_tty_init,
+	.get_match_device = get_rpmsg_tty_dev,
 };
 
 int create_rpmsg_tty(struct mica_client *client)

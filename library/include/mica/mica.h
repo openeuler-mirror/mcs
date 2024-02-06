@@ -22,7 +22,7 @@ extern "C" {
 int mica_create(struct mica_client *client);
 int mica_start(struct mica_client *client);
 const char *mica_status(struct mica_client *client);
-
+void mica_print_service(struct mica_client *client, char *str, size_t size);
 #if defined __cplusplus
 }
 #endif

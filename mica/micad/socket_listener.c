@@ -202,11 +202,14 @@ static int check_create_msg(struct create_msg msg, int msg_fd)
 static void show_status(int msg_fd, struct listen_unit *unit)
 {
         const char *status;
-	char response[RESPONSE_MSG_SIZE] = { 0 };
+	char response[RESPONSE_MSG_SIZE * 2] = { 0 };
+	char buffer[RESPONSE_MSG_SIZE] = { 0 };
 
 	status = mica_status(unit->client);
-	snprintf(response, MAX_PATH_LEN, "%-30s%-20d%-20s",
-		 unit->name, unit->client->cpu_id, status);
+	mica_print_service(unit->client, buffer, RESPONSE_MSG_SIZE);
+	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-30s%-20d%-20s%s",
+		 unit->name, unit->client->cpu_id, status, buffer);
+
 	send_log(msg_fd, "%s", response);
 }
 

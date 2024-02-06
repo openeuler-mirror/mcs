@@ -51,3 +51,7 @@ const char *mica_status(struct mica_client *client)
 	return show_client_status(client);
 }
 
+void mica_print_service(struct mica_client *client, char *str, size_t size)
+{
+	print_device_of_service(client, str, size);
+}
