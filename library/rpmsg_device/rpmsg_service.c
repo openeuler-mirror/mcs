@@ -8,15 +8,17 @@
 #include <syslog.h>
 #include <openamp/remoteproc_virtio.h>
 
-#include "mica/mica.h"
-#include "rpmsg/rpmsg_service.h"
+#include <mica/mica.h>
+#include <rpmsg/rpmsg_service.h>
+#include <remoteproc/mica_rsc.h>
 
 static METAL_DECLARE_LIST(remote_ept_list);
 
 struct remote_ept
 {
 	char              name[RPMSG_NAME_SIZE];
-	uint32_t          dest;
+	uint32_t          addr;
+	uint32_t          dest_addr;
 	struct metal_list node;
 };
 
@@ -59,8 +61,9 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 	metal_list_for_each(&remote_ept_list, node) {
 		r_ept = metal_container_of(node, struct remote_ept, node);
 
-		if (svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->dest, priv)) {
-			svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->dest, priv);
+		if (svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv)) {
+			svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv);
+			DEBUG_PRINT("binding an already existing service. local: %s, remote: %s\n", svc->name, r_ept->name);
 			tmp_node = node;
 			node = tmp_node->prev;
 			metal_list_del(tmp_node);
@@ -68,6 +71,7 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 		}
 	}
 
+	DEBUG_PRINT("register service: %s\n", svc->name);
 	metal_list_add_tail(&client->services, &svc->node);
 	return 0;
 }
@@ -81,6 +85,7 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	struct remoteproc *rproc;
 	struct mica_client *client;
 	struct metal_list *node;
+	int ret;
 
 	rvdev = metal_container_of(rdev, struct rpmsg_virtio_device, rdev);
 	rpvdev = metal_container_of(rvdev->vdev, struct remoteproc_virtio, vdev);
@@ -91,15 +96,16 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	metal_list_for_each(&client->services, node) {
 		svc = metal_container_of(node, struct mica_service, node);
 
-		DEBUG_PRINT("binding service. local: %s, remote: %s\n", svc->name, name);
+		DEBUG_PRINT("local service: %s\n", svc->name);
 		if (svc->rpmsg_ns_match == NULL)
 			continue;
 		if (svc->rpmsg_ns_bind_cb == NULL) {
 			syslog(LOG_ERR, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
 			return;
 		}
-		if (svc->rpmsg_ns_match(rdev, name, dest, svc->priv)) {
-			svc->rpmsg_ns_bind_cb(rdev, name, dest, svc->priv);
+		if (svc->rpmsg_ns_match(rdev, name, dest, RPMSG_ADDR_ANY, svc->priv)) {
+			DEBUG_PRINT("binding service. local: %s, remote: %s\n", svc->name, name);
+			svc->rpmsg_ns_bind_cb(rdev, name, dest, RPMSG_ADDR_ANY, svc->priv);
 			return;
 		}
 	}
@@ -114,7 +120,25 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 		return;
 	}
 
-	r_ept->dest = dest;
+	r_ept->addr = dest;
+	r_ept->dest_addr = RPMSG_ADDR_ANY;
+	strlcpy(r_ept->name, name, RPMSG_NAME_SIZE);
+	metal_list_add_tail(&remote_ept_list, &r_ept->node);
+}
+
+void register_remote_ept(const char *name, uint32_t addr, uint32_t dest_addr)
+{
+	struct remote_ept *r_ept;
+
+	r_ept = metal_allocate_memory(sizeof(*r_ept));
+	if (!r_ept) {
+		syslog(LOG_ERR, "%s failed: remote_ept node creation failed, no memory\n", __func__);
+		return;
+	}
+
+	DEBUG_PRINT("restore endpoint: %s, addr:%d, dest_addr: %d", name, addr, dest_addr);
+	r_ept->addr = addr;
+	r_ept->dest_addr = dest_addr;
 	strlcpy(r_ept->name, name, RPMSG_NAME_SIZE);
 	metal_list_add_tail(&remote_ept_list, &r_ept->node);
 }

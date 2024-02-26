@@ -90,11 +90,13 @@ struct mica_service {
 	/*For rpmsg service */
 	bool (*rpmsg_ns_match) (struct rpmsg_device *rdev,
 				const char *name,
-				uint32_t dest,
+				uint32_t addr,
+				uint32_t dest_addr,
 				void *priv);
 	void (*rpmsg_ns_bind_cb) (struct rpmsg_device *rdev,
 				  const char *name,
-				  uint32_t dest,
+				  uint32_t addr,
+				  uint32_t dest_addr,
 				  void *priv);
 	void (*get_match_device) (char *str, size_t size, void *priv);
 };

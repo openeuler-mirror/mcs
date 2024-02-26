@@ -191,7 +191,7 @@ void *rpmsg_tty_tx_task(void *arg)
  * Create a pty and an rpmsg tty endpoint.
  */
 static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
-			   uint32_t dest, void *priv)
+			   uint32_t remote_addr, uint32_t remote_dest, void *priv)
 {
 	int ret;
 	pthread_t tty_thread;
@@ -206,7 +206,7 @@ static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
 	if (ret)
 		goto free_mem;
 
-	ret = rpmsg_create_ept(&tty_svc->ept, rdev, name, RPMSG_ADDR_ANY, dest,
+	ret = rpmsg_create_ept(&tty_svc->ept, rdev, name, remote_dest, remote_addr,
 			       rpmsg_rx_tty_callback, rpmsg_tty_unbind);
 	if (ret)
 		goto free_mem;
@@ -246,7 +246,7 @@ free_mem:
  *    rpmsg-tty1
  */
 static bool rpmsg_tty_match(struct rpmsg_device *rdev, const char *name,
-			    uint32_t dest, void *priv)
+			    uint32_t remote_addr, uint32_t remote_dest, void *priv)
 {
 	int len0, len1;
 

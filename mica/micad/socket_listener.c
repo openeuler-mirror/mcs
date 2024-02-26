@@ -395,7 +395,6 @@ static void rmrf(const char *path)
 	(void)!nftw(path, unlink_cb, 64, FTW_DEPTH | FTW_PHYS);
 }
 
-
 int register_socket_listener(void)
 {
 	int ret;
