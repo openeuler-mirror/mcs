@@ -149,10 +149,31 @@ err:
 
 int load_client_image(struct mica_client *client)
 {
+	int ret;
 	struct remoteproc *rproc = &client->rproc;
 	struct img_store store = { 0 };
+	const void *img_data;
 
-	remoteproc_config(rproc, NULL);
+	ret = store_open(&store, client->path, &img_data);
+	if (ret <= 0) {
+		syslog(LOG_ERR, "failed to open firmware %d", ret);
+		return -EINVAL;
+	}
+
+	ret = remoteproc_config(rproc, &store);
+	if (ret) {
+		syslog(LOG_ERR, "remoteproc config failed, ret:%d", ret);
+		store_close(&store);
+		return -EINVAL;
+	}
+	store_close(&store);
+
+	/* If the remote is already in a running state, skip the load */
+	if (rproc->rsc_table) {
+		DEBUG_PRINT("already running: %x\n", *(uint32_t *)(rproc->rsc_table + 8));
+		return ret;
+	}
+
 	return remoteproc_load(rproc, client->path, &store, &mem_image_store_ops, NULL);
 }
 

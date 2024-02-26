@@ -10,13 +10,15 @@
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <syslog.h>
-
 #include <metal/alloc.h>
+#include <metal/cache.h>
 #include <metal/io.h>
 #include <openamp/remoteproc.h>
+#include <openamp/elf_loader.h>
 
-#include "memory/shm_pool.h"
-#include "remoteproc/remoteproc_module.h"
+#include <memory/shm_pool.h>
+#include <remoteproc/remoteproc_module.h>
+#include <remoteproc/mica_rsc.h>
 
 struct cpu_info {
 	uint32_t cpu;
@@ -29,6 +31,9 @@ static int mcs_fd;
 #define IOC_CPUON          _IOW('A', 1, int)
 #define IOC_AFFINITY_INFO  _IOW('A', 2, int)
 
+/* PSCI FUNCTIONS */
+#define CPU_ON_FUNCID      0xC4000003
+#define SYSTEM_RESET       0x84000009
 /*
  * Listen to events sent from the remote
  *
@@ -147,7 +152,7 @@ static void *rproc_mmap(struct remoteproc *rproc,
 	if (io)
 		*io = tmpio;
 
-	DEBUG_PRINT("mmap succeeded, paddr: 0x%lx, vaddr: 0x%p, size 0x%lx\n",
+	DEBUG_PRINT("mmap succeeded, paddr: 0x%lx, vaddr: %p, size 0x%lx\n",
 		     (unsigned long)mem->pa, va + offset, size);
 	return metal_io_phys_to_virt(tmpio, mem->pa);
 
@@ -156,14 +161,107 @@ err_unmap:
 	return NULL;
 }
 
+static void set_cpu_status(struct resource_table *rsc_table, uint32_t status)
+{
+	rsc_table->reserved[0] = status;
+	metal_cache_flush(rsc_table->reserved, sizeof(rsc_table->reserved));
+}
+
+static uint32_t get_cpu_status(struct resource_table *rsc_table)
+{
+	metal_cache_invalidate(rsc_table->reserved, sizeof(rsc_table->reserved));
+	return rsc_table->reserved[0];
+}
+
+static int rproc_config(struct remoteproc *rproc, void *data)
+{
+	int ret;
+	uint32_t status;
+	struct img_store *image = data;
+	const struct loader_ops *loader = &elf_ops;
+	size_t offset, noffset;
+	size_t len, nlen;
+	int last_load_state;
+	metal_phys_addr_t rsc_da;
+	size_t rsc_size = 0;
+	void *limg_info = NULL;
+	void *rsc_table = NULL;
+	struct metal_io_region *io = NULL;
+
+	/* parse executable headers */
+	fseek(image->file, 0, SEEK_END);
+	offset = 0;
+	len = ftell(image->file);
+
+	last_load_state = RPROC_LOADER_NOT_READY;
+	ret = loader->load_header(image->buf, offset, len,
+				  &limg_info, last_load_state,
+				  &noffset, &nlen);
+	if (ret < 0) {
+		syslog(LOG_ERR, "load header failed 0x%lx,%ld", offset, len);
+		goto err;
+	}
+
+	ret = loader->locate_rsc_table(limg_info, &rsc_da, &offset, &rsc_size);
+	if (ret != 0 || rsc_size <= 0) {
+		syslog(LOG_ERR, "unable to locate rsctable, ret: %d", ret);
+		goto err;
+	}
+
+	DEBUG_PRINT("get rsctable from header, rsc_da: %lx, rsc_size: %ld\n", rsc_da, rsc_size);
+	rsc_table = remoteproc_mmap(rproc, NULL, &rsc_da, rsc_size, 0, &io);
+	if (!rsc_table) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	status = get_cpu_status((struct resource_table *)rsc_table);
+	DEBUG_PRINT("remote status: %x\n", status);
+
+	/* Update resource table */
+	if (status == CPU_ON_FUNCID) {
+		/*
+		 * Clear the reserved fields.
+		 * Because handle_rsc_table() requires that the reserved fields must be zero.
+		 */
+		set_cpu_status((struct resource_table *)rsc_table, 0);
+
+	        ret = remoteproc_set_rsc_table(rproc, (struct resource_table *)rsc_table, rsc_size);
+		if (ret) {
+			syslog(LOG_ERR, "unable to set rsctable, ret: %d", ret);
+			goto err;
+		}
+
+		rproc->bootaddr = loader->get_entry(limg_info);
+		rproc->state = RPROC_READY;
+
+		/* Set the CPU state to SYSTEM_RESET to notify the remote to reinitialise vdev. */
+		set_cpu_status((struct resource_table *)rsc_table, SYSTEM_RESET);
+	}
+
+	/*
+	 * We don't need to release the rsc table here.
+	 * It will be released when rproc is destroyed.
+	 */
+err:
+	loader->release(limg_info);
+	return ret;
+}
+
 static int rproc_start(struct remoteproc *rproc)
 {
 	int ret;
+	uint32_t status;
 	struct mica_client *client = rproc->priv;
+	struct resource_table *rsc_table = rproc->rsc_table;
 	struct cpu_info info = {
 		.cpu = client->cpu_id,
 		.boot_addr = rproc->bootaddr
 	};
+
+	status = get_cpu_status(rsc_table);
+	if (status == CPU_ON_FUNCID || status == SYSTEM_RESET)
+		goto out;
 
 	ret = ioctl(mcs_fd, IOC_CPUON, &info);
 	if (ret < 0) {
@@ -171,6 +269,8 @@ static int rproc_start(struct remoteproc *rproc)
 		return ret;
 	}
 
+out:
+	set_cpu_status(rproc->rsc_table, CPU_ON_FUNCID);
 	return 0;
 }
 
@@ -205,6 +305,8 @@ static int rproc_notify(struct remoteproc *rproc, uint32_t id)
 const struct remoteproc_ops rproc_bare_metal_ops = {
 	.init = rproc_init,
 	.remove = rproc_remove,
+	.config = rproc_config,
+	.handle_rsc = handle_mica_rsc,
 	.start = rproc_start,
 	.stop = NULL,
 	.shutdown = rproc_shutdown,

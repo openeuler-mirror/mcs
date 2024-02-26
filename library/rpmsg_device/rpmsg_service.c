@@ -106,6 +106,10 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 		if (svc->rpmsg_ns_match(rdev, name, dest, RPMSG_ADDR_ANY, svc->priv)) {
 			DEBUG_PRINT("binding service. local: %s, remote: %s\n", svc->name, name);
 			svc->rpmsg_ns_bind_cb(rdev, name, dest, RPMSG_ADDR_ANY, svc->priv);
+			/* Store endpoint information in RSC_VENDOR_EPT_TABLE */
+			ret = rsc_update_ept_table(rproc, rdev);
+			if (ret != 0)
+				syslog(LOG_ERR, "Failed to update ept rsc table, ret %d", ret);
 			return;
 		}
 	}
