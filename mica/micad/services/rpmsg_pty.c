@@ -42,6 +42,7 @@ static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
 	svc->active = 0;
 	rpmsg_destroy_ept(ept);
 	tty_id[svc->tty_index] = -1;
+	unlink(svc->tty_dev);
 	close(svc->pty_master_fd);
 	close(svc->pty_slave_fd);
 	metal_list_del(&svc->node);
@@ -98,6 +99,7 @@ static int create_tty_device(struct rpmsg_tty_service *svc)
         snprintf(svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%d",
 		 RPMSG_TTY_DEV, svc->tty_index);
 
+	unlink(svc->tty_dev);
 	ret = symlink(pts_name, svc->tty_dev);
 	if (ret != 0)
 		goto err;

@@ -64,8 +64,8 @@ case "$1" in
         esac
         ;;
   stop)
-        echo -n "stopping $MICAD ... "
-        do_stop "$MICAD" "$MICAD_PIDFILE"
+        echo -n "stopping $NAME ... "
+        do_stop "$NAME" "$MICAD_PIDFILE"
         case "$?" in
                 0|1) echo "done" ;;
                 2) echo "failed" ;;
@@ -76,8 +76,8 @@ case "$1" in
         $0 start
         ;;
   status)
-        echo -n "status $MICAD ... "
-        do_status "$MICAD" "$MICAD_PIDFILE"
+        echo -n "status $NAME ... "
+        do_status "$NAME" "$MICAD_PIDFILE"
         if [ "$?" = "0" ]; then
                 echo "running"
                 exit 0
@@ -87,7 +87,7 @@ case "$1" in
         fi
         ;;
   *)
-        echo "Usage: /etc/init.d/isulad {start|stop|status|restart}" >&2
+        echo "Usage: /etc/init.d/micad.init {start|stop|status|restart}" >&2
         exit 3
         ;;
 esac

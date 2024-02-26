@@ -64,7 +64,7 @@ class mica_socket:
                     print('Error occurred!')
                     if msg:
                         print(msg)
-                    print("Please see system log ('/var/log/message' or 'journal -u micad') for details.")
+                    print("Please see system log ('cat /var/log/message' or 'journalctl -u micad') for details.")
                     return 'MICA-FAILED'
                 elif 'MICA-SUCCESS' in response_buffer:
                     parts = response_buffer.split('MICA-SUCCESS')
