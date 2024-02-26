@@ -50,17 +50,27 @@ static int setup_vdev(struct mica_client *client)
 		num_descs = vring_rsc->num;
 		align = vring_rsc->align;
 		bufsz = vring_size(num_descs, align);
-		buf = get_free_shmem(client, bufsz);
-		if (!buf)
-			return -ENOMEM;
 
 		if (da == FW_RSC_U32_ADDR_ANY) {
+			buf = alloc_shmem_region(client, 0, bufsz);
+			if (!buf)
+				return -ENOMEM;
+
 			pa = shm_pool_virt_to_phys(client, buf);
 			da = METAL_BAD_PHYS;
 			(void *)remoteproc_mmap(rproc, &pa, &da, bufsz, 0, NULL);
-			DEBUG_PRINT("alloc vring%i: paddr: 0x%lx, daddr: 0x%lx, vaddr: 0x%p, size: 0x%lx\n",
+			DEBUG_PRINT("alloc vring%i: paddr: 0x%lx, daddr: 0x%lx, vaddr: %p, size: 0x%lx\n",
 				    i, pa, da, buf, bufsz);
 			vring_rsc->da = da;
+		} else {
+			buf = alloc_shmem_region(client, da, bufsz);
+			if (!buf)
+				return -ENOMEM;
+
+			pa = METAL_BAD_PHYS;
+			(void *)remoteproc_mmap(rproc, &pa, &da, bufsz, 0, NULL);
+			DEBUG_PRINT("restore vring%i: paddr: 0x%lx, daddr: 0x%lx, vaddr: %p, size: 0x%lx\n",
+				    i, pa, da, buf, bufsz);
 		}
 	}
 
@@ -70,11 +80,11 @@ static int setup_vdev(struct mica_client *client)
 	if (!vring_rsc)
 		return -ENODEV;
 	bufsz = 512 * vring_rsc->num * 2;
-	buf = get_free_shmem(client, bufsz);
+	buf = alloc_shmem_region(client, 0, bufsz);
 	if (!buf)
 		return -ENOMEM;
 
-	DEBUG_PRINT("alloc vdev buffer: paddr: 0x%lx, vaddr: 0x%p, size: 0x%lx\n",
+	DEBUG_PRINT("alloc vdev buffer: paddr: 0x%lx, vaddr: %p, size: 0x%lx\n",
 		    shm_pool_virt_to_phys(client, buf), buf, bufsz);
 
 	/* Only RPMsg virtio driver needs to initialize the shared buffers pool */
@@ -109,9 +119,9 @@ int create_rpmsg_device(struct mica_client *client)
 		goto err1;
 	}
 
-	ret =  rpmsg_init_vdev(rpmsg_vdev, vdev, mica_ns_bind_cb,
-			       client->shbuf_io,
-			       &client->vdev_shpool);
+	ret = rpmsg_init_vdev(rpmsg_vdev, vdev, mica_ns_bind_cb,
+			      client->shbuf_io,
+			      &client->vdev_shpool);
 	if (ret) {
 		syslog(LOG_ERR, "init rpmsg device failed, err: %d\n", ret);
 		goto err2;

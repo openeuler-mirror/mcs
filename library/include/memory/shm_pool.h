@@ -44,13 +44,14 @@ metal_phys_addr_t shm_pool_virt_to_phys(struct mica_client *client, void *va);
 int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t size);
 
 /**
- * get a free shared memory region from the client's shared memory pool.
+ * alloc a free shared memory region from the client's shared memory pool.
  *
  * @param[in]	client	The client OS that associated with shm_pool.
+ * @param[in]	pa	The physical starting address of the region to be allocated.
  * @param[in]	size	The desired size of the shared memory to be obtained.
  * @return	NULL if out of range, or the virtual starting address of shared memory pool.
  */
-void *get_free_shmem(struct mica_client *client, size_t size);
+void *alloc_shmem_region(struct mica_client *client, metal_phys_addr_t pa, size_t size);
 
 #if defined __cplusplus
 }

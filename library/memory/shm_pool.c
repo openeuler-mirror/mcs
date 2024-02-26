@@ -44,25 +44,40 @@ int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t siz
 	client->virt_shmem_start = va;
 	client->virt_shmem_end = va + size;
 	client->unused_shmem_start = va;
-	DEBUG_PRINT("init shmem pool, pa: 0x%lx, size: 0x%x, va: 0x%p - 0x%p\n",
+	DEBUG_PRINT("init shmem pool, pa: 0x%lx, size: 0x%x, va: %p - %p\n",
 		     (unsigned long)pa, (unsigned int)size, va, va + size);
 	return 0;
 }
 
-void *get_free_shmem(struct mica_client *client, size_t size)
+void *alloc_shmem_region(struct mica_client *client, metal_phys_addr_t phys, size_t size)
 {
 	void *va;
 
-	if (client->unused_shmem_start + size > client->virt_shmem_end) {
-		syslog(LOG_ERR, "%s failed: no free shared memory found\n", __func__);
-		DEBUG_PRINT("free shmem: 0x%p - 0x%p (size: 0x%lx), alloc size: 0x%lx\n",
-			     client->unused_shmem_start, client->virt_shmem_end,
+	if (phys == 0) {
+		va = client->unused_shmem_start;
+	} else {
+		va = shm_pool_phys_to_virt(client, phys);
+		if (!va)
+			return NULL;
+
+		if (va < client->unused_shmem_start) {
+			syslog(LOG_ERR, "%s failed: already allocated\n", __func__);
+			DEBUG_PRINT("free shmem: %p - %p (size: 0x%lx), alloc size: 0x%lx\n",
+				     client->unused_shmem_start, client->virt_shmem_end,
+				     (size_t)(client->virt_shmem_end - client->unused_shmem_start), size);
+			return NULL;
+		}
+	}
+
+	if (va + size > client->virt_shmem_end) {
+		syslog(LOG_ERR, "%s failed: out of shared memory range\n", __func__);
+		DEBUG_PRINT("free shmem: %p - %p (size: 0x%lx), alloc size: 0x%lx\n",
+			     va, client->virt_shmem_end,
 			     (size_t)(client->virt_shmem_end - client->unused_shmem_start), size);
 		return NULL;
 	}
 
-	va = client->unused_shmem_start;
-	client->unused_shmem_start += size;
-	DEBUG_PRINT("alloc shmem: 0x%p - 0x%p\n", va, va + size);
+	client->unused_shmem_start = va + size;
+	DEBUG_PRINT("alloc shmem: %p - %p\n", va, va + size);
 	return va;
 }
