@@ -79,27 +79,27 @@ eth_unbind_igb()
 		fi
 	done
 
-	if [[ eth_cnt == 0 ]]; then
+	if [[ ${eth_cnt} == 0 ]]; then
 		popd
 		die "failed to find the network adapter device. Uninstalled?"
-	fi
-
-	# 确定要解绑第几个网卡 -1 表示最后一个
-	declare -i eth_id_unbind
-	eth_id_unbind=(ETH_ID_UNBIND+eth_cnt)%eth_cnt
-	eth_cnt=0
-	for entry in `ls ./`; do
-		if [[ "$entry" == *:*:*.* ]]; then
-			if [[ $eth_cnt == $eth_id_unbind ]]; then
-				echo $entry > unbind
-				ETHERNET_NAME=$entry  # 记录网卡的bdf号，用于i210_eth进行绑定
-				echo "igb unbind $entry"
+	else
+		# 确定要解绑第几个网卡 -1 表示最后一个
+		declare -i eth_id_unbind
+		eth_id_unbind=$(( (ETH_ID_UNBIND+eth_cnt) % eth_cnt ))
+		eth_cnt=0
+		for entry in `ls ./`; do
+			if [[ "$entry" == *:*:*.* ]]; then
+				if [[ $eth_cnt == $eth_id_unbind ]]; then
+					echo $entry > unbind
+					ETHERNET_NAME=$entry  # 记录网卡的bdf号，用于i210_eth进行绑定
+					echo "igb unbind $entry"
+				fi
+				eth_cnt=eth_cnt+1
 			fi
-			eth_cnt=eth_cnt+1
-		fi
-	done
+		done
 
-	popd
+		popd
+	fi
 }
 
 eth_unbind_i210()
