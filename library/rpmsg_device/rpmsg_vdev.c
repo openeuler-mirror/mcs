@@ -17,6 +17,10 @@
 #include "rpmsg/rpmsg_vdev.h"
 #include "rpmsg/rpmsg_service.h"
 
+#ifndef ALIGN_UP
+#define ALIGN_UP(x, align_to)  (((x) + ((align_to)-1)) & ~((align_to)-1))
+#endif
+
 static int setup_vdev(struct mica_client *client)
 {
 	struct remoteproc *rproc;
@@ -49,7 +53,7 @@ static int setup_vdev(struct mica_client *client)
 		da = vring_rsc->da;
 		num_descs = vring_rsc->num;
 		align = vring_rsc->align;
-		bufsz = vring_size(num_descs, align);
+		bufsz = ALIGN_UP(vring_size(num_descs, align), align);
 
 		if (da == FW_RSC_U32_ADDR_ANY) {
 			buf = alloc_shmem_region(client, 0, bufsz);
