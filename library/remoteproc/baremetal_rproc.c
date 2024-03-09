@@ -173,6 +173,24 @@ static uint32_t get_cpu_status(struct resource_table *rsc_table)
 	return rsc_table->reserved[0];
 }
 
+static int wait_cpu_status_reset(struct resource_table *rsc_table, unsigned int timeout)
+{
+	unsigned int diff;
+	struct timespec start, now;
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+
+	while (get_cpu_status(rsc_table) != 0) {
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		diff = 1000 * (long long)((int)now.tv_sec - (int)start.tv_sec);
+		diff += ((int)now.tv_nsec - (int)start.tv_nsec) / 1000000;
+		if (diff >= timeout)
+			return -1;
+        }
+
+	return 0;
+}
+
 static int rproc_config(struct remoteproc *rproc, void *data)
 {
 	int ret;
@@ -221,11 +239,25 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	/* Update resource table */
 	if (status == CPU_ON_FUNCID) {
 		/*
-		 * Clear the reserved fields.
-		 * Because handle_rsc_table() requires that the reserved fields must be zero.
+		 * Set the CPU state to SYSTEM_RESET to notify the remote to reinitialise vdev.
+		 * We then wait for the remote to clear SYSTEM_RESET. If this takes longer than 200 ms,
+		 * we assume that the remote is not alive and return.
 		 */
-		set_cpu_status((struct resource_table *)rsc_table, 0);
+		set_cpu_status((struct resource_table *)rsc_table, SYSTEM_RESET);
+		rproc->ops->notify(rproc, 0);
+		ret = wait_cpu_status_reset((struct resource_table *)rsc_table, 200);
+		if (ret) {
+			syslog(LOG_INFO, "Even though the CPU status is CPU_ON, "
+			       "the remote didn't respond, try to reload it.");
+			ret = 0;
+			goto err;
+		}
 
+		syslog(LOG_INFO, "the remote is alive, restore rsc table.");
+		/*
+		 * The reserved fields was reset by remote, and we can restore the rsc table.
+		 * Note:  handle_rsc_table() requires that the reserved fields must be zero.
+		 */
 	        ret = remoteproc_set_rsc_table(rproc, (struct resource_table *)rsc_table, rsc_size);
 		if (ret) {
 			syslog(LOG_ERR, "unable to set rsctable, ret: %d", ret);
@@ -235,8 +267,8 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 		rproc->bootaddr = loader->get_entry(limg_info);
 		rproc->state = RPROC_READY;
 
-		/* Set the CPU state to SYSTEM_RESET to notify the remote to reinitialise vdev. */
-		set_cpu_status((struct resource_table *)rsc_table, SYSTEM_RESET);
+		/* Set the CPU state to CPU_ON_FUNCID to skip rproc_start. */
+		set_cpu_status((struct resource_table *)rsc_table, CPU_ON_FUNCID);
 	}
 
 	/*
@@ -260,8 +292,8 @@ static int rproc_start(struct remoteproc *rproc)
 	};
 
 	status = get_cpu_status(rsc_table);
-	if (status == CPU_ON_FUNCID || status == SYSTEM_RESET)
-		goto out;
+	if (status == CPU_ON_FUNCID)
+		return 0;
 
 	ret = ioctl(mcs_fd, IOC_CPUON, &info);
 	if (ret < 0) {
@@ -269,7 +301,6 @@ static int rproc_start(struct remoteproc *rproc)
 		return ret;
 	}
 
-out:
 	set_cpu_status(rproc->rsc_table, CPU_ON_FUNCID);
 	return 0;
 }

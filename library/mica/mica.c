@@ -27,10 +27,6 @@ int mica_create(struct mica_client *client)
 		return ret;
 	}
 
-	ret = create_rpmsg_device(client);
-	if (ret)
-		syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
-
 	return ret;
 }
 
@@ -42,6 +38,10 @@ int mica_start(struct mica_client *client)
 	if (ret)
 		syslog(LOG_ERR, "start client OS failed, err: %d\n", ret);
 		/* TODO: free rpmsg device */
+
+	ret = create_rpmsg_device(client);
+	if (ret)
+		syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
 
 	return ret;
 }

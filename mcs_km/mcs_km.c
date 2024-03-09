@@ -219,7 +219,7 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			break;
 
 		case IOC_CPUON:
-			pr_info("start booting clientos on cpu(%d) addr(0x%llu)\n", info.cpu, info.boot_addr);
+			pr_info("start booting clientos on cpu(%d) addr(0x%llx)\n", info.cpu, info.boot_addr);
 			mpidr = get_cpu_mpidr(info.cpu);
 			if (mpidr == INVALID_HWID) {
 				pr_err("boot clientos failed, invalid MPIDR\n");
