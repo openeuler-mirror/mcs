@@ -88,6 +88,9 @@ static int setup_vdev(struct mica_client *client)
 	if (!buf)
 		return -ENOMEM;
 
+	/* zero descriptor area */
+	memset(buf, 0, bufsz);
+
 	DEBUG_PRINT("alloc vdev buffer: paddr: 0x%lx, vaddr: %p, size: 0x%lx\n",
 		    shm_pool_virt_to_phys(client, buf), buf, bufsz);
 
