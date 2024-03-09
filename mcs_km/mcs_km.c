@@ -35,7 +35,8 @@
 #define IOC_SENDIPI		_IOW(MAGIC_NUMBER, 0, int)
 #define IOC_CPUON		_IOW(MAGIC_NUMBER, 1, int)
 #define IOC_AFFINITY_INFO	_IOW(MAGIC_NUMBER, 2, int)
-#define IOC_MAXNR		2
+#define IOC_QUERY_MEM		_IOW(MAGIC_NUMBER, 3, int)
+#define IOC_MAXNR		3
 #define IPI_MCS			8
 #define RPROC_MEM_MAX		4
 
@@ -56,8 +57,8 @@ static int invoke_hvc = 1;
  * @size: total size of the memory region
  */
 struct mcs_rproc_mem {
-	phys_addr_t phy_addr;
-	size_t size;
+	u64 phy_addr;
+	u64 size;
 };
 static struct mcs_rproc_mem mem[RPROC_MEM_MAX];
 
@@ -209,8 +210,11 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		return -EINVAL;
 	if (_IOC_NR(cmd) > IOC_MAXNR)
 		return -EINVAL;
-	if (copy_from_user(&info, (struct cpu_info __user *)arg, sizeof(info)))
-		return -EFAULT;
+	if (cmd != IOC_QUERY_MEM) {
+		ret = copy_from_user(&info, (struct cpu_info __user *)arg, sizeof(info));
+		if (ret)
+			return -EFAULT;
+	}
 
 	switch (cmd) {
 		case IOC_SENDIPI:
@@ -246,6 +250,11 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 				       info.cpu, ret);
 				return -EFAULT;
 			}
+			break;
+
+		case IOC_QUERY_MEM:
+			if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
+				return -EFAULT;
 			break;
 
 		default:

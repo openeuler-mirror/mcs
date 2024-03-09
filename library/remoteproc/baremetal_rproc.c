@@ -25,15 +25,25 @@ struct cpu_info {
 	uint64_t boot_addr;
 };
 
+struct mem_info {
+	uint64_t phy_addr;
+	uint64_t size;
+};
+
 static int mcs_fd;
 #define MCS_DEVICE_NAME    "/dev/mcs"
 #define IOC_SENDIPI        _IOW('A', 0, int)
 #define IOC_CPUON          _IOW('A', 1, int)
 #define IOC_AFFINITY_INFO  _IOW('A', 2, int)
+#define IOC_QUERY_MEM      _IOW('A', 3, int)
 
 /* PSCI FUNCTIONS */
 #define CPU_ON_FUNCID      0xC4000003
 #define SYSTEM_RESET       0x84000009
+
+/* shared memory pool size: 128 K */
+#define SHM_POOL_SIZE      0x20000
+
 /*
  * Listen to events sent from the remote
  *
@@ -65,6 +75,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 				     const struct remoteproc_ops *ops, void *arg)
 {
 	int ret;
+	struct mem_info info;
 	struct mica_client *client = arg;
 
 	if (!client)
@@ -85,16 +96,23 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 
 	/*
 	 * Call rproc->ops->mmap to create shared memory io
-	 * TODO:get shared memory from mcs device
 	 */
-	ret = init_shmem_pool(client, client->static_mem_base, client->static_mem_size);
+	ret = ioctl(mcs_fd, IOC_QUERY_MEM, &info);
+	if (ret < 0) {
+		syslog(LOG_ERR, "unable to get shared memory information from mcs device, err: %d\n", ret);
+		goto err;
+	}
+
+	ret = init_shmem_pool(client, info.phy_addr + (client->cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
 	if (ret){
-		close(mcs_fd);
 		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
-		return NULL;
+		goto err;
 	}
 
 	return rproc;
+err:
+	close(mcs_fd);
+	return NULL;
 }
 
 static void rproc_remove(struct remoteproc *rproc)

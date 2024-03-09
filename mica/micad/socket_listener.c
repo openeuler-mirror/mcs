@@ -306,10 +306,6 @@ static int create_mica_client(int epoll_fd, void *data)
 	strlcpy(client->path, msg.path, MAX_FIRMWARE_PATH_LEN);
 	client->mode = RPROC_MODE_BARE_METAL;
 
-	/* TODO: support multi client */
-	client->static_mem_base = 0x70000000;
-	client->static_mem_size = 0x30000;
-
 	ret = mica_create(client);
 	if (ret < 0) {
 		syslog(LOG_ERR, "Failed to create mica client, ret: %d", ret);

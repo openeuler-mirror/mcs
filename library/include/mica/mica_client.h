@@ -31,10 +31,6 @@ enum rproc_mode {
 struct mica_client {
 	const struct rpmsg_virtio_config *config;
 
-	/* The static memory is deprecated and will be removed soon */
-	metal_phys_addr_t	static_mem_base;
-	unsigned int		static_mem_size;
-
 	/* client os firmware path */
 	char			path[MAX_FIRMWARE_PATH_LEN];
 	/* the target CPU */
