@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <syslog.h>
@@ -44,12 +45,31 @@ static int mcs_fd;
 /* shared memory pool size: 128 K */
 #define SHM_POOL_SIZE      0x20000
 
+static atomic_bool notifier = false;
+static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void rproc_notify_all(void)
+{
+	int find = 0;
+	struct metal_list *node;
+	struct mica_client *client;
+
+	metal_list_for_each(&g_client_list, node) {
+		client = metal_container_of(node, struct mica_client, node);
+		if (client->mode == RPROC_MODE_BARE_METAL) {
+			find = 1;
+			remoteproc_get_notification(&client->rproc, 0);
+		}
+	}
+
+	notifier = find ? true : false;
+}
+
 /*
  * Listen to events sent from the remote
- *
- * @returns: Returns a non-negative value when an event arrives, -1 on error.
  */
-static int rproc_wait_event(void)
+static void *rproc_wait_event(void *arg)
 {
 	int ret;
 	struct pollfd fds = {
@@ -57,7 +77,12 @@ static int rproc_wait_event(void)
 		.events = POLLIN
 	};
 
-	while (1) {
+	notifier = true;
+	pthread_mutex_lock(&mutex);
+	pthread_cond_broadcast(&cond);
+	pthread_mutex_unlock(&mutex);
+
+	while (notifier) {
 		ret = poll(&fds, 1, -1);
 		if (ret == -1) {
 			syslog(LOG_ERR, "%s failed: %s\n", __func__, strerror(errno));
@@ -65,9 +90,36 @@ static int rproc_wait_event(void)
 		}
 
 		if (fds.revents & POLLIN)
-			break;
+			rproc_notify_all();
 	}
 
+	pthread_exit(NULL);
+}
+
+static int rproc_register_notifier()
+{
+	int ret = 0;
+	pthread_t thread;
+
+	/*
+	 * In bare-metal mode, we only need to register one notifier.
+	 */
+	if (notifier)
+		return ret;
+
+	ret = pthread_create(&thread, NULL, rproc_wait_event, NULL);
+	if (ret)
+		return ret;
+
+	ret = pthread_detach(thread);
+	if (ret)
+		pthread_cancel(thread);
+
+	pthread_mutex_lock(&mutex);
+	pthread_cond_wait(&cond, &mutex);
+	pthread_mutex_unlock(&mutex);
+
+	ret = notifier ? 0 : -1;
 	return ret;
 }
 
@@ -92,7 +144,11 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	}
 
 	/* set up the notification waiter */
-	client->wait_event = rproc_wait_event;
+	ret = rproc_register_notifier();
+	if (ret) {
+		syslog(LOG_ERR, "unable to register notifier, err: %d\n", ret);
+		return NULL;
+	}
 
 	/*
 	 * Call rproc->ops->mmap to create shared memory io
@@ -104,7 +160,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	}
 
 	ret = init_shmem_pool(client, info.phy_addr + (client->cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
-	if (ret){
+	if (ret) {
 		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
 		goto err;
 	}

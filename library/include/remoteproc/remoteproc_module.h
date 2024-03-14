@@ -13,10 +13,6 @@
 extern "C" {
 #endif
 
-#define CPU_STATE_ON          0
-#define CPU_STATE_OFF         1
-#define CPU_STATE_ON_PENDING  2
-
 struct img_store
 {
 	FILE *file;

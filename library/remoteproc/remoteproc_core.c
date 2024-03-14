@@ -6,7 +6,6 @@
 
 #include <stdio.h>
 #include <syslog.h>
-#include <pthread.h>
 #include <metal/alloc.h>
 #include <metal/io.h>
 #include <openamp/remoteproc.h>
@@ -18,6 +17,8 @@
  * Related operations for remote processor, including start/stop/notify callbacks
  */
 extern const struct remoteproc_ops rproc_bare_metal_ops;
+
+METAL_DECLARE_LIST(g_client_list);
 
 static int store_open(void *store, const char *path, const void **image_data)
 {
@@ -97,25 +98,9 @@ static const struct image_store_ops mem_image_store_ops =
 	.features = SUPPORT_SEEK,
 };
 
-static void *wait_client_event(void *arg)
-{
-	struct mica_client *client = arg;
-
-	if (client->wait_event == NULL) {
-		syslog(LOG_ERR, "wait_event ops is NULL\n");
-		return NULL;
-	}
-
-	while (client->wait_event() != -1)
-		remoteproc_get_notification(&client->rproc, 0);
-
-	pthread_exit(NULL);
-}
-
 int create_client(struct mica_client *client)
 {
 	int ret;
-	pthread_t thread;
 	struct remoteproc *rproc;
 	const struct remoteproc_ops *ops;
 
@@ -130,16 +115,7 @@ int create_client(struct mica_client *client)
 		return -EINVAL;
 	}
 
-	ret = pthread_create(&thread, NULL, wait_client_event, client);
-	if (ret)
-		goto err;
-
-	ret = pthread_detach(thread);
-	if (ret) {
-		pthread_cancel(thread);
-		goto err;
-	}
-
+	metal_list_add_tail(&g_client_list, &client->node);
 	metal_list_init(&client->services);
 	return 0;
 err:
@@ -190,6 +166,7 @@ void destory_client(struct mica_client *client)
 		remoteproc_shutdown(&client->rproc);
 		remoteproc_remove(&client->rproc);
 	}
+	metal_list_del(&client->node);
 }
 
 const char *show_client_status(struct mica_client *client)

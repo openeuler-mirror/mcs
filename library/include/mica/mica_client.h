@@ -28,6 +28,8 @@ enum rproc_mode {
 	RPROC_MODE_BARE_METAL = 0,
 };
 
+extern struct metal_list g_client_list;
+
 struct mica_client {
 	const struct rpmsg_virtio_config *config;
 
@@ -54,11 +56,11 @@ struct mica_client {
 	struct rpmsg_virtio_shm_pool	vdev_shpool;
 	/* rpmsg device */
 	struct rpmsg_device		*rdev;
-	/* notification waiter */
-	int				(*wait_event)(void);
 
 	/* the bound services */
 	struct metal_list services;
+	/* the client list */
+	struct metal_list node;
 };
 
 /**
