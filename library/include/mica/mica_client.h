@@ -82,8 +82,8 @@ struct mica_service {
 	void *priv;
 
 	/*For user-defined service */
-	int (*init) (void *priv);
-	void (*remove) (void *priv);
+	int (*init) (struct mica_service *svc);
+	void (*remove) (struct mica_service *svc);
 
 	/*For rpmsg service */
 	bool (*rpmsg_ns_match) (struct rpmsg_device *rdev,

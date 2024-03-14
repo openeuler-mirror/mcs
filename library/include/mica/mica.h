@@ -26,6 +26,9 @@ const char *mica_status(struct mica_client *client);
 /* register a rpmsg/user-defined service */
 int mica_register_service(struct mica_client *client, struct mica_service *svc);
 
+/* unregister all the registered services */
+void mica_unregister_all_services(struct mica_client *client);
+
 void mica_print_service(struct mica_client *client, char *str, size_t size);
 void print_device_of_service(struct mica_client *client, char *str, size_t size);
 

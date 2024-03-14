@@ -41,18 +41,29 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 {
 	struct metal_list *node, *tmp_node;
 	struct remote_ept *r_ept;
-	void *priv = svc->priv;
+	struct mica_service *new_svc;
+	void *priv;
 
 	if (client->rproc.state != RPROC_RUNNING)
 		return -EPERM;
 
-	if (svc->init)
-		svc->init(priv);
+	new_svc = malloc(sizeof(*new_svc));
+	if (!new_svc)
+		return -ENOMEM;
 
-	if (svc->rpmsg_ns_match == NULL)
-		return 0;
+	memcpy(new_svc, svc, sizeof(*new_svc));
+	priv = new_svc->priv;
 
-	if (svc->rpmsg_ns_bind_cb == NULL) {
+	if (new_svc->init)
+		new_svc->init(new_svc);
+
+	if (new_svc->rpmsg_ns_match == NULL)
+		goto out;
+
+	if (new_svc->rpmsg_ns_bind_cb == NULL) {
+		if (new_svc->remove)
+			new_svc->remove(new_svc);
+		free(new_svc);
 		syslog(LOG_ERR, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
 		return -EINVAL;
 	}
@@ -61,9 +72,9 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 	metal_list_for_each(&remote_ept_list, node) {
 		r_ept = metal_container_of(node, struct remote_ept, node);
 
-		if (svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv)) {
-			svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv);
-			DEBUG_PRINT("binding an already existing service. local: %s, remote: %s\n", svc->name, r_ept->name);
+		if (new_svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv)) {
+			new_svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv);
+			DEBUG_PRINT("binding an already existing service. local: %s, remote: %s\n", new_svc->name, r_ept->name);
 			tmp_node = node;
 			node = tmp_node->prev;
 			metal_list_del(tmp_node);
@@ -71,9 +82,26 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 		}
 	}
 
-	DEBUG_PRINT("register service: %s\n", svc->name);
-	metal_list_add_tail(&client->services, &svc->node);
+out:
+	DEBUG_PRINT("register service: %s\n", new_svc->name);
+	metal_list_add_tail(&client->services, &new_svc->node);
 	return 0;
+}
+
+void mica_unregister_all_services(struct mica_client *client)
+{
+	struct metal_list *node, *tmp_node;
+	struct mica_service *svc;
+
+	metal_list_for_each(&client->services, node) {
+		svc = metal_container_of(node, struct mica_service, node);
+		if (svc->remove)
+			svc->remove(svc);
+		tmp_node = node;
+		node = tmp_node->prev;
+		metal_list_del(tmp_node);
+		free(svc);
+	}
 }
 
 void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)

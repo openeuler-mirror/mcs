@@ -23,10 +23,9 @@
 
 static int tty_id[RPMSG_TTY_MAX_DEV] = { [ 0 ... (RPMSG_TTY_MAX_DEV-1) ] = -1 };
 
-static METAL_DECLARE_LIST(tty_dev_list);
 struct rpmsg_tty_service
 {
-	int active;
+	atomic_int active;
 	struct rpmsg_endpoint ept;
 	int pty_master_fd;
 	int pty_slave_fd;
@@ -37,16 +36,20 @@ struct rpmsg_tty_service
 
 static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
 {
-	struct rpmsg_tty_service *svc = ept->priv;
+	struct rpmsg_tty_service *tty_svc = ept->priv;
 
-	svc->active = 0;
-	rpmsg_destroy_ept(ept);
-	tty_id[svc->tty_index] = -1;
-	unlink(svc->tty_dev);
-	close(svc->pty_master_fd);
-	close(svc->pty_slave_fd);
-	metal_list_del(&svc->node);
-	free(svc);
+	metal_list_del(&tty_svc->node);
+	rpmsg_destroy_ept(&tty_svc->ept);
+	tty_id[tty_svc->tty_index] = -1;
+	unlink(tty_svc->tty_dev);
+
+	close(tty_svc->pty_master_fd);
+	close(tty_svc->pty_slave_fd);
+	tty_svc->pty_master_fd = -1;
+	tty_svc->pty_slave_fd = -1;
+
+	/* stop rpmsg_tty_tx_task */
+	tty_svc->active = 0;
 }
 
 static int rpmsg_tty_new_index(void)
@@ -67,7 +70,7 @@ static int rpmsg_tty_new_index(void)
  * opens an unused pseudo terminal, and create a link to this
  * with the name RPMSG_TTY_DEV.
  */
-static int create_tty_device(struct rpmsg_tty_service *svc)
+static int create_tty_device(struct rpmsg_tty_service *tty_svc)
 {
 	int ret;
 	int master_fd, slave_fd;
@@ -76,8 +79,7 @@ static int create_tty_device(struct rpmsg_tty_service *svc)
 	ret = rpmsg_tty_new_index();
 	if (ret == -1)
 		return ret;
-
-	svc->tty_index = ret;
+	tty_svc->tty_index = ret;
 
 	ret = posix_openpt(O_RDWR | O_NOCTTY);
 	if (ret == -1)
@@ -96,11 +98,11 @@ static int create_tty_device(struct rpmsg_tty_service *svc)
 	if (ret != 0)
 		goto err;
 
-        snprintf(svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%d",
-		 RPMSG_TTY_DEV, svc->tty_index);
+        snprintf(tty_svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%d",
+		 RPMSG_TTY_DEV, tty_svc->tty_index);
 
-	unlink(svc->tty_dev);
-	ret = symlink(pts_name, svc->tty_dev);
+	unlink(tty_svc->tty_dev);
+	ret = symlink(pts_name, tty_svc->tty_dev);
 	if (ret != 0)
 		goto err;
 
@@ -111,12 +113,12 @@ static int create_tty_device(struct rpmsg_tty_service *svc)
 		goto err;
 	}
 
-	svc->pty_master_fd = master_fd;
-	svc->pty_slave_fd = slave_fd;
+	tty_svc->pty_master_fd = master_fd;
+	tty_svc->pty_slave_fd = slave_fd;
 	return ret;
 err:
 	close(master_fd);
-	tty_id[svc->tty_index] = -1;
+	tty_id[tty_svc->tty_index] = -1;
 	return ret;
 }
 
@@ -127,15 +129,15 @@ static int rpmsg_rx_tty_callback(struct rpmsg_endpoint *ept, void *data,
 				 size_t len, uint32_t src, void *priv)
 {
 	int ret;
-	struct rpmsg_tty_service *svc = priv;
+	struct rpmsg_tty_service *tty_svc = priv;
 
-	if (svc->active != 1)
+	if (tty_svc->active != 1)
 		return -EAGAIN;
 
 	while (len) {
-		ret = write(svc->pty_master_fd, data, len);
+		ret = write(tty_svc->pty_master_fd, data, len);
 		if (ret < 0) {
-			fprintf(stderr, "write %s error:%d\n", svc->tty_dev, ret);
+			fprintf(stderr, "write %s error:%d\n", tty_svc->tty_dev, ret);
 			break;
 		}
 		len -= ret;
@@ -151,16 +153,16 @@ static int rpmsg_rx_tty_callback(struct rpmsg_endpoint *ept, void *data,
 void *rpmsg_tty_tx_task(void *arg)
 {
 	int ret;
-	struct rpmsg_tty_service *svc = arg;
+	struct rpmsg_tty_service *tty_svc = arg;
 	char buf[BUF_SIZE];
 	struct pollfd fds = {
-		.fd = svc->pty_master_fd,
+		.fd = tty_svc->pty_master_fd,
 		.events = POLLIN
 	};
 
-	svc->active = 1;
+	tty_svc->active = 1;
 
-	while (svc->active) {
+	while (tty_svc->active) {
 		ret = poll(&fds, 1, -1);
 		if (ret == -1) {
 			fprintf(stderr, "%s failed: %s\n", __func__, strerror(errno));
@@ -168,13 +170,13 @@ void *rpmsg_tty_tx_task(void *arg)
 		}
 
 		if (fds.revents & POLLIN) {
-			ret = read(svc->pty_master_fd, buf, BUF_SIZE);
+			ret = read(tty_svc->pty_master_fd, buf, BUF_SIZE);
 			if (ret <= 0) {
 				fprintf(stderr, "shell_user: get from ptmx failed: %d\n", ret);
 				break;
 			}
 
-			ret = rpmsg_send(&svc->ept, buf, ret);
+			ret = rpmsg_send(&tty_svc->ept, buf, ret);
 			if (ret < 0) {
 				fprintf(stderr, "%s: rpmsg_send failed: %d\n", __func__, ret);
 				break;
@@ -182,9 +184,10 @@ void *rpmsg_tty_tx_task(void *arg)
 		}
 	}
 
-	if (svc->active)
-		rpmsg_tty_unbind(&svc->ept);
+	if (tty_svc->active)
+		rpmsg_tty_unbind(&tty_svc->ept);
 
+	free(tty_svc);
 	pthread_exit(NULL);
 }
 
@@ -198,6 +201,7 @@ static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
 	int ret;
 	pthread_t tty_thread;
 	struct rpmsg_tty_service *tty_svc;
+	struct metal_list *tty_dev_list = priv;
 
 	tty_svc = malloc(sizeof(struct rpmsg_tty_service));
 	if (!tty_svc)
@@ -217,7 +221,7 @@ static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
 	 * If the ept is successfully created, append the device to tty_dev_list
 	 * to make it easier to get the associated device.
 	 */
-	metal_list_add_tail(&tty_dev_list, &tty_svc->node);
+	metal_list_add_tail(tty_dev_list, &tty_svc->node);
 
 	/* Create a tx task to listen for a pty and send pty messages to the remote */
 	ret = pthread_create(&tty_thread, NULL, rpmsg_tty_tx_task, tty_svc);
@@ -263,16 +267,47 @@ static void get_rpmsg_tty_dev(char *str, size_t size, void *priv)
 {
 	struct rpmsg_tty_service *tty_svc;
 	struct metal_list *node;
+	struct metal_list *tty_dev_list = priv;
 
-	metal_list_for_each(&tty_dev_list, node) {
+	metal_list_for_each(tty_dev_list, node) {
 		tty_svc = metal_container_of(node, struct rpmsg_tty_service, node);
 		snprintf(str + strlen(str), size - strlen(str), "%s(%s) ",
 			 tty_svc->ept.name, tty_svc->tty_dev);
 	}
 }
 
+static int create_tty_dev_lists(struct mica_service *svc)
+{
+	svc->priv = malloc(sizeof(struct metal_list));
+	if (!svc->priv)
+		return -ENOMEM;
+
+	metal_list_init((struct metal_list *)svc->priv);
+	return 0;
+}
+
+static void remove_tty_dev_lists(struct mica_service *svc)
+{
+	struct rpmsg_tty_service *tty_svc;
+	struct metal_list *node, *tmp_node;
+	struct metal_list *tty_dev_list = svc->priv;
+
+	/* unbind all services */
+	metal_list_for_each(tty_dev_list, node) {
+		tty_svc = metal_container_of(node, struct rpmsg_tty_service, node);
+		tmp_node = node;
+		node = tmp_node->prev;
+		rpmsg_tty_unbind(&tty_svc->ept);
+	}
+
+	free(svc->priv);
+	svc->priv = NULL;
+}
+
 static struct mica_service rpmsg_tty_service = {
 	.name = RPMSG_TTY_NAME,
+	.init = create_tty_dev_lists,
+	.remove = remove_tty_dev_lists,
 	.rpmsg_ns_match = rpmsg_tty_match,
 	.rpmsg_ns_bind_cb = rpmsg_tty_init,
 	.get_match_device = get_rpmsg_tty_dev,

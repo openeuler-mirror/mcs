@@ -167,6 +167,7 @@ void destory_client(struct mica_client *client)
 		remoteproc_remove(&client->rproc);
 	}
 	metal_list_del(&client->node);
+	mica_unregister_all_services(client);
 }
 
 const char *show_client_status(struct mica_client *client)
