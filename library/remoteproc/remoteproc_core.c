@@ -100,7 +100,6 @@ static const struct image_store_ops mem_image_store_ops =
 
 int create_client(struct mica_client *client)
 {
-	int ret;
 	struct remoteproc *rproc;
 	const struct remoteproc_ops *ops;
 
@@ -118,9 +117,6 @@ int create_client(struct mica_client *client)
 	metal_list_add_tail(&g_client_list, &client->node);
 	metal_list_init(&client->services);
 	return 0;
-err:
-	remoteproc_remove(&client->rproc);
-	return ret;
 }
 
 int load_client_image(struct mica_client *client)
@@ -150,7 +146,13 @@ int load_client_image(struct mica_client *client)
 		return ret;
 	}
 
-	return remoteproc_load(rproc, client->path, &store, &mem_image_store_ops, NULL);
+	ret = remoteproc_load(rproc, client->path, &store, &mem_image_store_ops, NULL);
+	if (!rproc->rsc_table) {
+		syslog(LOG_ERR, "failed to parse rsc table, please check the rsctable\n");
+		return -EINVAL;
+	}
+
+	return ret;
 }
 
 int start_client(struct mica_client *client)
@@ -160,14 +162,18 @@ int start_client(struct mica_client *client)
 	return remoteproc_start(rproc);
 }
 
+void stop_client(struct mica_client *client)
+{
+	if (client != NULL)
+		remoteproc_shutdown(&client->rproc);
+}
+
 void destory_client(struct mica_client *client)
 {
 	if (client != NULL) {
-		remoteproc_shutdown(&client->rproc);
 		remoteproc_remove(&client->rproc);
+		metal_list_del(&client->node);
 	}
-	metal_list_del(&client->node);
-	mica_unregister_all_services(client);
 }
 
 const char *show_client_status(struct mica_client *client)

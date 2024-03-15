@@ -248,7 +248,8 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 		}
 	} else if (strncmp(msg, "stop", CTRL_MSG_SIZE) == 0) {
 		syslog(LOG_INFO, "Stopping %s", unit->client->path);
-		// TODO: Add stop
+		mica_stop(unit->client);
+		ret = 0;
 	} else if (strncmp(msg, "status", CTRL_MSG_SIZE) == 0) {
 		show_status(msg_fd, unit);
 		ret = 0;

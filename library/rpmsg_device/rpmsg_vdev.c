@@ -142,3 +142,15 @@ err1:
 	metal_free_memory(rpmsg_vdev);
 	return ret;
 }
+
+void release_rpmsg_device(struct mica_client *client)
+{
+	struct rpmsg_virtio_device *rpmsg_vdev;
+
+	rpmsg_vdev = metal_container_of(client->rdev, struct rpmsg_virtio_device, rdev);
+
+	/* destroy all epts */
+	rpmsg_deinit_vdev(rpmsg_vdev);
+
+	remoteproc_remove_virtio(&client->rproc, rpmsg_vdev->vdev);
+}

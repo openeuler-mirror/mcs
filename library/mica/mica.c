@@ -16,16 +16,8 @@ int mica_create(struct mica_client *client)
 	int ret;
 
 	ret = create_client(client);
-	if (ret) {
+	if (ret)
 		syslog(LOG_ERR, "create remoteproc failed, err: %d\n", ret);
-		return ret;
-	}
-
-	ret = load_client_image(client);
-	if (ret) {
-		syslog(LOG_ERR, "load client image failed, err: %d\n", ret);
-		return ret;
-	}
 
 	return ret;
 }
@@ -34,16 +26,35 @@ int mica_start(struct mica_client *client)
 {
 	int ret;
 
+	ret = load_client_image(client);
+	if (ret) {
+		syslog(LOG_ERR, "load client image failed, err: %d\n", ret);
+		return ret;
+	}
+
 	ret = start_client(client);
-	if (ret)
+	if (ret) {
 		syslog(LOG_ERR, "start client OS failed, err: %d\n", ret);
-		/* TODO: free rpmsg device */
+		return ret;
+	}
 
 	ret = create_rpmsg_device(client);
 	if (ret)
 		syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
 
 	return ret;
+}
+
+void mica_stop(struct mica_client *client)
+{
+	/*
+	 * step1: remove all the registered services
+	 * step2: remove rpmsg device
+	 * step3: shutdown remoteproc
+	 */
+	mica_unregister_all_services(client);
+	release_rpmsg_device(client);
+	stop_client(client);
 }
 
 const char *mica_status(struct mica_client *client)

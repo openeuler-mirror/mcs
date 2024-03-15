@@ -189,7 +189,7 @@ int main(int argc, char **argv)
 {
 	int ret;
 
-	daemonize();
+	// daemonize();
 
 	ret = add_signal_handler();
 	if (ret)

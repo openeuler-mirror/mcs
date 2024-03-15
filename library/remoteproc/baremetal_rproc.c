@@ -40,6 +40,7 @@ static int mcs_fd;
 
 /* PSCI FUNCTIONS */
 #define CPU_ON_FUNCID      0xC4000003
+#define CPU_OFF_FUNCID     0x84000002
 #define SYSTEM_RESET       0x84000009
 
 /* shared memory pool size: 128 K */
@@ -127,7 +128,6 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 				     const struct remoteproc_ops *ops, void *arg)
 {
 	int ret;
-	struct mem_info info;
 	struct mica_client *client = arg;
 
 	if (!client)
@@ -147,21 +147,6 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	ret = rproc_register_notifier();
 	if (ret) {
 		syslog(LOG_ERR, "unable to register notifier, err: %d\n", ret);
-		return NULL;
-	}
-
-	/*
-	 * Call rproc->ops->mmap to create shared memory io
-	 */
-	ret = ioctl(mcs_fd, IOC_QUERY_MEM, &info);
-	if (ret < 0) {
-		syslog(LOG_ERR, "unable to get shared memory information from mcs device, err: %d\n", ret);
-		goto err;
-	}
-
-	ret = init_shmem_pool(client, info.phy_addr + (client->cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
-	if (ret) {
-		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
 		goto err;
 	}
 
@@ -169,12 +154,6 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 err:
 	close(mcs_fd);
 	return NULL;
-}
-
-static void rproc_remove(struct remoteproc *rproc)
-{
-	close(mcs_fd);
-	rproc->priv = NULL;
 }
 
 static void *rproc_mmap(struct remoteproc *rproc,
@@ -278,7 +257,24 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	size_t rsc_size = 0;
 	void *limg_info = NULL;
 	void *rsc_table = NULL;
+	struct mem_info info;
 	struct metal_io_region *io = NULL;
+	struct mica_client *client = rproc->priv;
+
+	/*
+	 * Call rproc->ops->mmap to create shared memory io
+	 */
+	ret = ioctl(mcs_fd, IOC_QUERY_MEM, &info);
+	if (ret < 0) {
+		syslog(LOG_ERR, "unable to get shared memory information from mcs device, err: %d\n", ret);
+		return ret;
+	}
+
+	ret = init_shmem_pool(client, info.phy_addr + (client->cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
+	if (ret) {
+		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
+		return ret;
+	}
 
 	/* parse executable headers */
 	fseek(image->file, 0, SEEK_END);
@@ -381,12 +377,39 @@ static int rproc_start(struct remoteproc *rproc)
 
 static int rproc_shutdown(struct remoteproc *rproc)
 {
-	/* TODO:
-	 * Delete all the registered remoteproc memories
-	 * and tell clientos shut itself down by PSCI
-	 */
-	DEBUG_PRINT("shutdown rproc\n");
+	struct remoteproc_mem *mem;
+	struct metal_list *node;
+	struct resource_table *rsc_table = rproc->rsc_table;
+
+	/* Tell clientos shut itself down by PSCI */
+	set_cpu_status((struct resource_table *)rsc_table, CPU_OFF_FUNCID);
+	rproc->ops->notify(rproc, 0);
+
+	/* Delete all the registered remoteproc memories */
+	metal_list_for_each(&rproc->mems, node) {
+		struct metal_list *tmpnode;
+
+		mem = metal_container_of(node, struct remoteproc_mem, node);
+		munmap(mem->io->virt, mem->io->size);
+		tmpnode = node;
+		node = tmpnode->prev;
+		metal_list_del(tmpnode);
+		metal_free_memory(mem->io);
+		metal_free_memory(mem);
+	}
+
+	rproc->rsc_table = NULL;
+	rproc->rsc_len = 0;
+	rproc->bitmap = 0;
 	return 0;
+}
+
+static void rproc_remove(struct remoteproc *rproc)
+{
+	if (!notifier)
+		close(mcs_fd);
+
+	rproc->priv = NULL;
 }
 
 static int rproc_notify(struct remoteproc *rproc, uint32_t id)

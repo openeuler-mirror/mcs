@@ -14,6 +14,7 @@ extern "C" {
 #endif
 
 int create_rpmsg_device(struct mica_client *client);
+void release_rpmsg_device(struct mica_client *client);
 
 #if defined __cplusplus
 }

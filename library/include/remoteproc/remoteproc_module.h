@@ -23,6 +23,7 @@ struct img_store
 int create_client(struct mica_client *client);
 int load_client_image(struct mica_client *client);
 int start_client(struct mica_client *client);
+void stop_client(struct mica_client *client);
 
 /* destory remoteproc */
 void destory_client(struct mica_client *client);

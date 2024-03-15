@@ -29,12 +29,6 @@ int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t siz
 {
 	void *va;
 
-	if (client->phys_shmem_start != 0) {
-		syslog(LOG_ERR, "%s failed: the shared memory of this client has been registered\n",
-			__func__);
-		return -EPERM;
-	}
-
 	va = remoteproc_mmap(&client->rproc, &pa, NULL, size, 0, &client->shbuf_io);
 	if (!va)
 		return -EPERM;
