@@ -32,6 +32,9 @@ struct mem_info {
 };
 
 static int mcs_fd;
+int pipe_fd[2];
+#define PIPE_READ_END  0
+#define PIPE_WRITE_END 1
 #define MCS_DEVICE_NAME    "/dev/mcs"
 #define IOC_SENDIPI        _IOW('A', 0, int)
 #define IOC_CPUON          _IOW('A', 1, int)
@@ -68,9 +71,9 @@ static void rproc_notify_all(void)
 static void *rproc_wait_event(void *arg)
 {
 	int ret;
-	struct pollfd fds = {
-		.fd = mcs_fd,
-		.events = POLLIN
+	struct pollfd fds[2] = {
+		{ .fd = mcs_fd, .events = POLLIN, },
+		{ .fd = pipe_fd[PIPE_READ_END], .events = POLLIN, }
 	};
 
 	notifier = true;
@@ -79,13 +82,13 @@ static void *rproc_wait_event(void *arg)
 	pthread_mutex_unlock(&mutex);
 
 	while (notifier) {
-		ret = poll(&fds, 1, -1);
+		ret = poll(&fds, 2, -1);
 		if (ret == -1) {
 			syslog(LOG_ERR, "%s failed: %s\n", __func__, strerror(errno));
 			break;
 		}
 
-		if (fds.revents & POLLIN)
+		if (fds[0].revents & POLLIN)
 			rproc_notify_all();
 	}
 
@@ -103,19 +106,29 @@ static int rproc_register_notifier()
 	if (notifier)
 		return ret;
 
+	ret = pipe(pipe_fd);
+	if (ret == -1) {
+		syslog(LOG_ERR, "unable to create pipe for notifier: %s\n", strerror(errno));
+	        return ret;
+	}
+
 	ret = pthread_create(&thread, NULL, rproc_wait_event, NULL);
 	if (ret)
-		return ret;
+		goto err;
 
 	ret = pthread_detach(thread);
-	if (ret)
+	if (ret) {
 		pthread_cancel(thread);
+		goto err;
+	}
 
 	pthread_mutex_lock(&mutex);
 	pthread_cond_wait(&cond, &mutex);
 	pthread_mutex_unlock(&mutex);
-
-	ret = notifier ? 0 : -1;
+	return 0;
+err:
+	close(pipe_fd[PIPE_READ_END]);
+	close(pipe_fd[PIPE_WRITE_END]);
 	return ret;
 }
 
@@ -414,8 +427,12 @@ static void rproc_remove(struct remoteproc *rproc)
 	}
 
 	notifier = find ? true : false;
-	if (!notifier)
+	if (!notifier) {
+		write(pipe_fd[PIPE_WRITE_END], &find, sizeof(find));
 		close(mcs_fd);
+		close(pipe_fd[PIPE_READ_END]);
+		close(pipe_fd[PIPE_WRITE_END]);
+	}
 
 	rproc->priv = NULL;
 }
