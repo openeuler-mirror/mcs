@@ -64,7 +64,7 @@ class mica_socket:
                     print('Error occurred!')
                     if msg:
                         print(msg)
-                    print("Please see system log ('cat /var/log/message' or 'journalctl -u micad') for details.")
+                    print("Please see system log ('cat /var/log/messages' or 'journalctl -u micad') for details.")
                     return 'MICA-FAILED'
                 elif 'MICA-SUCCESS' in response_buffer:
                     parts = response_buffer.split('MICA-SUCCESS')
@@ -185,6 +185,10 @@ def create_parser() -> ArgumentParser:
     stop_parser = subparsers.add_parser('stop', help='Stop a client')
     stop_parser.add_argument('client', help='the name of the client')
 
+    # rm command
+    stop_parser = subparsers.add_parser('rm', help='Remove a client')
+    stop_parser.add_argument('client', help='the name of the client')
+
     # Query status
     status_parser = subparsers.add_parser('status', help='query the mica client status')
 
@@ -203,6 +207,9 @@ def main() -> None:
         send_ctrl_msg(args.command, args.client)
     elif args.command == 'stop':
         print(f'stopping {args.client}...')
+        send_ctrl_msg(args.command, args.client)
+    elif args.command == 'rm':
+        print(f'removing {args.client}...')
         send_ctrl_msg(args.command, args.client)
     elif args.command == 'status':
         query_status()

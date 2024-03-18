@@ -170,9 +170,13 @@ void stop_client(struct mica_client *client)
 
 void destory_client(struct mica_client *client)
 {
+	/*
+	 * To get the updated list in remoteproc_remove(),
+	 * the node must be deleted first.
+	 */
 	if (client != NULL) {
-		remoteproc_remove(&client->rproc);
 		metal_list_del(&client->node);
+		remoteproc_remove(&client->rproc);
 	}
 }
 

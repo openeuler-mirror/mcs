@@ -52,19 +52,14 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void rproc_notify_all(void)
 {
-	int find = 0;
 	struct metal_list *node;
 	struct mica_client *client;
 
 	metal_list_for_each(&g_client_list, node) {
 		client = metal_container_of(node, struct mica_client, node);
-		if (client->mode == RPROC_MODE_BARE_METAL) {
-			find = 1;
+		if (client->mode == RPROC_MODE_BARE_METAL)
 			remoteproc_get_notification(&client->rproc, 0);
-		}
 	}
-
-	notifier = find ? true : false;
 }
 
 /*
@@ -406,6 +401,19 @@ static int rproc_shutdown(struct remoteproc *rproc)
 
 static void rproc_remove(struct remoteproc *rproc)
 {
+	int find = 0;
+	struct metal_list *node;
+	struct mica_client *client;
+
+	metal_list_for_each(&g_client_list, node) {
+		client = metal_container_of(node, struct mica_client, node);
+		if (client->mode == RPROC_MODE_BARE_METAL) {
+			find = 1;
+			break;
+		}
+	}
+
+	notifier = find ? true : false;
 	if (!notifier)
 		close(mcs_fd);
 

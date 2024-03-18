@@ -57,6 +57,15 @@ void mica_stop(struct mica_client *client)
 	stop_client(client);
 }
 
+void mica_remove(struct mica_client *client)
+{
+	struct remoteproc *rproc = &client->rproc;
+
+	if (rproc->state != RPROC_OFFLINE)
+		mica_stop(client);
+	destory_client(client);
+}
+
 const char *mica_status(struct mica_client *client)
 {
 	return show_client_status(client);

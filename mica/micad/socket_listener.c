@@ -75,17 +75,39 @@ static void send_log(int msg_fd, const char *format, ...)
 	va_end(args);
 }
 
-static void free_listener(void)
+static void free_listener_by_name(const char *name)
+{
+	struct metal_list *node;
+	struct listen_unit *unit;
+
+	metal_list_for_each(&listener_list, node) {
+		unit = metal_container_of(node, struct listen_unit, node);
+
+		if (!strncmp(name, unit->name, MAX_NAME_LEN)) {
+			metal_list_del(node);
+			free(unit->client);
+			close(unit->socket_fd);
+			unlink(unit->socket_path);
+			free(unit);
+			return;
+		}
+	}
+}
+
+static void free_all_listeners(void)
 {
 	struct metal_list *node, *tmpnode;
 	struct listen_unit *unit;
 
+	/*
+	 * To avoid RTOS being affected by micad's exit.
+	 * We do not stop or destroy mica_client here.
+	 */
 	metal_list_for_each(&listener_list, node) {
 		unit = metal_container_of(node, struct listen_unit, node);
 		tmpnode = node;
 		node = tmpnode->prev;
 		metal_list_del(tmpnode);
-		// TODO: destory the mica client
 		free(unit->client);
 		close(unit->socket_fd);
 		unlink(unit->socket_path);
@@ -230,42 +252,52 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 	ret = recv(msg_fd, msg, CTRL_MSG_SIZE, 0);
 	if (ret < 0) {
 		syslog(LOG_ERR, "Failed to receive %s: %s", unit->socket_path, strerror(errno));
-		goto out;
+		goto err;
 	}
 
 	if (strncmp(msg, "start", CTRL_MSG_SIZE) == 0) {
-		syslog(LOG_INFO, "Starting %s on CPU%d", unit->client->path, unit->client->cpu_id);
+		syslog(LOG_INFO, "Starting %s(%s) on CPU%d", unit->name, unit->client->path, unit->client->cpu_id);
 		ret = mica_start(unit->client);
 		if (ret) {
 			syslog(LOG_ERR, "Start failed, ret(%d)", ret);
-			goto out;
+			goto err;
 		}
 
 		ret = create_rpmsg_tty(unit->client);
 		if (ret) {
 			syslog(LOG_ERR, "Create rpmsg_tty failed, ret(%d)", ret);
-			goto out;
+			goto err;
 		}
 	} else if (strncmp(msg, "stop", CTRL_MSG_SIZE) == 0) {
-		syslog(LOG_INFO, "Stopping %s", unit->client->path);
+		syslog(LOG_INFO, "Stopping %s", unit->name);
 		mica_stop(unit->client);
-		ret = 0;
+	} else if (strncmp(msg, "rm", CTRL_MSG_SIZE) == 0) {
+		syslog(LOG_INFO, "Removing %s", unit->name);
+		ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, unit->socket_fd, NULL);
+		if (ret < 0) {
+			syslog(LOG_ERR, "Failed to remove fd from epoll, ret(%d)", ret);
+			goto err;
+		}
+		mica_remove(unit->client);
 	} else if (strncmp(msg, "status", CTRL_MSG_SIZE) == 0) {
 		show_status(msg_fd, unit);
-		ret = 0;
 	} else {
 		send_log(msg_fd, "Invalid command: %s", msg);
 		syslog(LOG_ERR, "Invalid command: %s", msg);
-		ret = -EINVAL;
-		goto out;
+		goto err;
 	}
 
+	send_log(msg_fd, "%s", MICA_MSG_SUCCESS);
+	close(msg_fd);
+
+	if (strncmp(msg, "rm", CTRL_MSG_SIZE) == 0)
+		free_listener_by_name(unit->name);
+
 	syslog(LOG_INFO, "%s done", msg);
-out:
-	if (ret != 0)
-		send_log(msg_fd, "%s", MICA_MSG_FAILED);
-	else
-		send_log(msg_fd, "%s", MICA_MSG_SUCCESS);
+	return 0;
+
+err:
+	send_log(msg_fd, "%s", MICA_MSG_FAILED);
 	close(msg_fd);
 	return ret;
 }
@@ -425,7 +457,7 @@ int register_socket_listener(void)
 void unregister_socket_listener(void)
 {
 	listening = false;
-	free_listener();
+	free_all_listeners();
 	rmrf(MICA_SOCKET_DIRECTORY);
 }
 
