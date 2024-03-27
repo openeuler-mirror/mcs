@@ -147,6 +147,7 @@ def query_status() -> None:
                 socket.send_msg(command.encode())
                 response = socket.recv()
                 if response == 'MICA-FAILED':
+                    name = filename[:-7]
                     print(f'Query {name} status failed!')
 
 
