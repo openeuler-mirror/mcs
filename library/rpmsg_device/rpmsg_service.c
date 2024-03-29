@@ -42,7 +42,6 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 	struct metal_list *node, *tmp_node;
 	struct remote_ept *r_ept;
 	struct mica_service *new_svc;
-	void *priv;
 
 	if (client->rproc.state != RPROC_RUNNING)
 		return -EPERM;
@@ -52,7 +51,6 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 		return -ENOMEM;
 
 	memcpy(new_svc, svc, sizeof(*new_svc));
-	priv = new_svc->priv;
 
 	if (new_svc->init)
 		new_svc->init(new_svc);
@@ -72,8 +70,8 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 	metal_list_for_each(&remote_ept_list, node) {
 		r_ept = metal_container_of(node, struct remote_ept, node);
 
-		if (new_svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv)) {
-			new_svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, priv);
+		if (new_svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, new_svc->priv)) {
+			new_svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, new_svc->priv);
 			DEBUG_PRINT("binding an already existing service. local: %s, remote: %s\n", new_svc->name, r_ept->name);
 			tmp_node = node;
 			node = tmp_node->prev;

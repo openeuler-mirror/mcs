@@ -278,11 +278,14 @@ static void get_rpmsg_tty_dev(char *str, size_t size, void *priv)
 
 static int create_tty_dev_lists(struct mica_service *svc)
 {
-	svc->priv = malloc(sizeof(struct metal_list));
-	if (!svc->priv)
+	struct metal_list *tty_dev_list;
+
+	tty_dev_list = malloc(sizeof(*tty_dev_list));
+	if (!tty_dev_list)
 		return -ENOMEM;
 
-	metal_list_init((struct metal_list *)svc->priv);
+	metal_list_init(tty_dev_list);
+	svc->priv = tty_dev_list;
 	return 0;
 }
 
