@@ -223,7 +223,7 @@ static int check_create_msg(struct create_msg msg, int msg_fd)
 
 static void show_status(int msg_fd, struct listen_unit *unit)
 {
-        const char *status;
+	const char *status;
 	char response[RESPONSE_MSG_SIZE * 2] = { 0 };
 	char buffer[RESPONSE_MSG_SIZE] = { 0 };
 

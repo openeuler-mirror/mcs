@@ -98,7 +98,7 @@ static int create_tty_device(struct rpmsg_tty_service *tty_svc)
 	if (ret != 0)
 		goto err;
 
-        snprintf(tty_svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%d",
+	snprintf(tty_svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%d",
 		 RPMSG_TTY_DEV, tty_svc->tty_index);
 
 	unlink(tty_svc->tty_dev);

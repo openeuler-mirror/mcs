@@ -247,7 +247,7 @@ static int wait_cpu_status_reset(struct resource_table *rsc_table, unsigned int 
 		diff += ((int)now.tv_nsec - (int)start.tv_nsec) / 1000000;
 		if (diff >= timeout)
 			return -1;
-        }
+	}
 
 	return 0;
 }
@@ -428,7 +428,7 @@ static void rproc_remove(struct remoteproc *rproc)
 
 	notifier = find ? true : false;
 	if (!notifier) {
-		write(pipe_fd[PIPE_WRITE_END], &find, sizeof(find));
+		(void)!write(pipe_fd[PIPE_WRITE_END], &find, sizeof(find));
 		close(mcs_fd);
 		close(pipe_fd[PIPE_READ_END]);
 		close(pipe_fd[PIPE_WRITE_END]);

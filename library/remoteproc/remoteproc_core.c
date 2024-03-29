@@ -191,7 +191,7 @@ const char *show_client_status(struct mica_client *client)
 		[RPROC_SUSPENDED]	= "Suspended",
 		[RPROC_ERROR]		= "Error",
 		[RPROC_STOPPED]		= "Stopped",
-        };
+	};
 
 	if (client->rproc.state >= RPROC_OFFLINE && client->rproc.state < RPROC_LAST)
 		return client_status[client->rproc.state];

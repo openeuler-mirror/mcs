@@ -98,9 +98,6 @@ static void daemonize(void)
 	if (setsid() < 0)
 		exit(EXIT_FAILURE);
 
-	/* Ignore signal sent from child to parent process */
-	signal(SIGCHLD, SIG_IGN);
-
 	/*
 	 * second fork:
 	 * ensure that the new process is not a session leader
@@ -163,6 +160,12 @@ static int add_signal_handler(void)
 		return -1;
 	}
 
+	/* Ignore signal sent from child to parent process */
+	if (sigaction(SIGCHLD, &sa, NULL) < 0) {
+		syslog(LOG_ERR, "Failed to ignore SIGCHLD");
+		return -1;
+	}
+
 	if (sem_init(&sem_micad_stop, 0, 0) == -1) {
 		syslog(LOG_ERR, "Failed to init micad stop sem");
 		return -1;
@@ -185,21 +188,49 @@ static int add_signal_handler(void)
 	return 0;
 }
 
+static void mica_create_all(void)
+{
+	pid_t pid;
+	int status;
+	char *command = "mica";
+	char *argument_list[] = {"mica", "create", "--all", NULL};
+
+	pid = fork();
+
+	if (pid < 0) {
+		syslog(LOG_ERR, "Failed to fork, %s", strerror(errno));
+		return;
+	} else if (pid == 0) {
+		execvp(command, argument_list);
+		syslog(LOG_ERR, "Failed to run 'mica create --all', %s", strerror(errno));
+	} else {
+		waitpid(pid, &status, 0);
+
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+			syslog(LOG_ERR, "Failed to run 'mica create --all'");
+	}
+}
+
 int main(int argc, char **argv)
 {
 	int ret;
 
 	daemonize();
 
-	ret = add_signal_handler();
-	if (ret)
-		goto out;
-
 	ret = register_socket_listener();
 	if (ret) {
 		syslog(LOG_ERR, "Failed to start micad");
 		goto out;
 	}
+
+	mica_create_all();
+
+	ret = add_signal_handler();
+	if (ret) {
+		unregister_socket_listener();
+		goto out;
+	}
+
 	syslog(LOG_INFO, "Started micad");
 	sem_wait(&sem_micad_stop);
 	unregister_socket_listener();
