@@ -12,6 +12,8 @@ import struct
 
 __version__ = "0.0.1"
 
+MICA_CONFIG_PATH = "/etc/mica"
+
 class mica_create_msg:
     def __init__(self, cpu, name, path):
         self.cpu = cpu
@@ -81,16 +83,19 @@ class mica_socket:
 
 
 def send_create_msg(config_file: str) -> None:
-    if not os.path.isfile(config_file):
-        print(f"Configuration file '{config_file}' not found.")
-        exit(1)
+    mica_config = config_file
+    if not os.path.isfile(mica_config):
+        mica_config = os.path.join(MICA_CONFIG_PATH, mica_config)
+        if not os.path.isfile(mica_config):
+            print(f"Configuration file '{config_file}' not found.")
+            exit(1)
 
     if not os.path.exists('/run/mica/mica-create.socket'):
         print('Error occurred! Please check if micad is running.')
         exit(1)
 
     parser = ConfigParser()
-    parser.read(config_file)
+    parser.read(mica_config)
     auto_boot = False
     try:
         cpu = int(parser.get('Mica', 'CPU'))
@@ -99,7 +104,7 @@ def send_create_msg(config_file: str) -> None:
         if parser.has_option('Mica', 'AutoBoot'):
             auto_boot = parser.getboolean('Mica', 'AutoBoot')
     except Exception as e:
-        print(f'Error parsing {config_file}: {e}')
+        print(f'Error parsing {mica_config}: {e}')
         return
 
     msg = mica_create_msg(cpu, name, path)
