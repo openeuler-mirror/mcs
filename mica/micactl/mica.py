@@ -88,7 +88,7 @@ def send_create_msg(config_file: str) -> None:
         mica_config = os.path.join(MICA_CONFIG_PATH, mica_config)
         if not os.path.isfile(mica_config):
             print(f"Configuration file '{config_file}' not found.")
-            exit(1)
+            return
 
     if not os.path.exists('/run/mica/mica-create.socket'):
         print('Error occurred! Please check if micad is running.')
@@ -117,7 +117,7 @@ def send_create_msg(config_file: str) -> None:
             print(f'Successfully created {name}!')
         elif response == 'MICA-FAILED':
             print(f'Create {name} failed!')
-            exit(1)
+            return
 
     if auto_boot:
         print(f'starting {name}...')
@@ -160,7 +160,7 @@ def send_ctrl_msg(command: str, client: str) -> None:
     ctrl_socket = f'/run/mica/{client}.socket'
     if not os.path.exists(ctrl_socket):
         print(f"Cannot find {client}. Please run 'mica create <config>' to create it.")
-        exit(1)
+        return
 
     with mica_socket(ctrl_socket) as socket:
         socket.send_msg(command.encode())
@@ -181,7 +181,9 @@ def create_parser() -> ArgumentParser:
 
     # Create command
     create_parser = subparsers.add_parser('create', help='Create a new mica client')
-    create_parser.add_argument('config', help='the configuration file of mica client')
+    create_parser.add_argument('config', nargs='?', default=None, help='the configuration file of mica client')
+    create_parser.add_argument('--all', action='store_true', help='create mica client for '
+                               'all mica configurations')
 
     # Start command
     start_parser = subparsers.add_parser('start', help='Start a client')
@@ -207,7 +209,15 @@ def main() -> None:
     args = parser.parse_args(args=None if sys.argv[1:] else ['--help'])
 
     if args.command == 'create':
-        send_create_msg(args.config)
+        if args.all and args.config:
+            parser.error("Arguments '--all' and 'config' are mutually exclusive")
+        elif args.all:
+            for file in os.listdir(MICA_CONFIG_PATH):
+                send_create_msg(os.path.join(MICA_CONFIG_PATH, file))
+        elif args.config:
+            send_create_msg(args.config)
+        else:
+            parser.print_help()
     elif args.command == 'start':
         print(f'starting {args.client}...')
         send_ctrl_msg(args.command, args.client)
