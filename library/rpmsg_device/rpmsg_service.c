@@ -116,7 +116,7 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	rvdev = metal_container_of(rdev, struct rpmsg_virtio_device, rdev);
 	rpvdev = metal_container_of(rvdev->vdev, struct remoteproc_virtio, vdev);
 	rproc = rpvdev->priv;
-	client = rproc->priv;
+	client = metal_container_of(rproc, struct mica_client, rproc);
 
 	DEBUG_PRINT("remote ept: name %s, dest: %d\n", name, dest);
 	metal_list_for_each(&client->services, node) {

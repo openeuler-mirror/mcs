@@ -136,14 +136,8 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 				     const struct remoteproc_ops *ops, void *arg)
 {
 	int ret;
-	struct mica_client *client = arg;
-
-	if (!client)
-		return NULL;
 
 	rproc->ops = ops;
-	rproc->priv = client;
-
 	/* open mcs device for rproc->ops */
 	mcs_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
 	if (mcs_fd < 0) {
@@ -267,7 +261,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	void *rsc_table = NULL;
 	struct mem_info info;
 	struct metal_io_region *io = NULL;
-	struct mica_client *client = rproc->priv;
+	struct mica_client *client;
 
 	/*
 	 * Call rproc->ops->mmap to create shared memory io
@@ -278,6 +272,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 		return ret;
 	}
 
+	client = metal_container_of(rproc, struct mica_client, rproc);
 	ret = init_shmem_pool(client, info.phy_addr + (client->cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
 	if (ret) {
 		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
@@ -362,7 +357,7 @@ static int rproc_start(struct remoteproc *rproc)
 {
 	int ret;
 	uint32_t status;
-	struct mica_client *client = rproc->priv;
+	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct resource_table *rsc_table = rproc->rsc_table;
 	struct cpu_info info = {
 		.cpu = client->cpu_id,
@@ -433,14 +428,12 @@ static void rproc_remove(struct remoteproc *rproc)
 		close(pipe_fd[PIPE_READ_END]);
 		close(pipe_fd[PIPE_WRITE_END]);
 	}
-
-	rproc->priv = NULL;
 }
 
 static int rproc_notify(struct remoteproc *rproc, uint32_t id)
 {
 	int ret;
-	struct mica_client *client = (struct mica_client *)rproc->priv;
+	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct cpu_info info = {
 		.cpu = client->cpu_id,
 	};
