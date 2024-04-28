@@ -128,21 +128,40 @@ err:
 static int rpmsg_rx_tty_callback(struct rpmsg_endpoint *ept, void *data,
 				 size_t len, uint32_t src, void *priv)
 {
-	int ret;
+	int ret, i, j;
+	char *msg, *msg_data, *p;
 	struct rpmsg_tty_service *tty_svc = priv;
 
 	if (tty_svc->active != 1)
 		return -EAGAIN;
 
+	msg = (char *)malloc(sizeof(char) * (len * 2));
+	if (msg == NULL)
+		return -ENOMEM;
+
+	p = msg;
+	msg_data = (char *)data;
+	/* when using tty, translate '\n' to "\r\n" */
+	for (i = 0, j = 0; i < len; ++i, ++msg_data) {
+		if (*msg_data == '\n') {
+			msg[i + j] = '\r';
+			++j;
+		}
+		msg[i + j] = *msg_data;
+	}
+	len = i + j;
+
 	while (len) {
-		ret = write(tty_svc->pty_master_fd, data, len);
+		ret = write(tty_svc->pty_master_fd, msg, len);
 		if (ret < 0) {
 			fprintf(stderr, "write %s error:%d\n", tty_svc->tty_dev, ret);
 			break;
 		}
 		len -= ret;
-		data = (char *)data + ret;
+		msg = (char *)msg + ret;
 	}
+
+	free(p);
 	return 0;
 }
 
