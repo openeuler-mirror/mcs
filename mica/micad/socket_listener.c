@@ -19,6 +19,7 @@
 
 #include <mica/mica.h>
 #include <services/rpmsg_pty.h>
+#include <services/rpc/rpmsg_rpc.h>
 
 #define MAX_EVENTS		64
 #define MAX_NAME_LEN		32
@@ -268,6 +269,12 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 		ret = create_rpmsg_tty(unit->client);
 		if (ret) {
 			syslog(LOG_ERR, "Create rpmsg_tty failed, ret(%d)", ret);
+			goto err;
+		}
+
+		ret = create_rpmsg_rpc_service(unit->client);
+		if (ret) {
+			syslog(LOG_ERR, "enable rpmsg_rpc_service failed, ret(%d)", ret);
 			goto err;
 		}
 	} else if (strncmp(msg, "stop", CTRL_MSG_SIZE) == 0) {

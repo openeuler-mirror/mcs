@@ -18,6 +18,11 @@ include_directories(
 	${CMAKE_SOURCE_DIR}/library/include
 )
 
+## rpc support multi workers
+if(DEFINED MULTI_WORKERS)
+	add_definitions(-DMULTI_WORKERS)
+endif()
+
 ## build MICA library
 set(MICA_LIB mica)
 add_subdirectory(${CMAKE_SOURCE_DIR}/library)
