@@ -8,10 +8,13 @@
 #include <syslog.h>
 #include <metal/alloc.h>
 #include <metal/io.h>
+#include <metal/cache.h>
 #include <openamp/remoteproc.h>
 #include <openamp/remoteproc_loader.h>
 
 #include "remoteproc/remoteproc_module.h"
+
+#define CPU_OFF_FUNCID     0x84000002
 
 /*
  * Related operations for remote processor, including start/stop/notify callbacks
@@ -184,6 +187,7 @@ void destory_client(struct mica_client *client)
 
 const char *show_client_status(struct mica_client *client)
 {
+	struct resource_table *rsc_table;
 	/* Match with rproc_state */
 	static const char * const client_status[RPROC_LAST] = {
 		[RPROC_OFFLINE]		= "Offline",
@@ -195,8 +199,18 @@ const char *show_client_status(struct mica_client *client)
 		[RPROC_STOPPED]		= "Stopped",
 	};
 
-	if (client->rproc.state >= RPROC_OFFLINE && client->rproc.state < RPROC_LAST)
+	if (client->rproc.state >= RPROC_OFFLINE && client->rproc.state < RPROC_LAST) {
+		if (client->rproc.state == RPROC_RUNNING) {
+			rsc_table = client->rproc.rsc_table;
+			metal_cache_invalidate(rsc_table->reserved, sizeof(rsc_table->reserved));
+			if (rsc_table->reserved[0] == CPU_OFF_FUNCID) { /* check rproc offline */
+				mica_stop(client);
+				return client_status[RPROC_OFFLINE];
+			}
+		}
+
 		return client_status[client->rproc.state];
+	}
 	else
 		return NULL;
 }
