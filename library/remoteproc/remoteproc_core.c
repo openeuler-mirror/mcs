@@ -17,6 +17,7 @@
  * Related operations for remote processor, including start/stop/notify callbacks
  */
 extern const struct remoteproc_ops rproc_bare_metal_ops;
+extern const struct remoteproc_ops rproc_jailhouse_ops;
 
 METAL_DECLARE_LIST(g_client_list);
 
@@ -90,8 +91,7 @@ static int store_load(void *store, size_t offset, size_t size,
  * @close: close the "firmware" to clean up after loading
  * @load: load the firmware contents to target memory
  */
-static const struct image_store_ops mem_image_store_ops =
-{
+static const struct image_store_ops mem_image_store_ops = {
 	.open     = store_open,
 	.close    = store_close,
 	.load     = store_load,
@@ -105,6 +105,8 @@ int create_client(struct mica_client *client)
 
 	if (client->ped == BARE_METAL)
 		ops = &rproc_bare_metal_ops;
+	else if (client->ped == JAILHOUSE)
+		ops = &rproc_jailhouse_ops;
 	else
 		return -EINVAL;
 
@@ -141,8 +143,8 @@ int load_client_image(struct mica_client *client)
 	store_close(&store);
 
 	/* If the remote is already in a running state, skip the load */
-	if (rproc->rsc_table) {
-		DEBUG_PRINT("already running: %x\n", *(uint32_t *)(rproc->rsc_table + 8));
+	if (rproc->rsc_table && rproc->state == RPROC_READY) {
+		DEBUG_PRINT("remote is ready, no need to load it");
 		return ret;
 	}
 
@@ -183,7 +185,7 @@ void destory_client(struct mica_client *client)
 const char *show_client_status(struct mica_client *client)
 {
 	/* Match with rproc_state */
-	static const char* const client_status[RPROC_LAST] = {
+	static const char * const client_status[RPROC_LAST] = {
 		[RPROC_OFFLINE]		= "Offline",
 		[RPROC_CONFIGURED]	= "Configured",
 		[RPROC_READY]		= "Ready",
