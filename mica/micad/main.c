@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <errno.h>
 
 #include "socket_listener.h"
@@ -160,9 +161,9 @@ static int add_signal_handler(void)
 		return -1;
 	}
 
-	/* Ignore signal sent from child to parent process */
-	if (sigaction(SIGCHLD, &sa, NULL) < 0) {
-		syslog(LOG_ERR, "Failed to ignore SIGCHLD");
+	/* ensure SIGCHLD not be ignore, otherwise waitpid() will failed */
+	if (signal(SIGCHLD, SIG_DFL) == SIG_ERR) {
+		syslog(LOG_ERR, "Failed to enable SIGCHLD signal");
 		return -1;
 	}
 
