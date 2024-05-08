@@ -24,8 +24,9 @@ extern "C" {
 #define DEBUG_PRINT(fmt, ...) do{ } while (0)
 #endif
 
-enum rproc_mode {
-	RPROC_MODE_BARE_METAL = 0,
+enum pedestal_type {
+	BARE_METAL = 0,
+	JAILHOUSE = 1,
 };
 
 extern struct metal_list g_client_list;
@@ -35,11 +36,13 @@ struct mica_client {
 
 	/* client os firmware path */
 	char			path[MAX_FIRMWARE_PATH_LEN];
+	/* pedestal configuration */
+	char			ped_cfg[MAX_FIRMWARE_PATH_LEN];
 	/* the target CPU */
 	unsigned int		cpu_id;
 
 	/* The mechanism used to manage the lifecycle of a remoteproc */
-	enum			rproc_mode mode;
+	enum			pedestal_type ped;
 	/* remoteproc instance */
 	struct remoteproc rproc;
 

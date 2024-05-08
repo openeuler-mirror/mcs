@@ -50,6 +50,8 @@ struct create_msg {
 	uint32_t cpu;
 	char name[MAX_NAME_LEN];
 	char path[MAX_FIRMWARE_PATH_LEN];
+	char ped[MAX_NAME_LEN];
+	char ped_cfg[MAX_FIRMWARE_PATH_LEN];
 };
 
 static void send_log(int msg_fd, const char *format, ...)
@@ -337,7 +339,13 @@ static int create_mica_client(int epoll_fd, void *data)
 
 	client->cpu_id = msg.cpu;
 	strlcpy(client->path, msg.path, MAX_FIRMWARE_PATH_LEN);
-	client->mode = RPROC_MODE_BARE_METAL;
+
+	if (strcmp(msg.ped, "jailhouse") == 0)
+		client->ped = JAILHOUSE;
+	else
+		client->ped = BARE_METAL;
+
+	strlcpy(client->ped_cfg, msg.ped_cfg, MAX_FIRMWARE_PATH_LEN);
 
 	ret = mica_create(client);
 	if (ret < 0) {

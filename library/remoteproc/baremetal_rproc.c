@@ -32,7 +32,7 @@ struct mem_info {
 };
 
 static int mcs_fd;
-int pipe_fd[2];
+static int pipe_fd[2];
 #define PIPE_READ_END  0
 #define PIPE_WRITE_END 1
 #define MCS_DEVICE_NAME    "/dev/mcs"
@@ -60,7 +60,7 @@ static void rproc_notify_all(void)
 
 	metal_list_for_each(&g_client_list, node) {
 		client = metal_container_of(node, struct mica_client, node);
-		if (client->mode == RPROC_MODE_BARE_METAL)
+		if (client->ped == BARE_METAL)
 			remoteproc_get_notification(&client->rproc, 0);
 	}
 }
@@ -101,7 +101,7 @@ static int rproc_register_notifier()
 	pthread_t thread;
 
 	/*
-	 * In bare-metal mode, we only need to register one notifier.
+	 * For bare-metal, we only need to register one notifier.
 	 */
 	if (notifier)
 		return ret;
@@ -415,7 +415,7 @@ static void rproc_remove(struct remoteproc *rproc)
 
 	metal_list_for_each(&g_client_list, node) {
 		client = metal_container_of(node, struct mica_client, node);
-		if (client->mode == RPROC_MODE_BARE_METAL) {
+		if (client->ped == BARE_METAL) {
 			find = 1;
 			break;
 		}

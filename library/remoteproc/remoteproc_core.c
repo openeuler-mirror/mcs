@@ -103,7 +103,7 @@ int create_client(struct mica_client *client)
 	struct remoteproc *rproc;
 	const struct remoteproc_ops *ops;
 
-	if (client->mode == RPROC_MODE_BARE_METAL)
+	if (client->ped == BARE_METAL)
 		ops = &rproc_bare_metal_ops;
 	else
 		return -EINVAL;

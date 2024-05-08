@@ -15,15 +15,19 @@ __version__ = "0.0.1"
 MICA_CONFIG_PATH = "/etc/mica"
 
 class mica_create_msg:
-    def __init__(self, cpu, name, path):
+    def __init__(self, cpu, name, path, ped, ped_cfg):
         self.cpu = cpu
         self.name = name
         self.path = path
+        self.ped = ped
+        self.ped_cfg = ped_cfg
 
     def pack(self):
         # max name length: 32
         # max path length: 128
-        return struct.pack('I32s128s', self.cpu, self.name.encode(), self.path.encode())
+        return struct.pack('I32s128s32s128s', self.cpu, \
+                           self.name.encode(), self.path.encode(), \
+                           self.ped.encode(), self.ped_cfg.encode())
 
 
 class mica_socket:
@@ -101,13 +105,17 @@ def send_create_msg(config_file: str) -> None:
         cpu = int(parser.get('Mica', 'CPU'))
         name = parser.get('Mica', 'Name')
         path = parser.get('Mica', 'ClientPath')
+        ped = ped_cfg = ''
+        if parser.has_option('Mica', 'Pedestal'):
+            ped = parser.get('Mica', 'Pedestal')
+            ped_cfg = parser.get('Mica', 'PedestalConf')
         if parser.has_option('Mica', 'AutoBoot'):
             auto_boot = parser.getboolean('Mica', 'AutoBoot')
     except Exception as e:
         print(f'Error parsing {mica_config}: {e}')
         return
 
-    msg = mica_create_msg(cpu, name, path)
+    msg = mica_create_msg(cpu, name, path, ped, ped_cfg)
     print(f'Creating {name}...')
 
     with mica_socket('/run/mica/mica-create.socket') as socket:
