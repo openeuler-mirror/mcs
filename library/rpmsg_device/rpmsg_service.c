@@ -14,8 +14,7 @@
 
 static METAL_DECLARE_LIST(remote_ept_list);
 
-struct remote_ept
-{
+struct remote_ept {
 	char              name[RPMSG_NAME_SIZE];
 	uint32_t          addr;
 	uint32_t          dest_addr;

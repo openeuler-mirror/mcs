@@ -49,7 +49,7 @@ static int pipe_fd[2];
 /* shared memory pool size: 128 K */
 #define SHM_POOL_SIZE      0x20000
 
-static atomic_bool notifier = false;
+static atomic_bool notifier;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -82,7 +82,7 @@ static void *rproc_wait_event(void *arg)
 	pthread_mutex_unlock(&mutex);
 
 	while (notifier) {
-		ret = poll(&fds, 2, -1);
+		ret = poll(fds, 2, -1);
 		if (ret == -1) {
 			syslog(LOG_ERR, "%s failed: %s\n", __func__, strerror(errno));
 			break;
@@ -95,7 +95,7 @@ static void *rproc_wait_event(void *arg)
 	pthread_exit(NULL);
 }
 
-static int rproc_register_notifier()
+static int rproc_register_notifier(void)
 {
 	int ret = 0;
 	pthread_t thread;
@@ -109,7 +109,7 @@ static int rproc_register_notifier()
 	ret = pipe(pipe_fd);
 	if (ret == -1) {
 		syslog(LOG_ERR, "unable to create pipe for notifier: %s\n", strerror(errno));
-	        return ret;
+		return ret;
 	}
 
 	ret = pthread_create(&thread, NULL, rproc_wait_event, NULL);
@@ -320,8 +320,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 		rproc->ops->notify(rproc, 0);
 		ret = wait_cpu_status_reset((struct resource_table *)rsc_table, 200);
 		if (ret) {
-			syslog(LOG_INFO, "Even though the CPU status is CPU_ON, "
-			       "the remote didn't respond, try to reload it.");
+			syslog(LOG_INFO, "The CPU status is CPU_ON, but remote didn't respond, try to reload it.");
 			ret = 0;
 			goto err;
 		}
@@ -331,7 +330,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 		 * The reserved fields was reset by remote, and we can restore the rsc table.
 		 * Note:  handle_rsc_table() requires that the reserved fields must be zero.
 		 */
-	        ret = remoteproc_set_rsc_table(rproc, (struct resource_table *)rsc_table, rsc_size);
+		ret = remoteproc_set_rsc_table(rproc, (struct resource_table *)rsc_table, rsc_size);
 		if (ret) {
 			syslog(LOG_ERR, "unable to set rsctable, ret: %d", ret);
 			goto err;

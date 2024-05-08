@@ -13,8 +13,7 @@
 extern "C" {
 #endif
 
-struct img_store
-{
+struct img_store {
 	FILE *file;
 	char *buf;
 };

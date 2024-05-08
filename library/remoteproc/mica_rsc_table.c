@@ -21,6 +21,7 @@ int handle_mica_rsc(struct remoteproc *rproc, void *rsc, size_t len)
 	rsc_type = ((struct fw_rsc_vendor *)rsc)->type;
 	switch (rsc_type) {
 	case RSC_VENDOR_EPT_TABLE:
+	{
 		struct fw_rsc_ept *ept_rsc = rsc;
 		struct ept_info *ept;
 
@@ -30,6 +31,7 @@ int handle_mica_rsc(struct remoteproc *rproc, void *rsc, size_t len)
 				register_remote_ept(ept->name, ept->addr, ept->dest_addr);
 		}
 		break;
+	}
 	default:
 		break;
 	}
