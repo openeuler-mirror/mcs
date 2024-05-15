@@ -12,6 +12,8 @@
 #include <openamp/remoteproc.h>
 #include <openamp/remoteproc_loader.h>
 
+#include <mica/mica.h>
+
 #include "remoteproc/remoteproc_module.h"
 
 #define CPU_OFF_FUNCID     0x84000002
