@@ -62,7 +62,7 @@ static bool rpc_name_match(struct rpmsg_device *rdev, const char *name,
 	return !strcmp(name, RPMSG_RPC_EPT_NAME);
 }
 
-static void remove_rpc_service(struct mica_service *svc)
+static void remove_rpc_service(struct mica_client *client, struct mica_service *svc)
 {
 	rpmsg_rpc_service_terminate();
 }

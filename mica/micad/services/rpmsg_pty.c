@@ -295,7 +295,7 @@ static void get_rpmsg_tty_dev(char *str, size_t size, void *priv)
 	}
 }
 
-static int create_tty_dev_lists(struct mica_service *svc)
+static int create_tty_dev_lists(struct mica_client *client, struct mica_service *svc)
 {
 	struct metal_list *tty_dev_list;
 
@@ -308,7 +308,7 @@ static int create_tty_dev_lists(struct mica_service *svc)
 	return 0;
 }
 
-static void remove_tty_dev_lists(struct mica_service *svc)
+static void remove_tty_dev_lists(struct mica_client *client, struct mica_service *svc)
 {
 	struct rpmsg_tty_service *tty_svc;
 	struct metal_list *node, *tmp_node;

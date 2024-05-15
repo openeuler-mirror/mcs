@@ -52,14 +52,14 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 	memcpy(new_svc, svc, sizeof(*new_svc));
 
 	if (new_svc->init)
-		new_svc->init(new_svc);
+		new_svc->init(client, new_svc);
 
 	if (new_svc->rpmsg_ns_match == NULL)
 		goto out;
 
 	if (new_svc->rpmsg_ns_bind_cb == NULL) {
 		if (new_svc->remove)
-			new_svc->remove(new_svc);
+			new_svc->remove(client, new_svc);
 		free(new_svc);
 		syslog(LOG_ERR, "%s failed: require rpmsg_ns_bind_cb() operation\n", __func__);
 		return -EINVAL;
@@ -93,7 +93,7 @@ void mica_unregister_all_services(struct mica_client *client)
 	metal_list_for_each(&client->services, node) {
 		svc = metal_container_of(node, struct mica_service, node);
 		if (svc->remove)
-			svc->remove(svc);
+			svc->remove(client, svc);
 		tmp_node = node;
 		node = tmp_node->prev;
 		metal_list_del(tmp_node);

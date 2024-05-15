@@ -19,7 +19,7 @@ extern "C" {
 
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...) do{ syslog(LOG_DEBUG, "DEBUG: %s:%d:%s(): " fmt, \
-				      __FILE__, __LINE__, __func__, ##args); } while (0)
+				      __FILE_NAME__, __LINE__, __func__, ##args); } while (0)
 #else
 #define DEBUG_PRINT(fmt, ...) do{ } while (0)
 #endif
@@ -33,7 +33,8 @@ extern struct metal_list g_client_list;
 
 struct mica_client {
 	const struct rpmsg_virtio_config *config;
-
+	/* if the binary supports gdb stub or not */
+	bool debug;
 	/* client os firmware path */
 	char			path[MAX_FIRMWARE_PATH_LEN];
 	/* pedestal configuration */
@@ -85,8 +86,8 @@ struct mica_service {
 	void *priv;
 
 	/*For user-defined service */
-	int (*init) (struct mica_service *svc);
-	void (*remove) (struct mica_service *svc);
+	int (*init) (struct mica_client *client, struct mica_service *svc);
+	void (*remove) (struct mica_client *client, struct mica_service *svc);
 
 	/*For rpmsg service */
 	bool (*rpmsg_ns_match) (struct rpmsg_device *rdev,
