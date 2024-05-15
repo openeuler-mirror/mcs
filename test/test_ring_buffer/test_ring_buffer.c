@@ -4,7 +4,18 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <errno.h>
+
+#include "ring_buffer.h"
+#include "mica_debug_common.h"
 #include "test_ring_buffer.h"
+#include "mica_debug_ring_buffer.h"
 
 int main()
 {
@@ -16,12 +27,12 @@ int main()
 	}
 	int mcs_fd = ret;
 	// mmap shared memory
-	void *virt_addr = mmap(NULL, 0x30000, PROT_READ | PROT_WRITE, MAP_SHARED, mcs_fd, 0x70000000);
+	void *virt_addr = mmap(NULL, RING_BUFFER_LEN * 2, PROT_READ | PROT_WRITE, MAP_SHARED, mcs_fd, RING_BUFFER_PA);
 	if (virt_addr == MAP_FAILED) {
 		printf("mmap failed: sh_mem_addr:%p\n", virt_addr);
 		return -EPERM;
 	}
-	void *rx_buffer = virt_addr, *tx_buffer = virt_addr + 0x18000;
+	void *rx_buffer = virt_addr + RING_BUFFER_LEN, *tx_buffer = virt_addr;
 	// read and write message from ring buffer
 	char recv_buf[MAX_BUFF_LENGTH];
 	while(1) {
@@ -45,7 +56,7 @@ int main()
 		printf("write to ring buffer: %s\n", send_buf);
 	}
 
-	munmap(virt_addr, 0x30000);
+	munmap(virt_addr, RING_BUFFER_LEN * 2);
 	close(mcs_fd);
 	return 0;
 }

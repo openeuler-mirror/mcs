@@ -29,3 +29,6 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/library)
 
 ## build MICA client
 add_subdirectory(${CMAKE_SOURCE_DIR}/mica)
+
+## build testcase for debugging module
+add_subdirectory(${CMAKE_SOURCE_DIR}/test/test_ring_buffer)
