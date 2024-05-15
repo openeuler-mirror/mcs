@@ -7,22 +7,11 @@
 #ifndef MICA_DEBUG_RING_BUFFER_H
 #define MICA_DEBUG_RING_BUFFER_H
 
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <pthread.h>
-#include <stdio.h>
 #include <mqueue.h>
-#include <errno.h>
-#include <string.h>
-#include <stdlib.h>
-
-#include "mica/mica_client.h"
-#include "mcs/mica_debug_common.h"
-#include "ring_buffer.h"
+#include <mica/mica.h>
 
 /* the shared memory space used for communication */
-#define RING_BUFFER_PA 0x70040000
+#define RING_BUFFER_PA 0x7007E000
 #define RING_BUFFER_LEN 0x1000
 
 struct debug_ring_buffer_module_data{
@@ -34,15 +23,20 @@ struct debug_ring_buffer_module_data{
 	pthread_t data_to_rtos_thread;
 	pthread_t data_to_server_thread;
 };
-
-/* Deliver packets from server to RTOS */
-int transfer_data_to_rtos(struct debug_ring_buffer_module_data *ring_buffer_module_data);
-static void *data_to_rtos_thread(void *args);
-/* Deliver packets from RTOS to server */
-int transfer_data_to_server(struct debug_ring_buffer_module_data *ring_buffer_module_data);
-static void *data_to_server_thread(void *args);
-
+/*
+ * brief: start the ring buffer module
+ * param[in] client: the mica client to start ring buffer module
+ * param[in] from_server: the message queue descriptor to receive message from server
+ * param[in] to_server: the message queue descriptor to send message to server
+ * param[out] ring_buffer_module_data_out: the data structure to store the ring buffer module data
+ * return: 0 if success, <0 if failed
+ */
 int start_ring_buffer_module(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct debug_ring_buffer_module_data **ring_buffer_module_data_out);
+
+/*
+ * brief: stop the ring buffer module
+ * param[in] ring_buffer_module_data: the data structure to store the ring buffer module data
+ */
 void free_resources_for_ring_buffer_module(struct debug_ring_buffer_module_data *ring_buffer_module_data);
 
 #endif

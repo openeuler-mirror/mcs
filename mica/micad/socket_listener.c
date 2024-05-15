@@ -19,6 +19,7 @@
 
 #include <mica/mica.h>
 #include <services/rpmsg_pty.h>
+#include <services/mica_debug.h>
 #include <services/rpc/rpmsg_rpc.h>
 
 #define MAX_EVENTS		64
@@ -53,6 +54,7 @@ struct create_msg {
 	char path[MAX_FIRMWARE_PATH_LEN];
 	char ped[MAX_NAME_LEN];
 	char ped_cfg[MAX_FIRMWARE_PATH_LEN];
+	bool debug;
 };
 
 static void send_log(int msg_fd, const char *format, ...)
@@ -266,6 +268,10 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 			goto err;
 		}
 
+		if (unit->client->debug) {
+			create_debug_service(unit->client);
+		}
+
 		ret = create_rpmsg_tty(unit->client);
 		if (ret) {
 			syslog(LOG_ERR, "Create rpmsg_tty failed, ret(%d)", ret);
@@ -353,6 +359,9 @@ static int create_mica_client(int epoll_fd, void *data)
 		client->ped = BARE_METAL;
 
 	strlcpy(client->ped_cfg, msg.ped_cfg, MAX_FIRMWARE_PATH_LEN);
+
+	client->debug = msg.debug;
+	syslog(LOG_INFO, "value of debug: %d", msg.debug);
 
 	ret = mica_create(client);
 	if (ret < 0) {

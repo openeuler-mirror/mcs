@@ -1,10 +1,5 @@
 add_library(${MICA_LIB} STATIC "")
 
-target_sources(${MICA_LIB} PUBLIC
-	mica_debug_common.c
-	mica_gdb_server.c
-)
-
 add_subdirectory(remoteproc)
 add_subdirectory(memory)
 add_subdirectory(rpmsg_device)

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <syslog.h>
 
 /*
  * This depends on the message length from RTOS
@@ -25,18 +26,16 @@
  */
 #define MAX_BUFF_LENGTH 1600
 #define MSG_PRIO 0 // default priority for message queue
-#define LOG_FILE_PATH "./logfile.txt"
 #define EXIT_PACKET "$k#6b"
 
 /*
- * Considering the performance of the system,
- * we do not want to open and close the log file each time we write to it.
- * Therefore, we provide the following functions to open and close the log file.
- * Users should call open_log_file() at the beginning of the program,
- * and call close_log_file() when freeing resources.
+	Some functions have pointer return value type (void *),
+	but we want to return error codes, which are integer type (int).
+	The direct conversion between pointer type (void *) and the integer type (int)
+	is undefined behavior,
+	so we need to convert to intptr_t type as an intermediate state.
 */
-int open_log_file();
-void close_log_file();
-void mica_debug_log_error(const char *module, const char *fmt, ...);
+#define INT_TO_PTR(x) ((void *)(intptr_t)(x))
+#define PTR_TO_INT(x) ((int)(intptr_t)(x))
 
 #endif
