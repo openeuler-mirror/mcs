@@ -23,6 +23,7 @@ static void *data_to_rtos_thread(void *args)
 	char recv_buf[MAX_BUFF_LENGTH];
 	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)args;
 	bool server_send_close = false;
+
 	while (1) {
 		if (server_send_close) {
 			break;
@@ -30,6 +31,7 @@ static void *data_to_rtos_thread(void *args)
 
 		// receive message from server
 		int n_bytes = mq_receive(data->from_server, recv_buf, MAX_BUFF_LENGTH, NULL);
+
 		if (n_bytes == -1) {
 			syslog(LOG_ERR, "receive data from server failed");
 			ret = -errno;
@@ -42,7 +44,8 @@ static void *data_to_rtos_thread(void *args)
 		}
 
 		// send message to RTOS
-		while(writable(data->tx_buffer) == 0) {}
+		while (writable(data->tx_buffer) == 0) {
+		}
 		ret = ring_buffer_write(data->tx_buffer, recv_buf, n_bytes);
 		if (ret < 0) {
 			syslog(LOG_ERR, "ring_buffer_write error");
@@ -58,12 +61,14 @@ static void *data_to_server_thread(void *args)
 	int ret;
 	char recv_buf[MAX_BUFF_LENGTH];
 	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)args;
+
 	while (1) {
 		// receive message from RTOS
-		while(readable(data->rx_buffer) == 0) {
+		while (readable(data->rx_buffer) == 0) {
 			pthread_testcancel();
 		}
 		int n_bytes = ring_buffer_read(data->rx_buffer, recv_buf, MAX_BUFF_LENGTH);
+
 		if (n_bytes == -1) {
 			syslog(LOG_ERR, "receive data from RTOS failed");
 			ret = -errno;
@@ -126,12 +131,14 @@ int start_ring_buffer_module(struct mica_client *client, mqd_t from_server, mqd_
 {
 	int ret;
 	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)calloc(sizeof(struct debug_ring_buffer_module_data), 1);
+
 	*data_out = data;
 	data->len = RING_BUFFER_LEN;
 	data->from_server = from_server;
 	data->to_server = to_server;
 	// the ring buffer area should be mmaped first
 	void *ring_buffer_va;
+
 	ring_buffer_va = alloc_shmem_region(client, RING_BUFFER_PA, RING_BUFFER_LEN * 2);
 	if (ring_buffer_va == NULL) {
 		syslog(LOG_ERR, "allocate memory for ring buffer failed");
@@ -177,7 +184,7 @@ void free_resources_for_ring_buffer_module(struct debug_ring_buffer_module_data 
 	memset(data->rx_buffer, 0, data->len);
 	memset(data->tx_buffer, 0, data->len);
 	// since now we depend on "metal" library for accessing memory
-	// when shutting down the remoteproc instance, 
+	// when shutting down the remoteproc instance,
 	// the whole shared memory will be released at that time
 	// we do not need to release it here
 	syslog(LOG_INFO, "cleared ring buffer\n");

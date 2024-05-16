@@ -21,10 +21,9 @@
 #define RPMSG_TTY_MAX_DEV	10
 #define BUF_SIZE		256
 
-static int tty_id[RPMSG_TTY_MAX_DEV] = { [ 0 ... (RPMSG_TTY_MAX_DEV-1) ] = -1 };
+static int tty_id[RPMSG_TTY_MAX_DEV] = { [0 ... (RPMSG_TTY_MAX_DEV-1)] = -1 };
 
-struct rpmsg_tty_service
-{
+struct rpmsg_tty_service {
 	atomic_int active;
 	struct rpmsg_endpoint ept;
 	int pty_master_fd;
@@ -261,7 +260,6 @@ free_ept:
 	metal_list_del(&tty_svc->node);
 free_mem:
 	free(tty_svc);
-	return;
 }
 
 /**

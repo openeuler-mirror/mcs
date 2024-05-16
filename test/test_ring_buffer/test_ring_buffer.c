@@ -17,10 +17,11 @@
 #include "test_ring_buffer.h"
 #include "mica_debug_ring_buffer.h"
 
-int main()
+int main(void)
 {
 	// open mcs device
 	int ret = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
+
 	if (ret < 0) {
 		printf("open %s device failed\n", MCS_DEVICE_NAME);
 		return ret;
@@ -28,6 +29,7 @@ int main()
 	int mcs_fd = ret;
 	// mmap shared memory
 	void *virt_addr = mmap(NULL, RING_BUFFER_LEN * 2, PROT_READ | PROT_WRITE, MAP_SHARED, mcs_fd, RING_BUFFER_PA);
+
 	if (virt_addr == MAP_FAILED) {
 		printf("mmap failed: sh_mem_addr:%p\n", virt_addr);
 		return -EPERM;
@@ -35,9 +37,12 @@ int main()
 	void *rx_buffer = virt_addr + RING_BUFFER_LEN, *tx_buffer = virt_addr;
 	// read and write message from ring buffer
 	char recv_buf[MAX_BUFF_LENGTH];
-	while(1) {
-		while(readable(rx_buffer) == 0) {}
+
+	while (1) {
+		while (readable(rx_buffer) == 0) {
+		}
 		int n_bytes = ring_buffer_read(rx_buffer, recv_buf, MAX_BUFF_LENGTH);
+
 		if (n_bytes == -1) {
 			perror("ring_buffer_read error");
 			ret = -1;
@@ -46,7 +51,9 @@ int main()
 		recv_buf[n_bytes] = '\0';
 		printf("read from ring buffer: %s\n", recv_buf);
 		char *send_buf = "hello world";
-		while(writable(tx_buffer) == 0) {}
+
+		while (writable(tx_buffer) == 0) {
+		}
 		n_bytes = ring_buffer_write(tx_buffer, send_buf, strlen(send_buf));
 		if (n_bytes == -1) {
 			perror("ring_buffer_write error");

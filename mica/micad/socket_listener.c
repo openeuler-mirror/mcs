@@ -35,7 +35,7 @@
 typedef int (*listener_cb)(int epoll_fd, void *data);
 
 static METAL_DECLARE_LIST(listener_list);
-static atomic_bool listening = false;
+static atomic_bool listening;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -67,13 +67,13 @@ static void send_log(int msg_fd, const char *format, ...)
 	va_copy(args_copy, args);
 	len = vsnprintf(NULL, 0, format, args_copy);
 	va_end(args_copy);
-	
+
 	buffer = (char *)malloc(len + 1);
 	if (!buffer) {
 		va_end(args);
 		return;
 	}
-		
+
 	vsnprintf(buffer, len + 1, format, args);
 	send(msg_fd, buffer, strlen(buffer), MSG_NOSIGNAL);
 	free(buffer);
@@ -473,7 +473,7 @@ int register_socket_listener(void)
 	pthread_mutex_lock(&mutex);
 	pthread_cond_wait(&cond, &mutex);
 	pthread_mutex_unlock(&mutex);
-	
+
 	ret = listening ? 0 : -1;
 	return ret;
 }

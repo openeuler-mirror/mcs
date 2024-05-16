@@ -14,7 +14,7 @@
 #define RING_BUFFER_PA 0x7007E000
 #define RING_BUFFER_LEN 0x1000
 
-struct debug_ring_buffer_module_data{
+struct debug_ring_buffer_module_data {
 	void *rx_buffer;
 	void *tx_buffer;
 	int len;

@@ -29,12 +29,12 @@
 #define EXIT_PACKET "$k#6b"
 
 /*
-	Some functions have pointer return value type (void *),
-	but we want to return error codes, which are integer type (int).
-	The direct conversion between pointer type (void *) and the integer type (int)
-	is undefined behavior,
-	so we need to convert to intptr_t type as an intermediate state.
-*/
+ * Some functions have pointer return value type (void *),
+ * but we want to return error codes, which are integer type (int).
+ * The direct conversion between pointer type (void *) and the integer type (int)
+ * is undefined behavior,
+ * so we need to convert to intptr_t type as an intermediate state.
+ */
 #define INT_TO_PTR(x) ((void *)(intptr_t)(x))
 #define PTR_TO_INT(x) ((int)(intptr_t)(x))
 

@@ -34,22 +34,26 @@ struct debug_ring_buffer_module_data *g_ring_buffer_module_data;
 static void *server_loop_thread(void *args)
 {
 	int ret = start_proxy_server(g_from_server, g_to_server, &g_proxy_server_resources);
+
 	return INT_TO_PTR(ret);
 }
 
-static int alloc_message_queue()
+static int alloc_message_queue(void)
 {
 	/* attributes of message queues */
 	struct mq_attr attr;
+
 	attr.mq_maxmsg = MAX_QUEUE_SIZE;
 	attr.mq_msgsize = MAX_BUFF_LENGTH;
 
-	if ((g_from_server = mq_open(TO_SHARED_MEM_QUEUE_NAME, O_RDWR | O_CREAT, 0600, &attr)) == -1) {
+	g_from_server = mq_open(TO_SHARED_MEM_QUEUE_NAME, O_RDWR | O_CREAT, 0600, &attr);
+	if (g_from_server == -1) {
 		syslog(LOG_ERR, "open to shared memory message queue failed\n");
 		return -errno;
 	}
 
-	if ((g_to_server = mq_open(FROM_SHARED_MEM_QUEUE_NAME, O_RDWR | O_CREAT, 0600, &attr)) == -1) {
+	g_to_server = mq_open(FROM_SHARED_MEM_QUEUE_NAME, O_RDWR | O_CREAT, 0600, &attr);
+	if (g_to_server == -1) {
 		syslog(LOG_ERR, "open from shared memory message queue failed\n");
 		return -errno;
 	}
@@ -57,7 +61,7 @@ static int alloc_message_queue()
 	return 0;
 }
 
-static void free_message_queue()
+static void free_message_queue(void)
 {
 	if (g_from_server != 0)
 		mq_close(g_from_server);
@@ -71,6 +75,7 @@ static void free_message_queue()
 static int debug_start(struct mica_client *client_os, struct mica_service *svc)
 {
 	int ret;
+
 	ret = alloc_message_queue();
 	if (ret < 0) {
 		syslog(LOG_ERR, "alloc message queue failed\n");
@@ -87,13 +92,18 @@ static int debug_start(struct mica_client *client_os, struct mica_service *svc)
 	syslog(LOG_INFO, "start ring buffer module success\n");
 
 	pthread_t server_loop;
-	if ((ret = pthread_create(&server_loop, NULL, server_loop_thread, NULL)) != 0) {
+
+	ret = pthread_create(&server_loop, NULL, server_loop_thread, NULL);
+	if (ret != 0) {
+		ret = -ret;
 		syslog(LOG_ERR, "%s: create server loop thread failed\n", __func__);
 		goto err_free_ring_buffer_module;
 	}
 	syslog(LOG_INFO, "create server loop thread success\n");
 
-	if (pthread_detach(server_loop) != 0) {
+	ret = pthread_detach(server_loop);
+	if (ret != 0) {
+		ret = -ret;
 		syslog(LOG_ERR, "%s: detach server_loop_thread failed", __func__);
 		goto err_cancel_server;
 	}
@@ -117,7 +127,6 @@ static void debug_stop(struct mica_client *client_os, struct mica_service *svc)
 	free_resources_for_proxy_server(g_proxy_server_resources);
 	free_resources_for_ring_buffer_module(g_ring_buffer_module_data);
 	free_message_queue();
-	return;
 }
 
 static struct mica_service debug_service = {

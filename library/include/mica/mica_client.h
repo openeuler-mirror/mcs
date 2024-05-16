@@ -18,10 +18,10 @@ extern "C" {
 #define MAX_FIRMWARE_PATH_LEN	128
 
 #ifdef DEBUG
-#define DEBUG_PRINT(fmt, args...) do{ syslog(LOG_DEBUG, "DEBUG: %s:%d:%s(): " fmt, \
+#define DEBUG_PRINT(fmt, args...) do { syslog(LOG_DEBUG, "DEBUG: %s:%d:%s(): " fmt, \
 				      __FILE_NAME__, __LINE__, __func__, ##args); } while (0)
 #else
-#define DEBUG_PRINT(fmt, ...) do{ } while (0)
+#define DEBUG_PRINT(fmt, ...) do { } while (0)
 #endif
 
 enum pedestal_type {

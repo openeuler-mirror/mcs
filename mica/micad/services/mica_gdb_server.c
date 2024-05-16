@@ -22,6 +22,7 @@
 static int send_to_gdb(int client_socket_fd, char *buffer, int n_bytes)
 {
 	int ret = 0;
+
 	if (send(client_socket_fd, buffer, n_bytes, 0) == -1) {
 		syslog(LOG_ERR, "send data to client failed");
 		ret = -errno;
@@ -64,7 +65,8 @@ static void *recv_from_shared_mem_thread(void *args)
 static int send_to_shared_mem(mqd_t from_server, char *buffer, int n_bytes)
 {
 	int ret = 0;
-	if(mq_send(from_server, buffer, n_bytes, MSG_PRIO) == -1) {
+
+	if (mq_send(from_server, buffer, n_bytes, MSG_PRIO) == -1) {
 		ret = -errno;
 	}
 	return ret;
@@ -73,7 +75,9 @@ static int send_to_shared_mem(mqd_t from_server, char *buffer, int n_bytes)
 static int recv_from_gdb(int client_socket_fd, char *buffer)
 {
 	int n_bytes;
-	if ((n_bytes = recv(client_socket_fd, buffer, MAX_BUFF_LENGTH, 0)) == -1) {
+
+	n_bytes = recv(client_socket_fd, buffer, MAX_BUFF_LENGTH, 0);
+	if (n_bytes == -1) {
 		syslog(LOG_ERR, "receive data from gdb failed");
 		return -errno;
 	}
@@ -114,14 +118,15 @@ int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_r
 	struct sockaddr_in client_addr;
 	socklen_t sin_size;
 	char recv_buf[MAX_BUFF_LENGTH];
-	int n_bytes, opt = 1;
+	int n_bytes, opt = 1, ret;
 
 	syslog(LOG_INFO, "MICA gdb proxy server: starting...\n");
 
 	// create socket file descriptor
-	if ((resources->server_socket_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+	resources->server_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (resources->server_socket_fd == -1) {
 		syslog(LOG_ERR, "socket creation failed");
-		exit(EXIT_FAILURE);
+		return -1;
 	}
 
 	// set server address
@@ -135,24 +140,31 @@ int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_r
 				   SO_REUSEADDR, &opt,
 				   sizeof(opt))) {
 		syslog(LOG_ERR, "setsockopt");
+		ret = -1;
 		goto err_close_server_sock;
 	}
 
 	// bind socket to server address
-	if (bind(resources->server_socket_fd, (struct sockaddr *)&server_addr, sizeof(struct sockaddr)) == -1) {
+	ret = bind(resources->server_socket_fd, (struct sockaddr *)&server_addr, sizeof(struct sockaddr));
+	if (ret == -1) {
+		ret = -errno;
 		syslog(LOG_ERR, "bind socket to address failed");
 		goto err_close_server_sock;
 	}
 
 	// listen on socket, for now we only accept one connection
-	if (listen(resources->server_socket_fd, MAX_PARALLEL_CONNECTIONS) == -1){
+	ret = listen(resources->server_socket_fd, MAX_PARALLEL_CONNECTIONS);
+	if (ret == -1) {
+		ret = -errno;
 		syslog(LOG_ERR, "listen on socket failed");
 		goto err_close_server_sock;
 	}
 
 	// accept connection
 	sin_size = sizeof(server_addr);
-	if ((resources->client_socket_fd = accept(resources->server_socket_fd, (struct sockaddr *)&client_addr, &sin_size)) == -1) {
+	resources->client_socket_fd = accept(resources->server_socket_fd, (struct sockaddr *)&client_addr, &sin_size);
+	if (resources->client_socket_fd == -1) {
+		ret = -errno;
 		syslog(LOG_ERR, "accept connection failed");
 		goto err_close_server_sock;
 	}
@@ -161,11 +173,16 @@ int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_r
 
 	// create a new thread for receiving data from shared memory Transfer Module
 	struct proxy_server_recv_args args = {to_server, resources->client_socket_fd};
-	if (pthread_create(&resources->recv_from_shared_mem_thread, NULL, recv_from_shared_mem_thread, &args) != 0) {
+
+	ret = pthread_create(&resources->recv_from_shared_mem_thread, NULL, recv_from_shared_mem_thread, &args);
+	if (ret != 0) {
+		ret = -ret;
 		syslog(LOG_ERR, "create thread failed");
 		goto err_close_client_sock;
 	}
-	if (pthread_detach(resources->recv_from_shared_mem_thread) != 0) {
+	ret = pthread_detach(resources->recv_from_shared_mem_thread);
+	if (ret != 0) {
+		ret = -ret;
 		syslog(LOG_ERR, "detach thread failed");
 		goto err_cancel_recv_thread;
 	}
@@ -173,12 +190,15 @@ int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_r
 	syslog(LOG_INFO, "MICA gdb proxy server: read for messages forwarding ...\n");
 
 	bool gdb_send_close = false;
+
 	while (1) {
 		if (gdb_send_close == true) {
 			break;
 		}
 		// receive data from client
-		if ((n_bytes = recv_from_gdb(resources->client_socket_fd, recv_buf)) < 0) {
+		n_bytes = recv_from_gdb(resources->client_socket_fd, recv_buf);
+		if (n_bytes < 0) {
+			ret = n_bytes;
 			goto err_cancel_recv_thread;
 		}
 		if (n_bytes == 0) {
@@ -190,7 +210,8 @@ int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_r
 		}
 
 		// transfer data to shared memory transfer module through message queue
-		if (send_to_shared_mem(from_server, recv_buf, n_bytes) < 0) {
+		ret = send_to_shared_mem(from_server, recv_buf, n_bytes);
+		if (ret < 0) {
 			goto err_cancel_recv_thread;
 		}
 	}
@@ -204,5 +225,5 @@ err_close_client_sock:
 err_close_server_sock:
 	close(resources->server_socket_fd);
 	free(resources);
-	exit(EXIT_FAILURE);
+	return ret;
 }

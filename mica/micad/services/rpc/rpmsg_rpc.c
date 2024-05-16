@@ -50,7 +50,6 @@ static void rpc_service_init(struct rpmsg_device *rdev, const char *name,
 
 free_mem:
 	free(rpc_service_ept);
-	return;
 }
 
 /**
