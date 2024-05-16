@@ -33,7 +33,7 @@
 	rpc_##name##_req_t *req = req_ptr;           \
 	rpc_##name##_resp_t resp;                    \
 	size_t payload_size = sizeof(resp);          \
-	int ret;
+	int ret = 0;
 
 #ifdef MULTI_WORKERS
 #define CLEANUP(data) free(data)
@@ -258,14 +258,6 @@ int lprintf(const char *fmt, ...)
 	count = __lprintf(fmt, list);
 	va_end(list);
 	return count;
-}
-
-static void dump(char *buf, int len)
-{
-	for (int i = 0; i < len; i++) {
-		lprintf("%x ", buf[i]);
-	}
-	lprintf("\n");
 }
 
 static void lerror(int ret, int errnum)
