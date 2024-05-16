@@ -11,7 +11,7 @@
 #include <string.h>
 
 #include "rpc_server_internal.h"
-#include "mcs/rpmsg_rpc_service.h"
+#include "rpmsg_rpc_service.h"
 
 static pthread_t pids[WORKERS];
 
