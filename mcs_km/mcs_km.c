@@ -20,6 +20,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/version.h>
 
 #define MCS_DEVICE_NAME		"mcs"
 
@@ -164,7 +165,11 @@ static int init_mcs_ipi(void)
 	int err;
 	struct irq_desc *desc;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+	desc = irq_data_to_desc(irq_get_irq_data(IPI_MCS));
+#else
 	desc = irq_to_desc(IPI_MCS);
+#endif
 	if (desc->action) {
 		pr_err("IRQ %d is not free\n", IPI_MCS);
 		return -EBUSY;
@@ -434,7 +439,11 @@ static int register_mcs_dev(void)
 		goto err;
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+	mcs_class = class_create(MCS_DEVICE_NAME);
+#else
 	mcs_class = class_create(THIS_MODULE, MCS_DEVICE_NAME);
+#endif
 	if (IS_ERR(mcs_class)) {
 		ret = PTR_ERR(mcs_class);
 		pr_err("class_create failed (%d)\n", ret);
