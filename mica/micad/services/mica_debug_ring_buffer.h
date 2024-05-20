@@ -10,10 +10,6 @@
 #include <mqueue.h>
 #include <mica/mica.h>
 
-/* the shared memory space used for communication */
-#define RING_BUFFER_PA 0x7007E000
-#define RING_BUFFER_LEN 0x1000
-
 struct debug_ring_buffer_module_data {
 	void *rx_buffer;
 	void *tx_buffer;

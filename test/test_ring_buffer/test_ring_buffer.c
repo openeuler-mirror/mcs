@@ -12,7 +12,8 @@
 #include <sys/mman.h>
 #include <errno.h>
 
-#include "ring_buffer.h"
+#include <rbuf_device/ring_buffer.h>
+
 #include "mica_debug_common.h"
 #include "test_ring_buffer.h"
 #include "mica_debug_ring_buffer.h"

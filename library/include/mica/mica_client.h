@@ -61,6 +61,9 @@ struct mica_client {
 	/* rpmsg device */
 	struct rpmsg_device		*rdev;
 
+	/* ring buffer device */
+	struct rbuf_device *rbuf_dev;
+
 	/* the bound services */
 	struct metal_list services;
 	/* the client list */

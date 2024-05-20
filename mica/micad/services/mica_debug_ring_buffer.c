@@ -13,8 +13,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <rbuf_device/rbuf_dev.h>
+#include <rbuf_device/ring_buffer.h>
+
 #include "mica_debug_common.h"
-#include "ring_buffer.h"
 #include "mica_debug_ring_buffer.h"
 
 static void *data_to_rtos_thread(void *args)
@@ -131,39 +133,17 @@ int start_ring_buffer_module(struct mica_client *client, mqd_t from_server, mqd_
 {
 	int ret;
 	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)calloc(sizeof(struct debug_ring_buffer_module_data), 1);
-
+	struct rbuf_device *rbuf_dev = client->rbuf_dev;
 	*data_out = data;
-	data->len = RING_BUFFER_LEN;
+	data->len = rbuf_dev->rbuf_len;
 	data->from_server = from_server;
 	data->to_server = to_server;
-	// the ring buffer area should be mmaped first
-	void *ring_buffer_va;
-
-	ring_buffer_va = alloc_shmem_region(client, RING_BUFFER_PA, RING_BUFFER_LEN * 2);
-	if (ring_buffer_va == NULL) {
-		syslog(LOG_ERR, "allocate memory for ring buffer failed");
-		ret = -errno;
-		goto err_exit;
-	}
-
-	data->rx_buffer = ring_buffer_va;
-	data->tx_buffer = ring_buffer_va + data->len;
-	if (ring_buffer_pair_init(data->rx_buffer, data->tx_buffer, data->len)) {
-		syslog(LOG_ERR, "ring_buffer_pair_init failed\n");
-		ret = -1;
-		goto err_unmap_ring_buffer;
-	}
-
-	syslog(LOG_INFO, "ring buffer module init success\n");
+	data->rx_buffer = rbuf_dev->rx_va;
+	data->tx_buffer = rbuf_dev->tx_va;
 	/* create thread to send message to server */
 	ret = transfer_data_to_rtos(data);
 	ret = transfer_data_to_server(data);
 
-err_exit:
-	return ret;
-
-err_unmap_ring_buffer:
-	munmap(ring_buffer_va, data->len * 2);
 	return ret;
 }
 

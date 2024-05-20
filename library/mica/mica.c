@@ -10,6 +10,7 @@
 #include "mica/mica.h"
 #include "remoteproc/remoteproc_module.h"
 #include "rpmsg/rpmsg_vdev.h"
+#include "rbuf_device/rbuf_dev.h"
 
 int mica_create(struct mica_client *client)
 {
@@ -42,6 +43,12 @@ int mica_start(struct mica_client *client)
 	if (ret)
 		syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
 
+	if (client->debug) {
+		ret = create_rbuf_device(client);
+	if (ret)
+		syslog(LOG_ERR, "create rbuf device failed, err: %d\n", ret);
+	}
+	
 	return ret;
 }
 
@@ -54,6 +61,8 @@ void mica_stop(struct mica_client *client)
 	 */
 	mica_unregister_all_services(client);
 	release_rpmsg_device(client);
+	if (client->debug)
+		destroy_rbuf_device(client);
 	stop_client(client);
 }
 

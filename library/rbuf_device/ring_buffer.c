@@ -4,16 +4,7 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
-#ifndef RING_BUFFER_H
-#define RING_BUFFER_H
-
-typedef struct ring_buffer {
-	int len;
-	volatile int busy; // lock
-	volatile int tail; // writer pos
-	volatile int head; // reader pos
-	char redzone[8];
-} ring_buffer_t;
+#include <rbuf_device/ring_buffer.h>
 
 static void ring_buffer_lock(ring_buffer_t *ring_buffer)
 {
@@ -116,5 +107,3 @@ int ring_buffer_read(ring_buffer_t *ring_buffer, char *buf, int len)
 
 	return cnt;
 }
-
-#endif

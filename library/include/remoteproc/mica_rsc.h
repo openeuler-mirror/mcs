@@ -30,6 +30,7 @@ extern "C" {
  */
 enum mica_resource_type {
 	RSC_VENDOR_EPT_TABLE = 128,
+	RSC_VENDOR_RBUF_PAIR = 129,
 };
 
 /**
@@ -56,6 +57,35 @@ struct fw_rsc_ept {
 	uint32_t num_of_epts;
 	struct ept_info endpoints[MAX_NUM_OF_EPTS];
 } METAL_PACKED_END;
+
+/*
+ * struct fw_rsc_rbuf_pair - Ring buffer resource
+ * @type: resource type
+ * @da: device address of the ring buffer
+ * @pa: physical address of the ring buffer
+ * @rb_len: length of the resource
+ * @rb_num: number of ring buffers
+ * @flags: IOMMU protection flags
+ * @state: states like if the data is ready, and if the data has special meaning
+ */
+METAL_PACKED_BEGIN
+struct fw_rsc_rbuf_pair {
+	uint32_t type;
+	uint32_t flags;
+	uint64_t da;
+	uint64_t pa;
+	uint64_t len;
+	uint8_t state;
+	uint8_t reserved[7];
+} METAL_PACKED_END;
+
+enum rbuf_state {
+	RBUF_STATE_UNINIT = 0,
+	RBUF_STATE_INIT = 1,
+	RBUF_STATE_ORDINARY_DATA = 2,
+	RBUF_STATE_CTRL_C = 3,
+	RBUF_STATE_RESTART = 4,
+};
 
 /**
  * handle_mica_rsc - Process our custom rsctable entries
