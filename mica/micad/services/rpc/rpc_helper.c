@@ -127,10 +127,6 @@ int decode_addrlist(const char *buf, int cnt, int buflen, struct addrinfo **out)
 		}
 		p->ai_canonname = NULL;
 		if (aclen > 0) {
-			if (&buf[bi] == NULL) {
-				ret = -RPC_ECORRUPTED;
-				goto clean;
-			}
 			p->ai_canonname = __strdup(&buf[bi]);
 			bi += aclen;
 		}

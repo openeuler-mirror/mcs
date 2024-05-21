@@ -118,6 +118,7 @@ static void *worker_thread(void *args)
 		}
 		free(req);
 	}
+	pthread_exit(NULL);
 }
 
 /**
