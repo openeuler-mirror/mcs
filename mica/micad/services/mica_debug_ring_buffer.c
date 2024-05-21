@@ -46,8 +46,6 @@ static void *data_to_rtos_thread(void *args)
 		}
 
 		// send message to RTOS
-		while (writable(data->tx_buffer) == 0) {
-		}
 		ret = ring_buffer_write(data->tx_buffer, recv_buf, n_bytes);
 		if (ret < 0) {
 			syslog(LOG_ERR, "ring_buffer_write error");
@@ -66,16 +64,17 @@ static void *data_to_server_thread(void *args)
 
 	while (1) {
 		// receive message from RTOS
-		while (readable(data->rx_buffer) == 0) {
-			pthread_testcancel();
-		}
+		pthread_testcancel();
+
 		int n_bytes = ring_buffer_read(data->rx_buffer, recv_buf, MAX_BUFF_LENGTH);
 
 		if (n_bytes == -1) {
 			syslog(LOG_ERR, "receive data from RTOS failed");
 			ret = -errno;
 			break;
-		}
+		} else if (n_bytes == 0)
+			continue;
+
 		recv_buf[n_bytes] = '\0';
 
 		// send message to server

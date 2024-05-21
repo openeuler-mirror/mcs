@@ -40,21 +40,18 @@ int main(void)
 	char recv_buf[MAX_BUFF_LENGTH];
 
 	while (1) {
-		while (readable(rx_buffer) == 0) {
-		}
 		int n_bytes = ring_buffer_read(rx_buffer, recv_buf, MAX_BUFF_LENGTH);
 
 		if (n_bytes == -1) {
 			perror("ring_buffer_read error");
 			ret = -1;
 			break;
-		}
+		} else if (n_bytes == 0)
+			continue;
 		recv_buf[n_bytes] = '\0';
 		printf("read from ring buffer: %s\n", recv_buf);
 		char *send_buf = "hello world";
 
-		while (writable(tx_buffer) == 0) {
-		}
 		n_bytes = ring_buffer_write(tx_buffer, send_buf, strlen(send_buf));
 		if (n_bytes == -1) {
 			perror("ring_buffer_write error");
