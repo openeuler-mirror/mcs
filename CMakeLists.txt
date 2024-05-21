@@ -30,5 +30,10 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/library)
 ## build MICA client
 add_subdirectory(${CMAKE_SOURCE_DIR}/mica)
 
+option(TEST_RING_BUFFER "Enable test ring buffer" OFF)
+
 ## build testcase for debugging module
-add_subdirectory(${CMAKE_SOURCE_DIR}/test/test_ring_buffer)
+if (DEFINED TEST_RING_BUFFER)
+	add_definitions(-DTEST_RING_BUFFER)
+	add_subdirectory(${CMAKE_SOURCE_DIR}/test/test_ring_buffer)
+endif()
