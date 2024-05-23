@@ -19,6 +19,7 @@
 #include <linux/cpumask.h>
 #include <linux/uaccess.h>
 #include <linux/mm.h>
+#include <linux/version.h>
 
 #include <asm/apic.h>
 
@@ -55,17 +56,17 @@ static int wakeup_cpu_via_init(unsigned int cpu_id, unsigned long start_eip)
 	unsigned long send_status, accept_status;
 	int apicid = apic->cpu_present_to_apicid(cpu_id);
 
-	maxlvt = GET_APIC_VERSION(apic_read(APIC_LVR));
+	maxlvt = GET_APIC_VERSION(apic->read(APIC_LVR));
 	maxlvt = APIC_INTEGRATED(maxlvt);
 
 	if (APIC_INTEGRATED(boot_cpu_apic_version)) {
 		if (maxlvt > 3)
-			apic_write(APIC_ESR, 0);
-		apic_read(APIC_ESR);
+			apic->write(APIC_ESR, 0);
+		apic->read(APIC_ESR);
 	}
 
 	/* Turn INIT on target chip */
-	apic_icr_write(APIC_INT_LEVELTRIG | APIC_INT_ASSERT | APIC_DM_INIT, apicid);
+	apic->icr_write(APIC_INT_LEVELTRIG | APIC_INT_ASSERT | APIC_DM_INIT, apicid);
 
 	pr_info("Waiting for send to finish...\n");
 	send_status = safe_apic_wait_icr_idle();
@@ -73,7 +74,7 @@ static int wakeup_cpu_via_init(unsigned int cpu_id, unsigned long start_eip)
 
 	/* Target chip */
 	/* Send IPI */
-	apic_icr_write(APIC_INT_LEVELTRIG | APIC_DM_INIT, apicid);
+	apic->icr_write(APIC_INT_LEVELTRIG | APIC_DM_INIT, apicid);
 
 	pr_info("Waiting for send to finish...\n");
 	send_status = safe_apic_wait_icr_idle();
@@ -84,11 +85,11 @@ static int wakeup_cpu_via_init(unsigned int cpu_id, unsigned long start_eip)
 	for (i = 1; i <= 2; i++) {
 		pr_info("Sending STARTUP #%d\n", i);
 		if (maxlvt > 3)		/* Due to the Pentium erratum 3AP.  */
-			apic_write(APIC_ESR, 0);
-		apic_read(APIC_ESR);
+			apic->write(APIC_ESR, 0);
+		apic->read(APIC_ESR);
 		pr_info("After apic_write\n");
 
-		apic_icr_write(APIC_DM_STARTUP | (start_eip >> 12), apicid);
+		apic->icr_write(APIC_DM_STARTUP | (start_eip >> 12), apicid);
 
 		udelay(10);
 		pr_info("Startup point 1\n");
@@ -99,8 +100,8 @@ static int wakeup_cpu_via_init(unsigned int cpu_id, unsigned long start_eip)
 		udelay(10);
 
 		if (maxlvt > 3)
-			apic_write(APIC_ESR, 0);
-		accept_status = (apic_read(APIC_ESR) & 0xEF);
+			apic->write(APIC_ESR, 0);
+		accept_status = (apic->read(APIC_ESR) & 0xEF);
 		if (send_status || accept_status)
 			break;
 	}
@@ -349,7 +350,11 @@ static int register_mcs_dev(void)
 		goto err;
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+	mcs_class = class_create(MCS_DEVICE_NAME);
+#else
 	mcs_class = class_create(THIS_MODULE, MCS_DEVICE_NAME);
+#endif
 	if (IS_ERR(mcs_class)) {
 		ret = PTR_ERR(mcs_class);
 		pr_err("class_create failed (%d)\n", ret);
