@@ -24,12 +24,8 @@ static void *data_to_rtos_thread(void *args)
 	int ret;
 	char recv_buf[MAX_BUFF_LENGTH];
 	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)args;
-	bool server_send_close = false;
 
 	while (1) {
-		if (server_send_close) {
-			break;
-		}
 
 		// receive message from server
 		int n_bytes = mq_receive(data->from_server, recv_buf, MAX_BUFF_LENGTH, NULL);
@@ -41,9 +37,6 @@ static void *data_to_rtos_thread(void *args)
 		}
 
 		recv_buf[n_bytes] = '\0';
-		if (strcmp(recv_buf, EXIT_PACKET) == 0) {
-			server_send_close = true;
-		}
 
 		// send message to RTOS
 		ret = ring_buffer_write(data->tx_buffer, recv_buf, n_bytes);

@@ -269,7 +269,11 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 		}
 
 		if (unit->client->debug) {
-			create_debug_service(unit->client);
+			ret = create_debug_service(unit->client);
+			if (ret) {
+				syslog(LOG_ERR, "Create rpmsg_tty failed, ret(%d)", ret);
+				goto err;
+			}
 		}
 
 		ret = create_rpmsg_tty(unit->client);

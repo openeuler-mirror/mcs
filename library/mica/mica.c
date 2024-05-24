@@ -45,8 +45,8 @@ int mica_start(struct mica_client *client)
 
 	if (client->debug) {
 		ret = create_rbuf_device(client);
-	if (ret)
-		syslog(LOG_ERR, "create rbuf device failed, err: %d\n", ret);
+		if (ret)
+			syslog(LOG_ERR, "create rbuf device failed, err: %d\n", ret);
 	}
 	
 	return ret;
@@ -72,6 +72,8 @@ void mica_remove(struct mica_client *client)
 
 	if (rproc->state != RPROC_OFFLINE)
 		mica_stop(client);
+
+	pthread_cancel(client->gdb_server_thread);
 	destory_client(client);
 }
 

@@ -15,6 +15,10 @@
 #include <sys/msg.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <openamp/rsc_table_parser.h>
+
+#include <mica/mica.h>
+#include <remoteproc/mica_rsc.h>
 
 #include "mica_debug_common.h"
 #include "mica_gdb_server.h"
@@ -110,7 +114,7 @@ void free_resources_for_proxy_server(struct proxy_server_resources *resources)
 	free(resources);
 }
 
-int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out)
+int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out)
 {
 	struct proxy_server_resources *resources = (struct proxy_server_resources *)calloc(sizeof(struct proxy_server_resources), 1);
 	*resources_out = resources;
@@ -189,12 +193,9 @@ int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_r
 
 	syslog(LOG_INFO, "MICA gdb proxy server: read for messages forwarding ...\n");
 
-	bool gdb_send_close = false;
+	bool restart = false;
 
 	while (1) {
-		if (gdb_send_close == true) {
-			break;
-		}
 		// receive data from client
 		n_bytes = recv_from_gdb(resources->client_socket_fd, recv_buf);
 		if (n_bytes < 0) {
@@ -205,8 +206,32 @@ int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_r
 			syslog(LOG_INFO, "client closed connection\n");
 			break;
 		}
-		if (strcmp(recv_buf, EXIT_PACKET) == 0) {
-			gdb_send_close = true;
+
+		if (strcmp(recv_buf, CTRLC_PACKET) == 0) {
+			// received CTRLC
+			syslog(LOG_INFO, "received CTRLC\n");
+			// get resource table and write to the state
+			struct remoteproc *rproc;
+			void *rsc_table;
+			struct fw_rsc_rbuf_pair *rbuf_rsc;
+
+			rproc = &client->rproc;
+			rsc_table = rproc->rsc_table;
+			DEBUG_PRINT("rsctable: %p\n", rsc_table);
+
+			size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+			if (!rbuf_rsc_offset) {
+				ret = -ENODEV;
+				goto err_cancel_recv_thread;
+			}
+			DEBUG_PRINT("found rbuf resource at offset: 0x%lx\n", rbuf_rsc_offset);
+
+			rbuf_rsc = (struct fw_rsc_rbuf_pair *)(rsc_table + rbuf_rsc_offset);
+			DEBUG_PRINT("rbuf resource length: %lx\n", rbuf_rsc->len);
+
+			// remote receives the IPI, then check the state to see the exact info
+			rbuf_rsc->state = RBUF_STATE_CTRL_C;
+			rproc->ops->notify(rproc, 0);
 		}
 
 		// transfer data to shared memory transfer module through message queue

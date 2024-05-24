@@ -10,6 +10,8 @@
 #include <mqueue.h>
 #include <pthread.h>
 
+#include <mica/mica_client.h>
+
 #define GDB_PROXY_PORT 5678 // default port number
 #define MAX_PARALLEL_CONNECTIONS 3
 
@@ -31,7 +33,7 @@ struct proxy_server_recv_args {
  * param[out] resources_out: the resources used by proxy server
  * return: 0 if success, <0 if failed to start the proxy server or failed to send message to transfer
  */
-int start_proxy_server(mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out);
+int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out);
 
 /*
  * brief: stop the proxy server and free resources

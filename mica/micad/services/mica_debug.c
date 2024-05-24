@@ -33,7 +33,8 @@ struct debug_ring_buffer_module_data *g_ring_buffer_module_data;
 
 static void *server_loop_thread(void *args)
 {
-	int ret = start_proxy_server(g_from_server, g_to_server, &g_proxy_server_resources);
+	struct mica_client *client = args;
+	int ret = start_proxy_server(client, g_from_server, g_to_server, &g_proxy_server_resources);
 
 	return INT_TO_PTR(ret);
 }
@@ -93,7 +94,7 @@ static int debug_start(struct mica_client *client_os, struct mica_service *svc)
 
 	pthread_t server_loop;
 
-	ret = pthread_create(&server_loop, NULL, server_loop_thread, NULL);
+	ret = pthread_create(&server_loop, NULL, server_loop_thread, client_os);
 	if (ret != 0) {
 		ret = -ret;
 		syslog(LOG_ERR, "%s: create server loop thread failed\n", __func__);
