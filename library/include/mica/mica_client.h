@@ -35,6 +35,8 @@ struct mica_client {
 	const struct rpmsg_virtio_config *config;
 	/* if the binary supports gdb stub or not */
 	bool debug;
+	/* mica gdb server pthread_t */
+	pthread_t gdb_server_thread;
 	/* client os firmware path */
 	char			path[MAX_FIRMWARE_PATH_LEN];
 	/* pedestal configuration */

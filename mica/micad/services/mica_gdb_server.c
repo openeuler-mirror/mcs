@@ -20,6 +20,9 @@
 #include <mica/mica.h>
 #include <remoteproc/mica_rsc.h>
 
+#include "rpmsg_pty.h"
+#include "mica_debug.h"
+#include "rpc/rpmsg_rpc.h"
 #include "mica_debug_common.h"
 #include "mica_gdb_server.h"
 
@@ -193,9 +196,8 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 
 	syslog(LOG_INFO, "MICA gdb proxy server: read for messages forwarding ...\n");
 
-	bool restart = false;
-
 	while (1) {
+		pthread_testcancel();
 		// receive data from client
 		n_bytes = recv_from_gdb(resources->client_socket_fd, recv_buf);
 		if (n_bytes < 0) {
@@ -232,6 +234,54 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 			// remote receives the IPI, then check the state to see the exact info
 			rbuf_rsc->state = RBUF_STATE_CTRL_C;
 			rproc->ops->notify(rproc, 0);
+		} else if (strncmp(recv_buf, RUN_PACKET, sizeof(RUN_PACKET)) == 0) {
+			// received run command
+			syslog(LOG_INFO, "received run command\n");
+			// get resource table and write to the state
+			struct remoteproc *rproc;
+			void *rsc_table;
+			struct fw_rsc_rbuf_pair *rbuf_rsc;
+
+			rproc = &client->rproc;
+			rsc_table = rproc->rsc_table;
+			DEBUG_PRINT("rsctable: %p\n", rsc_table);
+
+			size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+			if (!rbuf_rsc_offset) {
+				ret = -ENODEV;
+				goto err_cancel_recv_thread;
+			}
+			DEBUG_PRINT("found rbuf resource at offset: 0x%lx\n", rbuf_rsc_offset);
+
+			rbuf_rsc = (struct fw_rsc_rbuf_pair *)(rsc_table + rbuf_rsc_offset);
+			DEBUG_PRINT("rbuf resource length: %lx\n", rbuf_rsc->len);
+
+			mica_stop(client);
+			sleep(3);
+			// load image and start it again
+			ret = mica_start(client);
+			if (ret) {
+				syslog(LOG_ERR, "%s: Restart failed, ret(%d)", __func__, ret);
+				goto err_cancel_recv_thread;
+			}
+
+			ret = create_debug_service(client);
+			if (ret) {
+				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)",__func__, ret);
+				goto err_cancel_recv_thread;
+			}
+
+			ret = create_rpmsg_tty(client);
+			if (ret) {
+				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)",__func__, ret);
+				goto err_cancel_recv_thread;
+			}
+
+			ret = create_rpmsg_rpc_service(client);
+			if (ret) {
+				syslog(LOG_ERR, "%s: enable rpmsg_rpc_service failed, ret(%d)",__func__, ret);
+				goto err_cancel_recv_thread;
+			}
 		}
 
 		// transfer data to shared memory transfer module through message queue

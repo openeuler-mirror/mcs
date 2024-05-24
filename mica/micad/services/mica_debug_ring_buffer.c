@@ -26,7 +26,6 @@ static void *data_to_rtos_thread(void *args)
 	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)args;
 
 	while (1) {
-
 		// receive message from server
 		int n_bytes = mq_receive(data->from_server, recv_buf, MAX_BUFF_LENGTH, NULL);
 

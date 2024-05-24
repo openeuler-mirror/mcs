@@ -23,6 +23,8 @@
 #include "mica_debug.h"
 #include "mica_debug_common.h"
 
+bool gdb_server_running = false;
+
 /* create message queue */
 mqd_t g_from_server, g_to_server;
 
@@ -34,8 +36,10 @@ struct debug_ring_buffer_module_data *g_ring_buffer_module_data;
 static void *server_loop_thread(void *args)
 {
 	struct mica_client *client = args;
+	gdb_server_running = true;
 	int ret = start_proxy_server(client, g_from_server, g_to_server, &g_proxy_server_resources);
 
+	gdb_server_running = false;
 	return INT_TO_PTR(ret);
 }
 
@@ -92,6 +96,9 @@ static int debug_start(struct mica_client *client_os, struct mica_service *svc)
 
 	syslog(LOG_INFO, "start ring buffer module success\n");
 
+	if (gdb_server_running)
+		return 0;
+
 	pthread_t server_loop;
 
 	ret = pthread_create(&server_loop, NULL, server_loop_thread, client_os);
@@ -125,9 +132,7 @@ err_free_message_queue:
 
 static void debug_stop(struct mica_client *client_os, struct mica_service *svc)
 {
-	free_resources_for_proxy_server(g_proxy_server_resources);
 	free_resources_for_ring_buffer_module(g_ring_buffer_module_data);
-	free_message_queue();
 }
 
 static struct mica_service debug_service = {

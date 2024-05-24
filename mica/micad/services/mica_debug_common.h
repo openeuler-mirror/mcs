@@ -27,6 +27,7 @@
 #define MAX_BUFF_LENGTH 1600
 #define MSG_PRIO 0 // default priority for message queue
 #define CTRLC_PACKET "\x03"
+#define RUN_PACKET "$R0#82"
 
 /*
  * Some functions have pointer return value type (void *),
