@@ -32,7 +32,7 @@ void print_device_of_service(struct mica_client *client, char *str, size_t size)
 		if (svc->get_match_device != NULL)
 			svc->get_match_device(str + strlen(str), size - strlen(str), svc->priv);
 		else
-			snprintf(str + strlen(str), size - strlen(str), "%s", svc->name);
+			snprintf(str + strlen(str), size - strlen(str), "%s ", svc->name);
 	}
 }
 
