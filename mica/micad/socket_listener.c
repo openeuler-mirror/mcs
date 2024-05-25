@@ -28,6 +28,7 @@
 #define CTRL_MSG_SIZE		32
 #define RESPONSE_MSG_SIZE	256
 #define MICA_SOCKET_DIRECTORY	"/run/mica"
+#define MICA_GDB_SERVER_PORT 5678
 
 #define MICA_MSG_SUCCESS	"MICA-SUCCESS"
 #define MICA_MSG_FAILED		"MICA-FAILED"
@@ -240,6 +241,25 @@ static void show_status(int msg_fd, struct listen_unit *unit)
 	send_log(msg_fd, "%s", response);
 }
 
+static inline int start_gdb_client(int msg_fd, struct listen_unit *unit)
+{
+	syslog(LOG_INFO, "receive starting gdb server request\n");
+	// check if the elf support debugging
+	if (unit->client->debug == false) {
+		syslog(LOG_ERR, "The elf file does not support debugging\n");
+		send_log(msg_fd, "The elf file does not support debugging\n");
+		return -1;
+	}
+	char gdb_cmd[RESPONSE_MSG_SIZE];
+	snprintf(gdb_cmd, RESPONSE_MSG_SIZE, "gdb %s -ex \'target extended-remote :%d\' -ex \'set remote run-packet off\'",
+	unit->client->path, MICA_GDB_SERVER_PORT);
+
+	DEBUG_PRINT("gdb_cmd: %s\n", gdb_cmd);
+	send_log(msg_fd, "%s", gdb_cmd);
+
+	return 0;
+}
+
 static int client_ctrl_handler(int epoll_fd, void *data)
 {
 	int msg_fd, ret;
@@ -300,6 +320,10 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 		mica_remove(unit->client);
 	} else if (strncmp(msg, "status", CTRL_MSG_SIZE) == 0) {
 		show_status(msg_fd, unit);
+	} else if (strncmp(msg, "gdb", CTRL_MSG_SIZE) == 0) {
+		ret = start_gdb_client(msg_fd, unit);
+		if (ret == -1)
+			goto err;
 	} else {
 		send_log(msg_fd, "Invalid command: %s", msg);
 		syslog(LOG_ERR, "Invalid command: %s", msg);

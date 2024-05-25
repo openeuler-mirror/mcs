@@ -79,6 +79,9 @@ class mica_socket:
                     msg = parts[0].strip()
                     if msg:
                         print(msg)
+                        msg_slice = msg.split(' ')
+                        if msg_slice[0] == 'gdb':
+                            os.system(msg)
                     return 'MICA-SUCCESS'
                 elif len(chunk) == 0:
                     break
@@ -168,7 +171,6 @@ def query_status() -> None:
                     name = filename[:-7]
                     print(f'Query {name} status failed!')
 
-
 def send_ctrl_msg(command: str, client: str) -> None:
     ctrl_socket = f'/run/mica/{client}.socket'
     if not os.path.exists(ctrl_socket):
@@ -182,6 +184,7 @@ def send_ctrl_msg(command: str, client: str) -> None:
             print(f'{command} {client} successfully!')
         elif response == 'MICA-FAILED':
             print(f'{command} {client} failed!')
+
 
 
 def create_parser() -> ArgumentParser:
@@ -213,6 +216,10 @@ def create_parser() -> ArgumentParser:
     # Query status
     status_parser = subparsers.add_parser('status', help='query the mica client status')
 
+    # Start GDB client, Connecting to the MICA GDB Server to debug RTOS
+    gdb_parser = subparsers.add_parser('gdb', help='Start GDB client')
+    gdb_parser.add_argument('client', help='the name of the client')
+
     argcomplete.autocomplete(parser)
     return parser
 
@@ -242,6 +249,8 @@ def main() -> None:
         send_ctrl_msg(args.command, args.client)
     elif args.command == 'status':
         query_status()
+    elif args.command == "gdb":
+        send_ctrl_msg(args.command, args.client)
 
 
 if __name__ == '__main__':
