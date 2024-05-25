@@ -40,6 +40,7 @@ static int setup_rbuf_dev(struct mica_client *client)
 	DEBUG_PRINT("rsctable: %p\n", rsc_table);
 
 	size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+
 	if (!rbuf_rsc_offset)
 		return -ENODEV;
 	DEBUG_PRINT("found rbuf resource at offset: 0x%lx\n", rbuf_rsc_offset);
@@ -48,44 +49,48 @@ static int setup_rbuf_dev(struct mica_client *client)
 	DEBUG_PRINT("rbuf resource length: %lx\n", rbuf_rsc->len);
 
 	void *rb_va = alloc_shmem_region(client, 0, rbuf_rsc->len);
+
 	if (!rb_va)
 		return -ENOMEM;
 
-    struct rbuf_device *rbuf_dev = client->rbuf_dev;
-    rbuf_dev->rx_va = rb_va;
+	struct rbuf_device *rbuf_dev = client->rbuf_dev;
+
+	rbuf_dev->rx_va = rb_va;
 	rbuf_dev->rbuf_len = rbuf_rsc->len / 2;
 	rbuf_dev->tx_va = rb_va + rbuf_dev->rbuf_len;
 
-    rbuf_rsc->pa = shm_pool_virt_to_phys(client, rb_va);
-    /* for now, we do not support IOMMU, so the da should be equal to pa */
-    rbuf_rsc->da = rbuf_rsc->pa;
+	rbuf_rsc->pa = shm_pool_virt_to_phys(client, rb_va);
+	/* for now, we do not support IOMMU, so the da should be equal to pa */
+	rbuf_rsc->da = rbuf_rsc->pa;
 
-    DEBUG_PRINT("alloc debug ring buffer: paddr: 0x%lx, vaddr: %p, size: 0x%lx\n",
-		    rbuf_rsc->pa, rb_va, rbuf_rsc->len);
+	DEBUG_PRINT("alloc debug ring buffer: paddr: 0x%lx, vaddr: %p, size: 0x%lx\n",
+			rbuf_rsc->pa, rb_va, rbuf_rsc->len);
 
 	/* init ring buffer */
 	ring_buffer_pair_init(rbuf_dev->rx_va, rbuf_dev->tx_va, rbuf_dev->rbuf_len);
-    rbuf_rsc->state = RBUF_STATE_INIT;
+	rbuf_rsc->state = RBUF_STATE_INIT;
 
 	return 0;
 }
 
 #ifdef TEST_RING_BUFFER
-static inline int setup_test_rbuf(struct mica_client *client){
-    struct rbuf_device *rbuf_dev = client->rbuf_dev;
-    void *rb_va = alloc_shmem_region(client, RING_BUFFER_PA, RING_BUFFER_LEN * 2);
+static inline int setup_test_rbuf(struct mica_client *client)
+{
+	struct rbuf_device *rbuf_dev = client->rbuf_dev;
+	void *rb_va = alloc_shmem_region(client, RING_BUFFER_PA, RING_BUFFER_LEN * 2);
+
 	if (!rb_va)
 		return -ENOMEM;
 
-    DEBUG_PRINT("%s: alloc debug ring buffer: vaddr: %p, size: 0x%x\n", __func__, rb_va, RING_BUFFER_LEN * 2);
-    rbuf_dev->rx_va = rb_va;
-    rbuf_dev->tx_va = rb_va + RING_BUFFER_LEN;
-    rbuf_dev->rbuf_len = RING_BUFFER_LEN;
+	DEBUG_PRINT("%s: alloc debug ring buffer: vaddr: %p, size: 0x%x\n", __func__, rb_va, RING_BUFFER_LEN * 2);
+	rbuf_dev->rx_va = rb_va;
+	rbuf_dev->tx_va = rb_va + RING_BUFFER_LEN;
+	rbuf_dev->rbuf_len = RING_BUFFER_LEN;
 
 	/* init ring buffer */
 	ring_buffer_pair_init(rbuf_dev->rx_va, rbuf_dev->tx_va, rbuf_dev->rbuf_len);
 
-    return 0;
+	return 0;
 }
 #endif
 
@@ -98,16 +103,16 @@ int create_rbuf_device(struct mica_client *client)
 	if (!rbuf_dev)
 		return -ENOMEM;
 
-    client->rbuf_dev = rbuf_dev;
+	client->rbuf_dev = rbuf_dev;
 #ifdef TEST_RING_BUFFER
-		DEBUG_PRINT("setup ring buffer with static address\n");
-        // only for debugging ring buffer functionality
-        // used with test_ring_buffer together
-        ret = setup_test_rbuf(client);
+	DEBUG_PRINT("setup ring buffer with static address\n");
+	// only for debugging ring buffer functionality
+	// used with test_ring_buffer together
+	ret = setup_test_rbuf(client);
 #else
-        ret = setup_rbuf_dev(client);
+	ret = setup_rbuf_dev(client);
 #endif
-	
+
 	if (ret != 0) {
 		syslog(LOG_ERR, "setup ring buffer device failed, err: %d\n", ret);
 		goto err_free_rbuf_dev;
@@ -126,5 +131,5 @@ void destroy_rbuf_device(struct mica_client *client)
 
 	rbuf_dev = client->rbuf_dev;
 
-    metal_free_memory(rbuf_dev);
+	metal_free_memory(rbuf_dev);
 }

@@ -120,7 +120,6 @@ void free_resources_for_proxy_server(struct proxy_server_resources *resources)
 int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out)
 {
 	struct proxy_server_resources *resources = (struct proxy_server_resources *)calloc(sizeof(struct proxy_server_resources), 1);
-	*resources_out = resources;
 	struct sockaddr_in server_addr;
 	struct sockaddr_in client_addr;
 	socklen_t sin_size;
@@ -130,6 +129,7 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 	syslog(LOG_INFO, "MICA gdb proxy server: starting...\n");
 
 	// create socket file descriptor
+	*resources_out = resources;
 	resources->server_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (resources->server_socket_fd == -1) {
 		syslog(LOG_ERR, "socket creation failed");
@@ -222,6 +222,7 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 			DEBUG_PRINT("rsctable: %p\n", rsc_table);
 
 			size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+
 			if (!rbuf_rsc_offset) {
 				ret = -ENODEV;
 				goto err_cancel_recv_thread;
@@ -247,6 +248,7 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 			DEBUG_PRINT("rsctable: %p\n", rsc_table);
 
 			size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+
 			if (!rbuf_rsc_offset) {
 				ret = -ENODEV;
 				goto err_cancel_recv_thread;
@@ -267,19 +269,19 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 
 			ret = create_debug_service(client);
 			if (ret) {
-				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)",__func__, ret);
+				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)", __func__, ret);
 				goto err_cancel_recv_thread;
 			}
 
 			ret = create_rpmsg_tty(client);
 			if (ret) {
-				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)",__func__, ret);
+				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)", __func__, ret);
 				goto err_cancel_recv_thread;
 			}
 
 			ret = create_rpmsg_rpc_service(client);
 			if (ret) {
-				syslog(LOG_ERR, "%s: enable rpmsg_rpc_service failed, ret(%d)",__func__, ret);
+				syslog(LOG_ERR, "%s: enable rpmsg_rpc_service failed, ret(%d)", __func__, ret);
 				goto err_cancel_recv_thread;
 			}
 		}

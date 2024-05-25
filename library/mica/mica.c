@@ -48,7 +48,7 @@ int mica_start(struct mica_client *client)
 		if (ret)
 			syslog(LOG_ERR, "create rbuf device failed, err: %d\n", ret);
 	}
-	
+
 	return ret;
 }
 

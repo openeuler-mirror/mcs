@@ -7,27 +7,33 @@
 #include <rbuf_device/ring_buffer.h>
 #include <string.h>
 
-static ring_buffer_t * ring_buffer_init(void *addr, int len)
+static ring_buffer_t *ring_buffer_init(void *addr, int len)
 {
-    ring_buffer_t *ring_buffer = (ring_buffer_t *)addr;
-    ring_buffer->in = ring_buffer->out = 0;
-    ring_buffer->len = len;
-    return ring_buffer;
+	ring_buffer_t *ring_buffer = (ring_buffer_t *)addr;
+
+	ring_buffer->in = ring_buffer->out = 0;
+	ring_buffer->len = len;
+	return ring_buffer;
 }
 
 int ring_buffer_pair_init(void *rxaddr, void *txaddr, int len)
 {
-    if (!rxaddr || !txaddr || len <= sizeof(ring_buffer_t)) {
-        return -1;
-    }
-    ring_buffer_init(rxaddr, len - sizeof(ring_buffer_t));
-    ring_buffer_init(txaddr, len - sizeof(ring_buffer_t));
-    return 0;
+	if (!rxaddr || !txaddr || len <= sizeof(ring_buffer_t)) {
+		return -1;
+	}
+	ring_buffer_init(rxaddr, len - sizeof(ring_buffer_t));
+	ring_buffer_init(txaddr, len - sizeof(ring_buffer_t));
+	return 0;
 }
 
 #ifdef __x86_64__
 #define mb()    asm volatile("mfence":::"memory")
 #define rmb()   asm volatile("lfence":::"memory")
+/*
+ * make sure that the operation of reading and writing the ring buffer
+ * points must happen after the operation of reading or writing data from
+ * or to ring buffer
+ */
 #define wmb()   asm volatile("sfence" ::: "memory")
 #elif __aarch64__
 #define dmb(opt)    __asm__ volatile("dmb " #opt : : : "memory")
@@ -35,6 +41,11 @@ int ring_buffer_pair_init(void *rxaddr, void *txaddr, int len)
 
 #define mb()        dsb(sy)
 #define rmb()       dsb(ld)
+/*
+ * make sure that the operation of reading and writing the ring buffer
+ * points must happen after the operation of reading or writing data from
+ * or to ring buffer
+ */
 #define wmb()       dsb(st)
 #else
 #error  "unsupported arch"
@@ -49,6 +60,15 @@ static inline unsigned int kfifo_unused(struct ring_buffer *fifo)
 	return fifo->len - (fifo->in - fifo->out);
 }
 
+/*
+ * internal helper to copy data into the fifo
+ * Note: this function does not check if the copy is larger than the
+ * available space. Make sure to check this before calling.
+ * @fifo: the fifo to be used.
+ * @src: the data to be copied.
+ * @len: the length of the data to be copied.
+ * @off: the offset in the fifo to start copying to.
+ */
 static void kfifo_copy_in(struct ring_buffer *fifo, const void *src,
 		unsigned int len, unsigned int off)
 {
@@ -67,8 +87,11 @@ static void kfifo_copy_in(struct ring_buffer *fifo, const void *src,
 	wmb();
 }
 /*
-
-*/
+ * __kfifo_in - put some data into the FIFO, no locking version
+ * @fifo: the fifo to be used.
+ * @buf: the data to be added.
+ * @len: the length of the data to be added.
+ */
 static unsigned int __kfifo_in(struct ring_buffer *fifo,
 		const void *buf, unsigned int len)
 {
@@ -83,7 +106,15 @@ static unsigned int __kfifo_in(struct ring_buffer *fifo,
 	return len;
 }
 
-
+/*
+ * internal helper to copy data out of the fifo
+ * Note: this function does not check if the copy is larger than the
+ * available space. Make sure to check this before calling.
+ * @fifo: the fifo to be used.
+ * @dst: where the data will be copied.
+ * @len: the length of the data to be copied.
+ * @off: the offset in the fifo to start copying from.
+ */
 static void kfifo_copy_out(struct ring_buffer *fifo, void *dst,
 		unsigned int len, unsigned int off)
 {
@@ -102,6 +133,12 @@ static void kfifo_copy_out(struct ring_buffer *fifo, void *dst,
 	wmb();
 }
 
+/*
+ * __kfifo_out_peek - get some data from the FIFO without removing it, no locking version
+ * @fifo: the fifo to be used.
+ * @buf: where the data will be copied.
+ * @len: the length of the data to be copied.
+ */
 static unsigned int __kfifo_out_peek(struct ring_buffer *fifo,
 		void *buf, unsigned int len)
 {
@@ -115,7 +152,12 @@ static unsigned int __kfifo_out_peek(struct ring_buffer *fifo,
 	return len;
 }
 
-
+/*
+ * __kfifo_out - get some data from the FIFO, no locking version
+ * @fifo: the fifo to be used.
+ * @buf: where the data will be copied.
+ * @len: the length of the data to be copied.
+ */
 static unsigned int __kfifo_out(struct ring_buffer *fifo,
 		void *buf, unsigned int len)
 {
@@ -126,15 +168,16 @@ static unsigned int __kfifo_out(struct ring_buffer *fifo,
 
 int ring_buffer_write(ring_buffer_t *ring_buffer, char *buf, int len)
 {
-    int cnt = 0;
-        while (cnt < len) {
-            int o = __kfifo_in(ring_buffer, &buf[cnt], len - cnt);
-            cnt += o;
-        }
-    return cnt;
+	int cnt = 0;
+
+		while (cnt < len) {
+			int o = __kfifo_in(ring_buffer, &buf[cnt], len - cnt);
+			cnt += o;
+		}
+	return cnt;
 }
 
 int ring_buffer_read(ring_buffer_t *ring_buffer, char *buf, int len)
 {
-    return __kfifo_out(ring_buffer, buf, len);
+	return __kfifo_out(ring_buffer, buf, len);
 }

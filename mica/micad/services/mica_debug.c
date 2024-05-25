@@ -23,7 +23,7 @@
 #include "mica_debug.h"
 #include "mica_debug_common.h"
 
-bool gdb_server_running = false;
+bool gdb_server_running;
 
 /* create message queue */
 mqd_t g_from_server, g_to_server;
@@ -36,6 +36,7 @@ struct debug_ring_buffer_module_data *g_ring_buffer_module_data;
 static void *server_loop_thread(void *args)
 {
 	struct mica_client *client = args;
+
 	gdb_server_running = true;
 	int ret = start_proxy_server(client, g_from_server, g_to_server, &g_proxy_server_resources);
 

@@ -23,9 +23,9 @@ extern "C" {
  * @rbuf_len: length of each ring buffer
  */
 struct rbuf_device {
-    void *tx_va;
-    void *rx_va;
-    int rbuf_len;
+	void *tx_va;
+	void *rx_va;
+	int rbuf_len;
 };
 
 int create_rbuf_device(struct mica_client *client);

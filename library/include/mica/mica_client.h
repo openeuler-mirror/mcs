@@ -91,21 +91,21 @@ struct mica_service {
 	void *priv;
 
 	/*For user-defined service */
-	int (*init) (struct mica_client *client, struct mica_service *svc);
-	void (*remove) (struct mica_client *client, struct mica_service *svc);
+	int (*init)(struct mica_client *client, struct mica_service *svc);
+	void (*remove)(struct mica_client *client, struct mica_service *svc);
 
 	/*For rpmsg service */
-	bool (*rpmsg_ns_match) (struct rpmsg_device *rdev,
+	bool (*rpmsg_ns_match)(struct rpmsg_device *rdev,
 				const char *name,
 				uint32_t addr,
 				uint32_t dest_addr,
 				void *priv);
-	void (*rpmsg_ns_bind_cb) (struct rpmsg_device *rdev,
+	void (*rpmsg_ns_bind_cb)(struct rpmsg_device *rdev,
 				  const char *name,
 				  uint32_t addr,
 				  uint32_t dest_addr,
 				  void *priv);
-	void (*get_match_device) (char *str, size_t size, void *priv);
+	void (*get_match_device)(char *str, size_t size, void *priv);
 };
 
 #if defined __cplusplus
