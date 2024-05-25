@@ -18,8 +18,8 @@
 #include <errno.h>
 
 #include <mica/mica.h>
-#include <services/rpmsg_pty.h>
-#include <services/mica_debug.h>
+#include <services/pty/rpmsg_pty.h>
+#include <services/debug/mica_debug.h>
 #include <services/rpc/rpmsg_rpc.h>
 
 #define MAX_EVENTS		64

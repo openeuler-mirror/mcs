@@ -20,9 +20,9 @@
 #include <mica/mica.h>
 #include <remoteproc/mica_rsc.h>
 
-#include "rpmsg_pty.h"
+#include "services/pty/rpmsg_pty.h"
 #include "mica_debug.h"
-#include "rpc/rpmsg_rpc.h"
+#include "services/rpc/rpmsg_rpc.h"
 #include "mica_debug_common.h"
 #include "mica_gdb_server.h"
 
