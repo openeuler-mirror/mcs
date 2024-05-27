@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <openamp/rsc_table_parser.h>
+#include <metal/cache.h>
 
 #include <mica/mica.h>
 #include <remoteproc/mica_rsc.h>
@@ -91,6 +92,63 @@ static int recv_from_gdb(int client_socket_fd, char *buffer)
 	buffer[n_bytes] = '\0';
 
 	return n_bytes;
+}
+
+static inline int restart_client(struct mica_client *client)
+{
+	struct remoteproc *rproc;
+	void *rsc_table;
+	struct fw_rsc_rbuf_pair *rbuf_rsc;
+	int ret;
+
+	rproc = &client->rproc;
+	rsc_table = rproc->rsc_table;
+	DEBUG_PRINT("rsctable: %p\n", rsc_table);
+
+	size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+
+	if (!rbuf_rsc_offset) {
+		ret = -ENODEV;
+		return ret;
+	}
+	DEBUG_PRINT("found rbuf resource at offset: 0x%lx\n", rbuf_rsc_offset);
+
+	rbuf_rsc = (struct fw_rsc_rbuf_pair *)(rsc_table + rbuf_rsc_offset);
+	DEBUG_PRINT("rbuf pointer: %p, rbuf resource length: %lx\n", rbuf_rsc, rbuf_rsc->len);
+
+	mica_stop(client);
+
+	// wait for the remote to stop
+	while (rbuf_rsc->state != RBUF_STATE_CPU_STOP) {
+		metal_cache_invalidate(&rbuf_rsc->state, sizeof(rbuf_rsc->state));
+	}
+	sleep(1);
+	// load image and start it again
+	ret = mica_start(client);
+	if (ret) {
+		syslog(LOG_ERR, "%s: Restart failed, ret(%d)", __func__, ret);
+		return ret;
+	}
+
+	ret = create_debug_service(client);
+	if (ret) {
+		syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)", __func__, ret);
+		return ret;
+	}
+
+	ret = create_rpmsg_tty(client);
+	if (ret) {
+		syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)", __func__, ret);
+		return ret;
+	}
+
+	ret = create_rpmsg_rpc_service(client);
+	if (ret) {
+		syslog(LOG_ERR, "%s: enable rpmsg_rpc_service failed, ret(%d)", __func__, ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 void free_resources_for_proxy_server(struct proxy_server_resources *resources)
@@ -238,50 +296,9 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 		} else if (strncmp(recv_buf, RUN_PACKET, sizeof(RUN_PACKET)) == 0) {
 			// received run command
 			syslog(LOG_INFO, "received run command\n");
-			// get resource table and write to the state
-			struct remoteproc *rproc;
-			void *rsc_table;
-			struct fw_rsc_rbuf_pair *rbuf_rsc;
-
-			rproc = &client->rproc;
-			rsc_table = rproc->rsc_table;
-			DEBUG_PRINT("rsctable: %p\n", rsc_table);
-
-			size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
-
-			if (!rbuf_rsc_offset) {
-				ret = -ENODEV;
-				goto err_cancel_recv_thread;
-			}
-			DEBUG_PRINT("found rbuf resource at offset: 0x%lx\n", rbuf_rsc_offset);
-
-			rbuf_rsc = (struct fw_rsc_rbuf_pair *)(rsc_table + rbuf_rsc_offset);
-			DEBUG_PRINT("rbuf resource length: %lx\n", rbuf_rsc->len);
-
-			mica_stop(client);
-			sleep(3);
-			// load image and start it again
-			ret = mica_start(client);
+			ret = restart_client(client);
 			if (ret) {
-				syslog(LOG_ERR, "%s: Restart failed, ret(%d)", __func__, ret);
-				goto err_cancel_recv_thread;
-			}
-
-			ret = create_debug_service(client);
-			if (ret) {
-				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)", __func__, ret);
-				goto err_cancel_recv_thread;
-			}
-
-			ret = create_rpmsg_tty(client);
-			if (ret) {
-				syslog(LOG_ERR, "%s: Create rpmsg_tty failed, ret(%d)", __func__, ret);
-				goto err_cancel_recv_thread;
-			}
-
-			ret = create_rpmsg_rpc_service(client);
-			if (ret) {
-				syslog(LOG_ERR, "%s: enable rpmsg_rpc_service failed, ret(%d)", __func__, ret);
+				syslog(LOG_ERR, "restart client failed\n");
 				goto err_cancel_recv_thread;
 			}
 		}
