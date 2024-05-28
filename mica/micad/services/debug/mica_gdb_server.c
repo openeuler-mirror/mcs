@@ -120,7 +120,7 @@ static inline int restart_client(struct mica_client *client)
 
 	// wait for the remote to stop
 	while (rbuf_rsc->state != RBUF_STATE_CPU_STOP) {
-		metal_cache_invalidate(&rbuf_rsc->state, sizeof(rbuf_rsc->state));
+		metal_cache_invalidate((uint8_t *)&rbuf_rsc->state, sizeof(rbuf_rsc->state));
 	}
 	sleep(1);
 	// load image and start it again

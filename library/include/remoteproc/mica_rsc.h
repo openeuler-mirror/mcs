@@ -75,7 +75,7 @@ struct fw_rsc_rbuf_pair {
 	uint64_t da;
 	uint64_t pa;
 	uint64_t len;
-	uint8_t state;
+	volatile uint8_t state;
 	uint8_t reserved[7];
 } METAL_PACKED_END;
 
