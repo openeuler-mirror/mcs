@@ -73,7 +73,9 @@ void mica_remove(struct mica_client *client)
 	if (rproc->state != RPROC_OFFLINE)
 		mica_stop(client);
 
-	pthread_cancel(client->gdb_server_thread);
+	if (client->gdb_server_thread)
+		pthread_cancel(client->gdb_server_thread);
+
 	destory_client(client);
 }
 
