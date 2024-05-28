@@ -251,6 +251,7 @@ static inline int start_gdb_client(int msg_fd, struct listen_unit *unit)
 		return -1;
 	}
 	char gdb_cmd[RESPONSE_MSG_SIZE];
+
 	snprintf(gdb_cmd, RESPONSE_MSG_SIZE, "gdb %s -ex \'set remotetimeout unlimited\' "
 	"-ex \'target extended-remote :%d\' -ex \'set remote run-packet off\'",
 	unit->client->path, MICA_GDB_SERVER_PORT);

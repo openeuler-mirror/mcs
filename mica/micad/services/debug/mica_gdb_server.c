@@ -175,24 +175,40 @@ void free_resources_for_proxy_server(struct proxy_server_resources *resources)
 	free(resources);
 }
 
-int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out)
+static inline int send_ctrl_c(struct mica_client *client)
 {
-	struct proxy_server_resources *resources = (struct proxy_server_resources *)calloc(sizeof(struct proxy_server_resources), 1);
-	struct sockaddr_in server_addr;
-	struct sockaddr_in client_addr;
-	socklen_t sin_size;
-	char recv_buf[MAX_BUFF_LENGTH];
-	int n_bytes, opt = 1, ret;
+	struct remoteproc *rproc;
+	void *rsc_table;
+	struct fw_rsc_rbuf_pair *rbuf_rsc;
+	int ret;
 
-	syslog(LOG_INFO, "MICA gdb proxy server: starting...\n");
+	rproc = &client->rproc;
+	rsc_table = rproc->rsc_table;
+	DEBUG_PRINT("rsctable: %p\n", rsc_table);
 
-	// create socket file descriptor
-	*resources_out = resources;
-	resources->server_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (resources->server_socket_fd == -1) {
-		syslog(LOG_ERR, "socket creation failed");
-		return -1;
+	size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+
+	if (!rbuf_rsc_offset) {
+		ret = -ENODEV;
+		return ret;
 	}
+	DEBUG_PRINT("found rbuf resource at offset: 0x%lx\n", rbuf_rsc_offset);
+
+	rbuf_rsc = (struct fw_rsc_rbuf_pair *)(rsc_table + rbuf_rsc_offset);
+	DEBUG_PRINT("rbuf resource length: %lx\n", rbuf_rsc->len);
+
+	// remote receives the IPI, then check the state to see the exact info
+	rbuf_rsc->state = RBUF_STATE_CTRL_C;
+	metal_cache_flush((uint8_t *)&rbuf_rsc->state, sizeof(rbuf_rsc->state));
+	rproc->ops->notify(rproc, 0);
+
+	return 0;
+}
+
+static inline int configure_socket(struct proxy_server_resources *resources)
+{
+	struct sockaddr_in server_addr;
+	int ret, opt = 1;
 
 	// set server address
 	server_addr.sin_family = AF_INET;
@@ -204,16 +220,63 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 	if (setsockopt(resources->server_socket_fd, SOL_SOCKET,
 				   SO_REUSEADDR, &opt,
 				   sizeof(opt))) {
-		syslog(LOG_ERR, "setsockopt");
-		ret = -1;
-		goto err_close_server_sock;
+		syslog(LOG_ERR, "%s: setsockopt failed\n", __func__);
+		ret = -errno;
+		return ret;
 	}
 
 	// bind socket to server address
 	ret = bind(resources->server_socket_fd, (struct sockaddr *)&server_addr, sizeof(struct sockaddr));
 	if (ret == -1) {
 		ret = -errno;
-		syslog(LOG_ERR, "bind socket to address failed");
+		syslog(LOG_ERR, "%s: bind socket to address failed\n", __func__);
+		return ret;
+	}
+
+	return 0;
+}
+
+static inline int create_recv_thread(struct proxy_server_resources *resources, struct proxy_server_recv_args *args)
+{
+	int ret;
+
+	ret = pthread_create(&resources->recv_from_shared_mem_thread, NULL, recv_from_shared_mem_thread, args);
+	if (ret != 0) {
+		ret = -ret;
+		syslog(LOG_ERR, "create thread failed");
+		return ret;
+	}
+	ret = pthread_detach(resources->recv_from_shared_mem_thread);
+	if (ret != 0) {
+		ret = -ret;
+		syslog(LOG_ERR, "detach thread failed");
+		return ret;
+	}
+
+	return 0;
+}
+
+int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct proxy_server_resources **resources_out)
+{
+	struct proxy_server_resources *resources = (struct proxy_server_resources *)calloc(1, sizeof(struct proxy_server_resources));
+	struct sockaddr_in client_addr;
+	socklen_t sin_size;
+	char recv_buf[MAX_BUFF_LENGTH];
+	int n_bytes, ret;
+
+	syslog(LOG_INFO, "MICA gdb proxy server: starting...\n");
+
+	// create socket file descriptor
+	*resources_out = resources;
+
+	resources->server_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (resources->server_socket_fd == -1) {
+		syslog(LOG_ERR, "socket creation failed");
+		return -1;
+	}
+
+	ret = configure_socket(resources);
+	if (ret) {
 		goto err_close_server_sock;
 	}
 
@@ -226,7 +289,7 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 	}
 
 	// accept connection
-	sin_size = sizeof(server_addr);
+	sin_size = sizeof(struct sockaddr_in);
 	resources->client_socket_fd = accept(resources->server_socket_fd, (struct sockaddr *)&client_addr, &sin_size);
 	if (resources->client_socket_fd == -1) {
 		ret = -errno;
@@ -239,17 +302,10 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 	// create a new thread for receiving data from shared memory Transfer Module
 	struct proxy_server_recv_args args = {to_server, resources->client_socket_fd};
 
-	ret = pthread_create(&resources->recv_from_shared_mem_thread, NULL, recv_from_shared_mem_thread, &args);
-	if (ret != 0) {
-		ret = -ret;
-		syslog(LOG_ERR, "create thread failed");
+	ret = create_recv_thread(resources, &args);
+	if (ret) {
+		syslog(LOG_ERR, "create recv thread failed");
 		goto err_close_client_sock;
-	}
-	ret = pthread_detach(resources->recv_from_shared_mem_thread);
-	if (ret != 0) {
-		ret = -ret;
-		syslog(LOG_ERR, "detach thread failed");
-		goto err_cancel_recv_thread;
 	}
 
 	syslog(LOG_INFO, "MICA gdb proxy server: read for messages forwarding ...\n");
@@ -271,28 +327,11 @@ int start_proxy_server(struct mica_client *client, mqd_t from_server, mqd_t to_s
 			// received CTRLC
 			syslog(LOG_INFO, "received CTRLC\n");
 			// get resource table and write to the state
-			struct remoteproc *rproc;
-			void *rsc_table;
-			struct fw_rsc_rbuf_pair *rbuf_rsc;
-
-			rproc = &client->rproc;
-			rsc_table = rproc->rsc_table;
-			DEBUG_PRINT("rsctable: %p\n", rsc_table);
-
-			size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
-
-			if (!rbuf_rsc_offset) {
-				ret = -ENODEV;
+			ret = send_ctrl_c(client);
+			if (ret) {
+				syslog(LOG_ERR, "send ctrl-c failed\n");
 				goto err_cancel_recv_thread;
 			}
-			DEBUG_PRINT("found rbuf resource at offset: 0x%lx\n", rbuf_rsc_offset);
-
-			rbuf_rsc = (struct fw_rsc_rbuf_pair *)(rsc_table + rbuf_rsc_offset);
-			DEBUG_PRINT("rbuf resource length: %lx\n", rbuf_rsc->len);
-
-			// remote receives the IPI, then check the state to see the exact info
-			rbuf_rsc->state = RBUF_STATE_CTRL_C;
-			rproc->ops->notify(rproc, 0);
 		} else if (strncmp(recv_buf, RUN_PACKET, sizeof(RUN_PACKET)) == 0) {
 			// received run command
 			syslog(LOG_INFO, "received run command\n");

@@ -123,7 +123,7 @@ static int transfer_data_to_server(struct debug_ring_buffer_module_data *data)
 int start_ring_buffer_module(struct mica_client *client, mqd_t from_server, mqd_t to_server, struct debug_ring_buffer_module_data **data_out)
 {
 	int ret;
-	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)calloc(sizeof(struct debug_ring_buffer_module_data), 1);
+	struct debug_ring_buffer_module_data *data = (struct debug_ring_buffer_module_data *)calloc(1, sizeof(struct debug_ring_buffer_module_data));
 	struct rbuf_device *rbuf_dev = client->rbuf_dev;
 	*data_out = data;
 	data->len = rbuf_dev->rbuf_len;
