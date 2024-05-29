@@ -91,12 +91,6 @@ static int transfer_data_to_rtos(struct debug_ring_buffer_module_data *data)
 		return ret;
 	}
 
-	ret = pthread_detach(data->data_to_rtos_thread);
-	if (ret != 0) {
-		syslog(LOG_ERR, "detach thread failed");
-		pthread_cancel(data->data_to_rtos_thread);
-	}
-
 	return ret;
 }
 
@@ -109,12 +103,6 @@ static int transfer_data_to_server(struct debug_ring_buffer_module_data *data)
 	if (ret != 0) {
 		syslog(LOG_ERR, "create thread failed");
 		return ret;
-	}
-
-	ret = pthread_detach(data->data_to_server_thread);
-	if (ret != 0) {
-		syslog(LOG_ERR, "detach thread failed");
-		pthread_cancel(data->data_to_server_thread);
 	}
 
 	return ret;
@@ -146,10 +134,16 @@ void free_resources_for_ring_buffer_module(struct debug_ring_buffer_module_data 
 	}
 	syslog(LOG_INFO, "freeing resources for ring buffer module ...\n");
 
-	if (data->data_to_rtos_thread > 0)
+	if (data->data_to_rtos_thread > 0) {
 		pthread_cancel(data->data_to_rtos_thread);
-	if (data->data_to_server_thread > 0)
+		pthread_join(data->data_to_rtos_thread, NULL);
+	}
+		
+	if (data->data_to_server_thread > 0) {
 		pthread_cancel(data->data_to_server_thread);
+		pthread_join(data->data_to_server_thread, NULL);
+	}
+		
 	syslog(LOG_INFO, "cancelled threads\n");
 
 	memset(data->rx_buffer, 0, data->len);

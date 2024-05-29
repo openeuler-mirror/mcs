@@ -162,6 +162,7 @@ void free_resources_for_proxy_server(struct proxy_server_resources *resources)
 	/* release the resources */
 	if (resources->recv_from_shared_mem_thread != 0) {
 		pthread_cancel(resources->recv_from_shared_mem_thread);
+		pthread_join(resources->recv_from_shared_mem_thread, NULL);
 	}
 	syslog(LOG_INFO, "cancelled thread\n");
 
@@ -244,12 +245,6 @@ static inline int create_recv_thread(struct proxy_server_resources *resources, s
 	if (ret != 0) {
 		ret = -ret;
 		syslog(LOG_ERR, "create thread failed");
-		return ret;
-	}
-	ret = pthread_detach(resources->recv_from_shared_mem_thread);
-	if (ret != 0) {
-		ret = -ret;
-		syslog(LOG_ERR, "detach thread failed");
 		return ret;
 	}
 

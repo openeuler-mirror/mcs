@@ -108,18 +108,7 @@ static int debug_start(struct mica_client *client_os, struct mica_service *svc)
 	}
 	syslog(LOG_INFO, "create server loop thread success\n");
 
-	ret = pthread_detach(client_os->gdb_server_thread);
-	if (ret != 0) {
-		ret = -ret;
-		syslog(LOG_ERR, "%s: detach server_loop_thread failed", __func__);
-		goto err_cancel_server;
-	}
-
 	return 0;
-
-err_cancel_server:
-	free_resources_for_proxy_server(g_proxy_server_resources);
-	pthread_cancel(client_os->gdb_server_thread);
 
 err_free_ring_buffer_module:
 	free_resources_for_ring_buffer_module(g_ring_buffer_module_data);
