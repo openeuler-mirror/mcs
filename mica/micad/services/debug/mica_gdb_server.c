@@ -116,6 +116,16 @@ static inline int restart_client(struct mica_client *client)
 	rbuf_rsc = (struct fw_rsc_rbuf_pair *)(rsc_table + rbuf_rsc_offset);
 	DEBUG_PRINT("rbuf pointer: %p, rbuf resource length: %lx\n", rbuf_rsc, rbuf_rsc->len);
 
+	/*
+	 * Because in some scenarios, the remote may not initialize the interrupt controller,
+	 * so we need to wait for a while to ensure the remote is ready.
+	 * to-do: this is a workaround, to resolve interrupt related problem,
+	 * it is better for us to tackle it not in the service layer.
+	 * Like we can solve it by sending interrupts multiple times when
+	 * stopping the remote. 
+	 */
+	sleep(1);
+
 	mica_stop(client);
 
 	// wait for the remote to stop
