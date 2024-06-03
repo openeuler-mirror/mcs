@@ -440,6 +440,8 @@ static void *wait_create_msg(void *arg)
 	while (listening) {
 		fds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
 		if (fds < 0) {
+			if (errno == EINTR)
+				continue;
 			perror("epoll_wait");
 			exit(EXIT_FAILURE);
 		}
