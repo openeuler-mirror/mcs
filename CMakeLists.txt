@@ -5,7 +5,7 @@ project(openeuler_mica)
 ## set common FLAGS
 set(CMAKE_SHARED_LINKER_FLAGS "-pthread")
 set(CMAKE_C_FLAGS "-fstack-protector-all -O2 -Wall")
-set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DDEBUG")
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DDEBUG -fdebug-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=.")
 
 ## Add dependencies
 set(SHARED_LINK_LIBS
