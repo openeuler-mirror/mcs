@@ -63,6 +63,14 @@ struct mcs_rproc_mem {
 };
 static struct mcs_rproc_mem mem[RPROC_MEM_MAX];
 
+static unsigned long rmem_base;
+module_param(rmem_base, ulong, 0400);
+MODULE_PARM_DESC(rmem_base, "The base address of the reserved mem");
+
+static unsigned long rmem_size;
+module_param(rmem_size, ulong, 0400);
+MODULE_PARM_DESC(rmem_size, "The size of the reserved mem");
+
 static DECLARE_WAIT_QUEUE_HEAD(mcs_wait_queue);
 static atomic_t irq_ack;
 
@@ -381,6 +389,15 @@ static int init_reserved_mem(void)
 	int i, count, ret;
 	struct device_node *np;
 
+	if (rmem_base != 0 && rmem_size != 0) {
+		pr_info("assign memory region for mcs: 0x%lx - 0x%lx (%ld MB)\n",
+			rmem_base, rmem_base + rmem_size - 1, rmem_size >> 20);
+
+		mem[0].phy_addr = rmem_base;
+		mem[0].size = rmem_size;
+		return 0;
+	}
+
 	np = of_find_compatible_node(NULL, NULL, "oe,mcs_remoteproc");
 	if (np == NULL)
 		return -ENODEV;
@@ -421,6 +438,13 @@ static int init_reserved_mem(void)
 static void release_reserved_mem(void)
 {
 	int i;
+
+	/*
+	 * When configuring the rmem, memory resources are requested
+	 * using memmap, so there is no need to free it.
+	 */
+	if (rmem_base != 0 && rmem_size != 0)
+		return;
 
 	for (i = 0; (i < RPROC_MEM_MAX) && (mem[i].phy_addr != 0); i++) {
 		release_mem_region(mem[i].phy_addr, mem[i].size);
@@ -484,12 +508,12 @@ static int __init mcs_dev_init(void)
 			pr_err("Failed to get psci \"method\" property, ret = %d\n", ret);
 			return ret;
 		}
+	}
 
-		ret = init_reserved_mem();
-		if (ret) {
-			pr_err("Failed to get mcs mem, ret = %d\n", ret);
-			return ret;
-		}
+	ret = init_reserved_mem();
+	if (ret) {
+		pr_err("Failed to get mcs mem, ret = %d\n", ret);
+		return ret;
 	}
 
 	ret = init_mcs_ipi();
