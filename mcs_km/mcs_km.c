@@ -30,7 +30,7 @@
  * For more detail see:
  * Arm Power State Coordination Interface Platform Design Document
  */
-#define CPU_ON_FUNCID	   	0xC4000003
+#define CPU_ON_FUNCID		0xC4000003
 #define AFFINITY_INFO_FUNCID	0xC4000004
 
 #define MAGIC_NUMBER		'A'
@@ -79,20 +79,20 @@ static atomic_t irq_ack;
  * make hvc/smc call
  * @return:
  *    CPU_ON_FUNCID:
- * 	SUCCESS			0
- * 	INVALID_PARAMETERS 	-2
- * 	DENIED			-3
- * 	ALREADY_ON		-4
- * 	ON_PENDING		-5
- * 	INTERNAL_FAILURE	-6
- * 	INVALID_ADDRESS		-9
+ *	SUCCESS			0
+ *	INVALID_PARAMETERS 	-2
+ *	DENIED			-3
+ *	ALREADY_ON		-4
+ *	ON_PENDING		-5
+ *	INTERNAL_FAILURE	-6
+ *	INVALID_ADDRESS		-9
  *
  *    AFFINITY_INFO_FUNCID:
- * 	ON			0
- * 	OFF			1
- * 	ON_PENDING		2
- * 	INVALID_PARAMETERS 	-2
- * 	DISABLED		-8
+ *	ON			0
+ *	OFF			1
+ *	ON_PENDING		2
+ *	INVALID_PARAMETERS 	-2
+ *	DISABLED		-8
  */
 static unsigned long invoke_psci_fn(unsigned long function_id,
 			unsigned long arg0, unsigned long arg1,
@@ -171,7 +171,7 @@ static int init_mcs_ipi(void)
 	int err;
 	struct irq_desc *desc;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 	desc = irq_data_to_desc(irq_get_irq_data(IPI_MCS));
 #else
 	desc = irq_to_desc(IPI_MCS);
@@ -228,49 +228,49 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	}
 
 	switch (cmd) {
-		case IOC_SENDIPI:
-			pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
-			send_clientos_ipi(cpumask_of(info.cpu));
-			break;
+	case IOC_SENDIPI:
+		pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
+		send_clientos_ipi(cpumask_of(info.cpu));
+		break;
 
-		case IOC_CPUON:
-			pr_info("start booting clientos on cpu(%d) addr(0x%llx)\n", info.cpu, info.boot_addr);
-			mpidr = get_cpu_mpidr(info.cpu);
-			if (mpidr == INVALID_HWID) {
-				pr_err("boot clientos failed, invalid MPIDR\n");
-				return -EINVAL;
-			}
-
-			ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
-			if (ret) {
-				pr_err("boot clientos failed(%d)\n", ret);
-				return -EINVAL;
-			}
-			break;
-
-		case IOC_AFFINITY_INFO:
-			mpidr = get_cpu_mpidr(info.cpu);
-			if (mpidr == INVALID_HWID) {
-				pr_err("cpu state check failed! Invalid MPIDR\n");
-				return -EINVAL;
-			}
-
-			ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, mpidr, 0, 0);
-			if (ret != 1) {
-				pr_err("cpu state check failed! cpu(%d) is not in the OFF state, current state: %d\n",
-				       info.cpu, ret);
-				return -EFAULT;
-			}
-			break;
-
-		case IOC_QUERY_MEM:
-			if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
-				return -EFAULT;
-			break;
-
-		default:
-			pr_err("IOC param invalid(0x%x)\n", cmd);
+	case IOC_CPUON:
+		mpidr = get_cpu_mpidr(info.cpu);
+		if (mpidr == INVALID_HWID) {
+			pr_err("boot clientos failed, invalid MPIDR\n");
 			return -EINVAL;
+		}
+		pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, mpidr, info.boot_addr);
+
+		ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
+		if (ret) {
+			pr_err("boot clientos failed(%d)\n", ret);
+			return -EINVAL;
+		}
+		break;
+
+	case IOC_AFFINITY_INFO:
+		mpidr = get_cpu_mpidr(info.cpu);
+		if (mpidr == INVALID_HWID) {
+			pr_err("cpu state check failed! Invalid MPIDR\n");
+			return -EINVAL;
+		}
+
+		ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, mpidr, 0, 0);
+		if (ret != 1) {
+			pr_err("cpu state check failed! cpu(%d) is not in the OFF state, current state: %d\n",
+				info.cpu, ret);
+			return -EFAULT;
+		}
+		break;
+
+	case IOC_QUERY_MEM:
+		if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
+			return -EFAULT;
+		break;
+
+	default:
+		pr_err("IOC param invalid(0x%x)\n", cmd);
+		return -EINVAL;
 	}
 	return 0;
 }
@@ -467,7 +467,7 @@ static int register_mcs_dev(void)
 		goto err;
 	}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 	mcs_class = class_create(MCS_DEVICE_NAME);
 #else
 	mcs_class = class_create(THIS_MODULE, MCS_DEVICE_NAME);
@@ -554,6 +554,6 @@ static void __exit mcs_dev_exit(void)
 }
 module_exit(mcs_dev_exit);
 
-MODULE_AUTHOR("OpenEuler Embedded");
+MODULE_AUTHOR("openEuler Embedded");
 MODULE_DESCRIPTION("mcs device");
 MODULE_LICENSE("Dual BSD/GPL");
