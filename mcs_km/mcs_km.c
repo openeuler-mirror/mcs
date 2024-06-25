@@ -21,6 +21,7 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/version.h>
+#include <linux/kprobes.h>
 
 #define MCS_DEVICE_NAME		"mcs"
 
@@ -106,39 +107,36 @@ static unsigned long invoke_psci_fn(unsigned long function_id,
 	return res.a0;
 }
 
+static u64 (*cpu_logical_map_fn)(unsigned int cpu);
+
+static int get_cpu_logical_map(void)
+{
+	int ret;
+	struct kprobe probe = {
+		.symbol_name = "cpu_logical_map",
+	};
+
+	ret = register_kprobe(&probe);
+	if (ret < 0)
+		return ret;
+
+	cpu_logical_map_fn = (void *)probe.addr;
+	unregister_kprobe(&probe);
+	return 0;
+}
+
 /**
- * Enumerate the possible CPU set from the device tree
+ * Enumerate the possible CPU set from __cpu_logical_map[]
  * and return the MPIDR values related to the @cpu.
  * If the @cpu is not found or the hwid is invalid, return INVALID_HWID.
  */
-static u64 get_cpu_mpidr(u32 cpu) {
-	struct device_node *dn;
-	u32 cpu_count = 0;
-	u64 hwid;
-	const __be32 *cell;
+static u64 get_cpu_mpidr(u32 cpu)
+{
+	if (cpu >= NR_CPUS)
+		return INVALID_HWID;
 
-	for_each_of_cpu_node(dn) {
-		if (cpu_count != cpu) {
-			cpu_count++;
-			continue;
-		}
-
-		cell = of_get_property(dn, "reg", NULL);
-		if (!cell) {
-			pr_err("%pOF: missing reg property\n", dn);
-			return INVALID_HWID;
-		}
-
-		hwid = of_read_number(cell, of_n_addr_cells(dn));
-		/*
-		 * Non affinity bits must be set to 0 in the DT
-		 */
-		if (hwid & ~MPIDR_HWID_BITMASK) {
-			pr_err("%pOF: invalid reg property\n", dn);
-			return INVALID_HWID;
-		}
-		return hwid;
-	}
+	if (cpu_logical_map_fn != NULL)
+		return cpu_logical_map_fn(cpu);
 
 	return INVALID_HWID;
 }
@@ -361,6 +359,12 @@ static int get_psci_method(void)
 		{},
 	};
 
+	if (!acpi_disabled) {
+		/* For ACPI, only "smc" is supported */
+		invoke_hvc = 0;
+		return 0;
+	}
+
 	np = of_find_matching_node(NULL, psci_of_match);
 
 	if (!np || !of_device_is_available(np))
@@ -502,12 +506,16 @@ static int __init mcs_dev_init(void)
 {
 	int ret;
 
-	if (acpi_disabled) {
-		ret = get_psci_method();
-		if (ret) {
-			pr_err("Failed to get psci \"method\" property, ret = %d\n", ret);
-			return ret;
-		}
+	ret = get_psci_method();
+	if (ret) {
+		pr_err("Failed to get psci \"method\" property, ret = %d\n", ret);
+		return ret;
+	}
+
+	ret = get_cpu_logical_map();
+	if (ret) {
+		pr_err("Failed to get cpu_logical_map symbol, ret = %d\n", ret);
+		return ret;
 	}
 
 	ret = init_reserved_mem();
