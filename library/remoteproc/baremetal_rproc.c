@@ -50,8 +50,6 @@ static int pipe_fd[2];
 #define SHM_POOL_SIZE      0x20000
 
 static atomic_bool notifier;
-static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void rproc_notify_all(void)
 {
@@ -77,9 +75,6 @@ static void *rproc_wait_event(void *arg)
 	};
 
 	notifier = true;
-	pthread_mutex_lock(&mutex);
-	pthread_cond_broadcast(&cond);
-	pthread_mutex_unlock(&mutex);
 
 	while (notifier) {
 		ret = poll(fds, 2, -1);
@@ -122,9 +117,6 @@ static int rproc_register_notifier(void)
 		goto err;
 	}
 
-	pthread_mutex_lock(&mutex);
-	pthread_cond_wait(&cond, &mutex);
-	pthread_mutex_unlock(&mutex);
 	return 0;
 err:
 	close(pipe_fd[PIPE_READ_END]);

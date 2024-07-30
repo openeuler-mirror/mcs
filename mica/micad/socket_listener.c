@@ -37,6 +37,7 @@ typedef int (*listener_cb)(int epoll_fd, void *data);
 
 static METAL_DECLARE_LIST(listener_list);
 static atomic_bool listening;
+static atomic_bool created;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -434,6 +435,7 @@ static void *wait_create_msg(void *arg)
 
 	listening = true;
 	pthread_mutex_lock(&mutex);
+	created = true;
 	pthread_cond_broadcast(&cond);
 	pthread_mutex_unlock(&mutex);
 
@@ -460,6 +462,7 @@ static void *wait_create_msg(void *arg)
 
 out:
 	pthread_mutex_lock(&mutex);
+	created = true;
 	pthread_cond_broadcast(&cond);
 	pthread_mutex_unlock(&mutex);
 	return NULL;
@@ -503,7 +506,8 @@ int register_socket_listener(void)
 	}
 
 	pthread_mutex_lock(&mutex);
-	pthread_cond_wait(&cond, &mutex);
+	while (!created)
+		pthread_cond_wait(&cond, &mutex);
 	pthread_mutex_unlock(&mutex);
 
 	ret = listening ? 0 : -1;
