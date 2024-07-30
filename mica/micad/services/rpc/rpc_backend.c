@@ -376,7 +376,10 @@ int rpmsg_rpc_service_init(void)
 
 	fp = fopen(LOG_RPC, "a+");
 	if (fp == NULL) {
-		lprintf("Failed to open or create file");
+		if (lfd != STDOUT_FILENO) {
+			lprintf("Failed to open or create file");
+			close(lfd);
+		}
 		return -ENOMEM;
 	}
 
@@ -393,7 +396,11 @@ void rpmsg_rpc_service_terminate(void)
 	if (fp != NULL) {
 		fclose(fp);
 	}
-	lprintf("Destroying endpoint.\r\n");
+
+	if (lfd != STDOUT_FILENO) {
+		lprintf("Destroying endpoint.\r\n");
+		close(lfd);
+	}
 }
 
 #define STDFILE_BASE 1
