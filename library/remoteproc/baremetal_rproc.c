@@ -377,11 +377,27 @@ static int rproc_start(struct remoteproc *rproc)
 	return 0;
 }
 
+static void  get_mmap_addr_info(struct metal_io_region *io, void **virt, size_t *aligned_size)
+{
+	size_t pagesize;
+	metal_phys_addr_t aligned_addr, offset;
+	metal_phys_addr_t phy;
+
+	phy = *(io->physmap);
+	pagesize = sysconf(_SC_PAGE_SIZE);
+	aligned_addr = (phy) & ~(pagesize - 1);
+	offset = phy - aligned_addr;
+	*aligned_size = (offset + io->size + pagesize - 1) & ~(pagesize - 1);
+	*virt =  io->virt - offset;
+}
+
 static int rproc_shutdown(struct remoteproc *rproc)
 {
 	struct remoteproc_mem *mem;
 	struct metal_list *node;
 	struct resource_table *rsc_table = rproc->rsc_table;
+	void *virt = NULL;
+	size_t size = 0;
 
 	/* Tell clientos shut itself down by PSCI */
 	set_cpu_status((struct resource_table *)rsc_table, CPU_OFF_FUNCID);
@@ -392,7 +408,8 @@ static int rproc_shutdown(struct remoteproc *rproc)
 		struct metal_list *tmpnode;
 
 		mem = metal_container_of(node, struct remoteproc_mem, node);
-		munmap(mem->io->virt, mem->io->size);
+		get_mmap_addr_info(mem->io, &virt, &size);
+		munmap(virt, size);
 		tmpnode = node;
 		node = tmpnode->prev;
 		metal_list_del(tmpnode);
