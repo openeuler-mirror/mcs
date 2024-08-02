@@ -59,6 +59,9 @@ void mica_stop(struct mica_client *client)
 	 * step2: remove rpmsg device
 	 * step3: shutdown remoteproc
 	 */
+	struct remoteproc *rproc = &client->rproc;
+
+	remoteproc_stop(rproc);
 	mica_unregister_all_services(client);
 	release_rpmsg_device(client);
 	if (client->debug)

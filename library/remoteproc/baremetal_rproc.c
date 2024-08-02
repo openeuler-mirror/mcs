@@ -58,7 +58,7 @@ static void rproc_notify_all(void)
 
 	metal_list_for_each(&g_client_list, node) {
 		client = metal_container_of(node, struct mica_client, node);
-		if (client->ped == BARE_METAL)
+		if (client->ped == BARE_METAL && client->rproc.state == RPROC_RUNNING)
 			remoteproc_get_notification(&client->rproc, 0);
 	}
 }

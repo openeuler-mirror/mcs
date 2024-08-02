@@ -156,4 +156,6 @@ void release_rpmsg_device(struct mica_client *client)
 	rpmsg_deinit_vdev(rpmsg_vdev);
 
 	remoteproc_remove_virtio(&client->rproc, rpmsg_vdev->vdev);
+	metal_free_memory(rpmsg_vdev);
+	client->rdev = NULL;
 }
