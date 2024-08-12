@@ -41,6 +41,7 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 	struct metal_list *node, *tmp_node;
 	struct remote_ept *r_ept;
 	struct mica_service *new_svc;
+	int ret;
 
 	if (client->rproc.state != RPROC_RUNNING)
 		return -EPERM;
@@ -72,6 +73,9 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 		if (new_svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, new_svc->priv)) {
 			new_svc->rpmsg_ns_bind_cb(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, new_svc->priv);
 			DEBUG_PRINT("binding an already existing service. local: %s, remote: %s\n", new_svc->name, r_ept->name);
+			ret = rsc_update_ept_table(&client->rproc, client->rdev);
+			if (ret != 0)
+				syslog(LOG_ERR, "Failed to update ept rsc table, ret %d", ret);
 			tmp_node = node;
 			node = tmp_node->prev;
 			metal_list_del(tmp_node);
