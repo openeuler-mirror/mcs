@@ -81,7 +81,6 @@ eth_unbind_igb()
 
 	if [[ ${eth_cnt} == 0 ]]; then
 		popd
-		die "failed to find the network adapter device. Uninstalled?"
 	else
 		# 确定要解绑第几个网卡 -1 表示最后一个
 		declare -i eth_id_unbind
