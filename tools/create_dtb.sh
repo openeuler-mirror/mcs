@@ -28,10 +28,10 @@ usage()
 	Usage: $0 ARCHITECTURE [-f FEATURES]
 
 	  Available ARCHITECTURE:
-	    qemu-a53                # create a dtb for qemu_cortex_a53
+	    qemu-a53,qemu-a72   # create a dtb for qemu_cortex_[a53|a72]
 
 	  Available FEATURES:
-	    jailhouse               # create a dtb for jailhouse root cell
+	    jailhouse           # create a dtb for jailhouse root cell
 
 	  eg,
 	    # create a dtb for qemu_cortex_a53
@@ -96,6 +96,17 @@ check_opt()
 	done
 }
 
+check_cpu()
+{
+    # Check qemu-system-aarch64 ability
+    qemu-system-aarch64 -cpu help | grep "$1" >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        return 0 ;
+    else
+        echo "$1 not supported"
+        exit 1;
+    fi
+}
 
 # ${1} - dts
 append_rproc_node()
@@ -138,7 +149,7 @@ create_qemu_dtb()
 {
 	QEMU=$1
 	QEMU_EXTRA_ARGS=" \
-			-cpu cortex-a53 \
+			-cpu $2 \
 			-smp 4 \
 			-m 2G \
 			-nographic \
@@ -171,14 +182,16 @@ create_qemu_dtb()
 }
 
 case "$1" in
-	qemu-a53)
+	qemu-a*)
 		if ! check_commands; then
 			echo "Depending on: qemu-system-aarch64, dtc. Please install those."
 			exit
 		fi
+		CPU=$1
 		shift
 		check_opt $@
-		create_qemu_dtb qemu-system-aarch64
+		check_cpu cortex-${CPU#*-}
+		create_qemu_dtb qemu-system-aarch64 cortex-${CPU#*-}
 		echo "${OUTPUT_DTB} successfully created"
 		;;
 	*)
