@@ -38,9 +38,14 @@
 #define IOC_CPUON		_IOW(MAGIC_NUMBER, 1, int)
 #define IOC_AFFINITY_INFO	_IOW(MAGIC_NUMBER, 2, int)
 #define IOC_QUERY_MEM		_IOW(MAGIC_NUMBER, 3, int)
-#define IOC_MAXNR		3
+#define IOC_GET_COPY_MSG_MEM    _IOWR(MAGIC_NUMBER, 4, struct core_msg_mem_info)
+#define IOC_MAXNR		4
 #define IPI_MCS			8
 #define RPROC_MEM_MAX		4
+
+#define INSTANCE_SIZE  0x2400000       /*实例大小36M*/
+#define OPENAMP_SHM_SIZE  0x1000000
+#define OPENAMP_SHM_COPY_SIZE 0x100000
 
 static struct class *mcs_class;
 static int mcs_major;
@@ -50,6 +55,15 @@ static int __percpu *mcs_evt;
 struct cpu_info {
 	u32 cpu;
 	u64 boot_addr;
+};
+
+
+struct core_msg_mem_info {
+	unsigned int instance_id; /* 当前不支持多实例，使用时赋值为0；支持多实例以后修改成具体实例号 */
+	unsigned long phy_addr;
+	void *vir_addr;
+	size_t size;
+	size_t align_size;
 };
 
 static int invoke_hvc = 1;
@@ -213,19 +227,28 @@ static unsigned int mcs_poll(struct file *file, poll_table *wait)
 
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-	int ret;
+	int ret = 0;
 	u64 mpidr;
 	struct cpu_info info;
+	struct core_msg_mem_info copy_mem_info;
 
 	if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
 		return -EINVAL;
 	if (_IOC_NR(cmd) > IOC_MAXNR)
 		return -EINVAL;
-	if (cmd != IOC_QUERY_MEM) {
+
+	switch (cmd) {
+	case IOC_GET_COPY_MSG_MEM:
+		ret = copy_from_user(&copy_mem_info, (struct core_msg_mem_info __user *)arg, sizeof(copy_mem_info));
+		break;
+	case IOC_QUERY_MEM:
+		break;
+	default:
 		ret = copy_from_user(&info, (struct cpu_info __user *)arg, sizeof(info));
-		if (ret)
-			return -EFAULT;
+		break;
 	}
+	if (ret)
+		return -EFAULT;
 
 	switch (cmd) {
 	case IOC_SENDIPI:
@@ -265,6 +288,21 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 	case IOC_QUERY_MEM:
 		if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
+			return -EFAULT;
+		break;
+
+	case IOC_GET_COPY_MSG_MEM:
+	    if (copy_mem_info.instance_id > RPROC_MEM_MAX) {
+                        pr_err("GET_COPY_MSG_MEM failed: The required instance_id max to %d, your instance_id:%d\n", RPROC_MEM_MAX, copy_mem_info.instance_id);
+                        return -EINVAL;
+        }
+		copy_mem_info.phy_addr = mem[0].phy_addr + copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 2;
+	    if (copy_mem_info.phy_addr  > (mem[0].phy_addr + mem[0].size)) {
+			pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
+			return -EINVAL;
+		}
+		copy_mem_info.size = OPENAMP_SHM_COPY_SIZE;
+		if (copy_to_user((void __user *)arg, &copy_mem_info, sizeof(copy_mem_info)))
 			return -EFAULT;
 		break;
 

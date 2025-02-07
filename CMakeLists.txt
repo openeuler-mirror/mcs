@@ -37,3 +37,5 @@ if (DEFINED TEST_RING_BUFFER)
 	add_definitions(-DTEST_RING_BUFFER)
 	add_subdirectory(${CMAKE_SOURCE_DIR}/test/test_ring_buffer)
 endif()
+
+add_subdirectory(${CMAKE_SOURCE_DIR}/test/send-data/)
