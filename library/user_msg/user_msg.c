@@ -75,7 +75,7 @@ int send_data_to_rtos_and_wait_rcv(void *data, int data_len, int target_instance
 
     /* 等待返回消息 */
     sem_wait(sem_micad_to_user);
-    memcpy(rcv_data, process_shared_memory->rcv_buffer, process_shared_memory->rcv_data_len);
+    memcpy(rcv_data, core_shared_memory_info.vir_addr + OPENAMP_SHM_COPY_SIZE, process_shared_memory->rcv_data_len);
     *rcv_data_len = process_shared_memory->rcv_data_len;
 
     sem_close(sem_user_to_micad);

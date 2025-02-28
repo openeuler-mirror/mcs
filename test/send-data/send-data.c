@@ -10,7 +10,7 @@
 int main()
 {
     struct timespec start, end;
-    char rcvbuf[1024] = {0};
+    char *rcvbuf = NULL;
     int rcv_data_len = 0;
     int ret = 0, i = 0, j = 0;
     char* sendbuf = NULL;
@@ -19,12 +19,20 @@ int main()
     sendbuf = (char*)malloc(STR_SIZE + 1);
     if (sendbuf == NULL)
     {
-        printf("str malloc failed \n");
+        printf("sendbuf malloc failed \n");
+        return -1;
+    }
+
+    rcvbuf = (char*)malloc(STR_SIZE + 1); 
+    if (rcvbuf == NULL) {
+        printf("rcvbuf malloc failed \n");
+        free(sendbuf);
         return -1;
     }
 
     for (i = 0; i < INSTANCE_NUM; i++) {
         memset(sendbuf, 0, STR_SIZE+1);
+	    memset(rcvbuf, 0, STR_SIZE+1);
         for (j = 0; j < STR_SIZE; j++) {
             sendbuf[j] = 'A' + rand() % 26;
         }
@@ -53,4 +61,10 @@ int main()
         printf("Function execution time: %ld nanoseconds\n", exec_time);
 
     }
+
+    if (sendbuf)
+        free(sendbuf);
+    if (rcvbuf)
+        free(rcvbuf);
+
 }

@@ -296,12 +296,12 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
                         pr_err("GET_COPY_MSG_MEM failed: The required instance_id max to %d, your instance_id:%d\n", RPROC_MEM_MAX, copy_mem_info.instance_id);
                         return -EINVAL;
         }
-		copy_mem_info.phy_addr = mem[0].phy_addr + copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 2;
+		copy_mem_info.phy_addr = mem[0].phy_addr + copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 3;  /* 使用2M。 1M 用来发送， 1M用来接收 尾部1M gap */
 	    if (copy_mem_info.phy_addr  > (mem[0].phy_addr + mem[0].size)) {
 			pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
 			return -EINVAL;
 		}
-		copy_mem_info.size = OPENAMP_SHM_COPY_SIZE;
+		copy_mem_info.size = OPENAMP_SHM_COPY_SIZE * 2;  /* 使用2M。1M 用来发送， 1M用来接收 */
 		if (copy_to_user((void __user *)arg, &copy_mem_info, sizeof(copy_mem_info)))
 			return -EFAULT;
 		break;

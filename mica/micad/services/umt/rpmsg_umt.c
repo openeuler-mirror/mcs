@@ -39,9 +39,9 @@ int rpmsg_rx_umt_callback(struct rpmsg_endpoint *ept, void *data, size_t len, ui
 {
 	struct rpmsg_umt_service *umt_svc = priv;
 
-	memcpy(umt_svc->process_shared_memory->rcv_buffer, data, len);
-	umt_svc->process_shared_memory->rcv_data_len = len;
-    sem_post(umt_svc->sem_micad_to_user);
+
+	umt_svc->process_shared_memory->rcv_data_len = *(int*)data;
+	sem_post(umt_svc->sem_micad_to_user);
 	return RPMSG_SUCCESS;
 
 }
