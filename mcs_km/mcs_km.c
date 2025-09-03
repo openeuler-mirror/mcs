@@ -21,7 +21,11 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/version.h>
+#ifdef CONFIG_KPROBES
 #include <linux/kprobes.h>
+#else
+#include <asm/smp.h>
+#endif
 
 #define MCS_DEVICE_NAME		"mcs"
 
@@ -121,6 +125,7 @@ static unsigned long invoke_psci_fn(unsigned long function_id,
 	return res.a0;
 }
 
+#ifdef CONFIG_KPROBES
 static u64 (*cpu_logical_map_fn)(unsigned int cpu);
 
 static int get_cpu_logical_map(void)
@@ -138,6 +143,7 @@ static int get_cpu_logical_map(void)
 	unregister_kprobe(&probe);
 	return 0;
 }
+#endif
 
 /**
  * Enumerate the possible CPU set from __cpu_logical_map[]
@@ -149,10 +155,14 @@ static u64 get_cpu_mpidr(u32 cpu)
 	if (cpu >= NR_CPUS)
 		return INVALID_HWID;
 
+#ifdef CONFIG_KPROBES
 	if (cpu_logical_map_fn != NULL)
 		return cpu_logical_map_fn(cpu);
 
 	return INVALID_HWID;
+#else
+	return cpu_logical_map(cpu);
+#endif
 }
 
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
@@ -550,11 +560,13 @@ static int __init mcs_dev_init(void)
 		return ret;
 	}
 
+#ifdef CONFIG_KPROBES
 	ret = get_cpu_logical_map();
 	if (ret) {
 		pr_err("Failed to get cpu_logical_map symbol, ret = %d\n", ret);
 		return ret;
 	}
+#endif
 
 	ret = init_reserved_mem();
 	if (ret) {
