@@ -23,6 +23,7 @@
  */
 extern const struct remoteproc_ops rproc_bare_metal_ops;
 extern const struct remoteproc_ops rproc_jailhouse_ops;
+extern const struct remoteproc_ops rproc_xen_ops;
 
 METAL_DECLARE_LIST(g_client_list);
 
@@ -112,6 +113,8 @@ int create_client(struct mica_client *client)
 		ops = &rproc_bare_metal_ops;
 	else if (client->ped == JAILHOUSE)
 		ops = &rproc_jailhouse_ops;
+	else if (client->ped == XEN)
+		ops = &rproc_xen_ops;
 	else
 		return -EINVAL;
 

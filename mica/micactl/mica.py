@@ -15,21 +15,71 @@ __version__ = "0.0.1"
 MICA_CONFIG_PATH = "/etc/mica"
 
 class mica_create_msg:
-    def __init__(self, cpu, name, path, ped, ped_cfg, debug):
-        self.cpu = cpu
+    # def __init__(self, mica_config, name, path, ped, ped_cfg, debug):
+    def __init__(self, parser):
+        # unoptional configs
+        name = parser.get('Mica', 'Name')
+        path = parser.get('Mica', 'ClientPath')
+
+        # optional configs for MICA
+        ped = ped_cfg = ''
+        if parser.has_option('Mica', 'Pedestal'):
+            ped = parser.get('Mica', 'Pedestal')
+            ped_cfg = parser.get('Mica', 'PedestalConf')
+        debug = False
+        if parser.has_option('Mica', 'Debug'):
+            debug = parser.getboolean('Mica', 'Debug')
+
+        # optional configs for pedestal
+        cpu = ''
+        if parser.has_option('Mica', 'CPU'):
+            cpu = parser.get('Mica', 'CPU')
+        vcpu = -1
+        if parser.has_option('Mica', 'VCPU'):
+            vcpu = int(parser.get('Mica', 'VCPU'))
+        cpu_weight = -1
+        if parser.has_option('Mica', 'CPUWeight'):
+            cpu_weight = int(parser.get('Mica', 'CPUWeight'))
+        cpu_capacity = -1
+        if parser.has_option('Mica', 'CPUCapacity'):
+            cpu_capacity = int(parser.get('Mica', 'CPUCapacity'))
+        memory = -1
+        if parser.has_option('Mica', 'Memory'):
+            memory = int(parser.get('Mica', 'Memory'))
+        network = ''
+        if parser.has_option('Mica', 'Network'):
+            network = parser.get('Mica', 'Network')
+
         self.name = name
         self.path = path
         self.ped = ped
         self.ped_cfg = ped_cfg
         self.debug = debug
+        self.cpu = cpu
+        self.vcpu = vcpu
+        self.cpu_weight = cpu_weight
+        self.cpu_capacity = cpu_capacity
+        self.memory = memory
+        self.network = network
 
     def pack(self):
         # max name length: 32
         # max path length: 128
-        return struct.pack('I32s128s32s128s?', self.cpu, \
-                           self.name.encode(), self.path.encode(), \
-                           self.ped.encode(), self.ped_cfg.encode(), \
-                           self.debug)
+        # max cpumask length: 128
+        # max network config length: 512
+        return struct.pack('32s128s32s128s?128siiii512s',
+                           self.name.encode(), \
+                           self.path.encode(), \
+                           self.ped.encode(), \
+                           self.ped_cfg.encode(), \
+                           self.debug, \
+                           self.cpu.encode(), \
+                           self.vcpu, \
+                           self.cpu_weight, \
+                           self.cpu_capacity, \
+                           self.memory, \
+                           self.network.encode()
+                           )
 
 
 class mica_socket:
@@ -107,23 +157,14 @@ def send_create_msg(config_file: str) -> None:
     parser.read(mica_config)
     auto_boot = False
     try:
-        cpu = int(parser.get('Mica', 'CPU'))
         name = parser.get('Mica', 'Name')
-        path = parser.get('Mica', 'ClientPath')
-        ped = ped_cfg = ''
-        debug = False
-        if parser.has_option('Mica', 'Pedestal'):
-            ped = parser.get('Mica', 'Pedestal')
-            ped_cfg = parser.get('Mica', 'PedestalConf')
         if parser.has_option('Mica', 'AutoBoot'):
             auto_boot = parser.getboolean('Mica', 'AutoBoot')
-        if parser.has_option('Mica', 'Debug'):
-            debug = parser.getboolean('Mica', 'Debug')
     except Exception as e:
         print(f'Error parsing {mica_config}: {e}')
         return
 
-    msg = mica_create_msg(cpu, name, path, ped, ped_cfg, debug)
+    msg = mica_create_msg(parser)
     print(f'Creating {name}...')
 
     with mica_socket('/run/mica/mica-create.socket') as socket:

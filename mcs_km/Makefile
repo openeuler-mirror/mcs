@@ -1,4 +1,7 @@
 obj-m := mcs_km.o
+ifeq ($(CONFIG_XEN),y)
+	obj-m := xen-mcsback.o
+endif
 
 SRC := $(shell pwd)
 

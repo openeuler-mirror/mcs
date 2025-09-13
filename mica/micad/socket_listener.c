@@ -24,8 +24,8 @@
 #include <services/umt/rpmsg_umt.h>
 
 #define MAX_EVENTS		64
-#define MAX_NAME_LEN		32
 #define MAX_PATH_LEN		64
+
 #define CTRL_MSG_SIZE		32
 #define RESPONSE_MSG_SIZE	256
 #define MICA_SOCKET_DIRECTORY	"/run/mica"
@@ -52,12 +52,20 @@ struct listen_unit {
 };
 
 struct create_msg {
-	uint32_t cpu;
+	/* required configs */
 	char name[MAX_NAME_LEN];
 	char path[MAX_FIRMWARE_PATH_LEN];
+	/* optional configs for MICA*/
 	char ped[MAX_NAME_LEN];
 	char ped_cfg[MAX_FIRMWARE_PATH_LEN];
 	bool debug;
+	/* optional configs for pedestal */
+	char cpu_str[MAX_CPUSTR_LEN];
+	int vcpu_num;
+	int cpu_weight;
+	int cpu_capacity;
+	int memory;
+	char network[MAX_NETWORK_LEN];
 };
 
 static void send_log(int msg_fd, const char *format, ...)
@@ -140,8 +148,8 @@ static int add_listener(const char *name, struct mica_client *client, listener_c
 
 	unit->cb = cb;
 	strlcpy(unit->name, name, MAX_NAME_LEN);
-		snprintf(unit->socket_path, MAX_PATH_LEN, "%s/%s.socket",
-			 MICA_SOCKET_DIRECTORY, unit->name);
+	snprintf(unit->socket_path, MAX_PATH_LEN, "%s/%s.socket",
+			MICA_SOCKET_DIRECTORY, unit->name);
 
 	unit->socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (unit->socket_fd < 0) {
@@ -208,14 +216,6 @@ static int check_create_msg(struct create_msg msg, int msg_fd)
 		return -EINVAL;
 	}
 
-	if (msg.cpu < 0 || msg.cpu >= sysconf(_SC_NPROCESSORS_CONF)) {
-		syslog(LOG_ERR, "Invalid CPUID: %d, out of range(0-%ld)",
-			msg.cpu, sysconf(_SC_NPROCESSORS_CONF) - 1);
-		send_log(msg_fd, "Invalid CPUID: %d, out of range(0-%ld)",
-			msg.cpu, sysconf(_SC_NPROCESSORS_CONF) - 1);
-		return -EINVAL;
-	}
-
 	metal_list_for_each(&listener_list, node) {
 		unit = metal_container_of(node, struct listen_unit, node);
 
@@ -237,8 +237,8 @@ static void show_status(int msg_fd, struct listen_unit *unit)
 
 	status = mica_status(unit->client);
 	mica_print_service(unit->client, buffer, RESPONSE_MSG_SIZE);
-	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-30s%-20d%-20s%s",
-		 unit->name, unit->client->cpu_id, status, buffer);
+	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-30s%-20s%-20s%s",
+		 unit->name, unit->client->ped_setup.cpu_str, status, buffer);
 
 	send_log(msg_fd, "%s", response);
 }
@@ -285,7 +285,7 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 	}
 
 	if (strncmp(msg, "start", CTRL_MSG_SIZE) == 0) {
-		syslog(LOG_INFO, "Starting %s(%s) on CPU%d", unit->name, unit->client->path, unit->client->cpu_id);
+		syslog(LOG_INFO, "Starting %s(%s) on CPU%s", unit->name, unit->client->path, unit->client->ped_setup.cpu_str);
 		ret = mica_start(unit->client);
 		if (ret) {
 			syslog(LOG_ERR, "Start failed, ret(%d)", ret);
@@ -355,6 +355,35 @@ err:
 	return ret;
 }
 
+static int init_mica_client(struct mica_client *client, struct create_msg msg)
+{
+	/* configs for mica */
+	strlcpy(client->path, msg.path, MAX_FIRMWARE_PATH_LEN);
+
+	if (strcmp(msg.ped, "jailhouse") == 0)
+		client->ped = JAILHOUSE;
+	else if (strcmp(msg.ped, "xen") == 0)
+		client->ped = XEN;
+	else
+		client->ped = BARE_METAL;
+
+	strlcpy(client->ped_cfg, msg.ped_cfg, MAX_FIRMWARE_PATH_LEN);
+
+	client->debug = msg.debug;
+	syslog(LOG_INFO, "value of debug: %d", msg.debug);
+
+	/* setups for pedestal */
+	strlcpy(client->ped_setup.name, msg.name, MAX_NAME_LEN);
+	strlcpy(client->ped_setup.cpu_str, msg.cpu_str, MAX_CPUSTR_LEN);
+	client->ped_setup.vcpu_num = msg.vcpu_num;
+	client->ped_setup.cpu_weight = msg.cpu_weight;
+	client->ped_setup.cpu_capacity = msg.cpu_capacity;
+	client->ped_setup.memory = msg.memory;
+	strlcpy(client->ped_setup.network, msg.network, MAX_NETWORK_LEN);
+
+	return 0;
+}
+
 static int create_mica_client(int epoll_fd, void *data)
 {
 	int msg_fd, ret;
@@ -380,7 +409,7 @@ static int create_mica_client(int epoll_fd, void *data)
 	if (ret < 0)
 		goto out;
 
-	syslog(LOG_INFO, "receive create msg. cpu: %d, name:%s, path:%s", msg.cpu, msg.name, msg.path);
+	syslog(LOG_INFO, "receive create msg. cpu: %s, name:%s, path:%s", msg.cpu_str, msg.name, msg.path);
 
 	client = calloc(1, sizeof(*client));
 	if (!client) {
@@ -388,18 +417,12 @@ static int create_mica_client(int epoll_fd, void *data)
 		goto out;
 	}
 
-	client->cpu_id = msg.cpu;
-	strlcpy(client->path, msg.path, MAX_FIRMWARE_PATH_LEN);
-
-	if (strcmp(msg.ped, "jailhouse") == 0)
-		client->ped = JAILHOUSE;
-	else
-		client->ped = BARE_METAL;
-
-	strlcpy(client->ped_cfg, msg.ped_cfg, MAX_FIRMWARE_PATH_LEN);
-
-	client->debug = msg.debug;
-	syslog(LOG_INFO, "value of debug: %d", msg.debug);
+	ret = init_mica_client(client, msg);
+	if (ret < 0) {
+		syslog(LOG_ERR, "Failed to initialize mica client through configs, ret: %d", ret);
+		free(client);
+		goto out;
+	}
 
 	ret = mica_create(client);
 	if (ret < 0) {

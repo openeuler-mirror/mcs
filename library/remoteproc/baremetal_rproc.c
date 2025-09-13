@@ -128,6 +128,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 				     const struct remoteproc_ops *ops, void *arg)
 {
 	int ret;
+	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 
 	rproc->ops = ops;
 	/* open mcs device for rproc->ops */
@@ -136,6 +137,15 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 		syslog(LOG_ERR, "open %s device failed, err %d\n", MCS_DEVICE_NAME, mcs_fd);
 		return NULL;
 	}
+
+	/* parse cpu_id for baremetal */
+	ret = strtoul(client->ped_setup.cpu_str, NULL, 0);
+	if (ret < 0 || ret >= sysconf(_SC_NPROCESSORS_CONF)) {
+		syslog(LOG_ERR, "Invalid CPUID: %s, should be only one cpu_id within range(0-%ld)",
+			client->ped_setup.cpu_str, sysconf(_SC_NPROCESSORS_CONF) - 1);
+		goto err;
+	}
+	client->ped_setup.cpu_id = ret;
 
 	/* set up the notification waiter */
 	ret = rproc_register_notifier();
@@ -265,11 +275,13 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	}
 
 	client = metal_container_of(rproc, struct mica_client, rproc);
-	ret = init_shmem_pool(client, info.phy_addr + (client->cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
+	ret = init_shmem_pool(client, info.phy_addr + (client->ped_setup.cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
 	if (ret) {
 		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
 		return ret;
 	}
+
+	client->shmem_dynamic = false;
 
 	/* parse executable headers */
 	fseek(image->file, 0, SEEK_END);
@@ -351,7 +363,7 @@ static int rproc_start(struct remoteproc *rproc)
 	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct resource_table *rsc_table = rproc->rsc_table;
 	struct cpu_info info = {
-		.cpu = client->cpu_id,
+		.cpu = client->ped_setup.cpu_id,
 		.boot_addr = rproc->bootaddr
 	};
 
@@ -443,7 +455,7 @@ static int rproc_notify(struct remoteproc *rproc, uint32_t id)
 	int ret;
 	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct cpu_info info = {
-		.cpu = client->cpu_id,
+		.cpu = client->ped_setup.cpu_id,
 	};
 
 	(void)id;

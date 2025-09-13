@@ -401,6 +401,8 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 		return ret;
 	}
 
+	client->shmem_dynamic = false;
+
 	/* parse executable headers */
 	fseek(image->file, 0, SEEK_END);
 	offset = 0;

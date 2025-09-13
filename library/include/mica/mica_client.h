@@ -15,7 +15,10 @@
 extern "C" {
 #endif
 
+#define MAX_NAME_LEN			32
 #define MAX_FIRMWARE_PATH_LEN	128
+#define MAX_CPUSTR_LEN			128
+#define MAX_NETWORK_LEN			512
 
 #ifdef DEBUG
 #define DEBUG_PRINT(fmt, args...) do { syslog(LOG_DEBUG, "DEBUG: %s:%d:%s(): " fmt, \
@@ -27,9 +30,21 @@ extern "C" {
 enum pedestal_type {
 	BARE_METAL = 0,
 	JAILHOUSE = 1,
+	XEN = 2,
 };
 
 extern struct metal_list g_client_list;
+
+struct pedestal_setup {
+	char name[MAX_NAME_LEN];
+	char cpu_str[MAX_CPUSTR_LEN];
+	unsigned int cpu_id;
+	int vcpu_num;
+	int cpu_weight;
+	int cpu_capacity;
+	int memory;
+	char network[MAX_NETWORK_LEN];
+};
 
 struct mica_client {
 	const struct rpmsg_virtio_config *config;
@@ -41,8 +56,7 @@ struct mica_client {
 	char			path[MAX_FIRMWARE_PATH_LEN];
 	/* pedestal configuration */
 	char			ped_cfg[MAX_FIRMWARE_PATH_LEN];
-	/* the target CPU */
-	unsigned int		cpu_id;
+	struct pedestal_setup ped_setup;
 
 	/* The mechanism used to manage the lifecycle of a remoteproc */
 	enum			pedestal_type ped;
@@ -56,6 +70,7 @@ struct mica_client {
 	void			*virt_shmem_start;
 	void			*virt_shmem_end;
 	void			*unused_shmem_start;
+	bool			shmem_dynamic;
 	/* Metal I/O region of the shared memory buffer */
 	struct metal_io_region	*shbuf_io;
 	/* virtio buffer */

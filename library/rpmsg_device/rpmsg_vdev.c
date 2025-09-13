@@ -16,6 +16,7 @@
 #include "memory/shm_pool.h"
 #include "rpmsg/rpmsg_vdev.h"
 #include "rpmsg/rpmsg_service.h"
+#include <remoteproc/mica_rsc.h>
 
 #ifndef ALIGN_UP
 #define ALIGN_UP(x, align_to)  (((x) + ((align_to)-1)) & ~((align_to)-1))
@@ -27,7 +28,8 @@ static int setup_vdev(struct mica_client *client)
 	void *rsc_table, *buf;
 	struct fw_rsc_vdev *vdev_rsc;
 	struct fw_rsc_vdev_vring *vring_rsc = NULL;
-	size_t vdev_rsc_offset, bufsz;
+	struct fw_rsc_vring_offset *vring_offset_rsc = NULL;
+	size_t vdev_rsc_offset, vring_offset_rsc_offset, bufsz;
 	unsigned int num_vrings, i;
 
 	rproc = &client->rproc;
@@ -43,6 +45,14 @@ static int setup_vdev(struct mica_client *client)
 
 	vdev_rsc = (struct fw_rsc_vdev *)(rsc_table + vdev_rsc_offset);
 	num_vrings = vdev_rsc->num_of_vrings;
+
+	if (client->shmem_dynamic) {
+		vring_offset_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_VRING_OFFSET, 0);
+		if (vring_offset_rsc_offset > 0)
+			vring_offset_rsc = (struct fw_rsc_vring_offset *)(rsc_table + vring_offset_rsc_offset);
+		else
+			DEBUG_PRINT("vring_offset_rsc not found\n");
+	}
 
 	/* alloc vrings */
 	for (i = 0; i < num_vrings; i++) {
@@ -65,6 +75,19 @@ static int setup_vdev(struct mica_client *client)
 			(void *)remoteproc_mmap(rproc, &pa, &da, bufsz, 0, NULL);
 			DEBUG_PRINT("alloc vring%i: paddr: 0x%lx, daddr: 0x%lx, vaddr: %p, size: 0x%lx\n",
 				    i, pa, da, buf, bufsz);
+
+			/* 
+			 * For dynamic shmem, mica and client has different base addr (e.g. xen). Use vring offset.
+			 * For static shmem, mica and client use the same shmem addr. No need to use vring offset.
+			 */
+			if (client->shmem_dynamic) {
+				if (i >= MAX_NUM_OF_VRINGS)
+					return -EINVAL;
+				if (!vring_offset_rsc)
+					return -ENODEV;
+				vring_offset_rsc->offset[i] = da - client->phys_shmem_start;
+				DEBUG_PRINT("vring%i offset: 0x%x\n", i, vring_offset_rsc->offset[i]);
+			}
 			vring_rsc->da = da;
 		} else {
 			buf = alloc_shmem_region(client, da, bufsz);

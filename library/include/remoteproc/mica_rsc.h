@@ -31,6 +31,8 @@ extern "C" {
 enum mica_resource_type {
 	RSC_VENDOR_EPT_TABLE = 128,
 	RSC_VENDOR_RBUF_PAIR = 129,
+	RSC_VENDOR_VRING_OFFSET = 130,
+	RSC_VENDOR_XENSTORE = 131,
 };
 
 /**
@@ -86,6 +88,18 @@ enum rbuf_state {
 	RBUF_STATE_CTRL_C = 3,
 	RBUF_STATE_CPU_STOP = 4,
 };
+
+/**
+ * struct vring_offset - Offset of vrings from shmem base addr
+ * @type: resource type
+ * @vring1_offset: offset of vring1
+ */
+#define MAX_NUM_OF_VRINGS 8
+METAL_PACKED_BEGIN
+struct fw_rsc_vring_offset {
+	uint32_t type;
+	uint32_t offset[MAX_NUM_OF_VRINGS];
+} METAL_PACKED_END;
 
 /**
  * handle_mica_rsc - Process our custom rsctable entries
