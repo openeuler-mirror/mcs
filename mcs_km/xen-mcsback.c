@@ -247,7 +247,7 @@ static int ioctl_invoke_evtchn(struct mcs_file_private_data *file_priv, int domi
 
 	(void) notify_remote_via_evtchn(mcs_info->evtchn);
 
-    return 0;
+	return 0;
 }
 
 static long mcs_xen_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
@@ -379,25 +379,25 @@ static void unregister_mcs_xen_dev(void)
  */
 static void mcs_cleanup_gnttab(struct mcs_backend_info *mcs_info, int num_pages)
 {
-    int i;
+	int i;
 	char gref_key[64];
 
 	if (!mcs_info->shmem_virt) {
 		return;
 	}
 
-    for (i = 0; i < num_pages; i++) {
-        if (mcs_info->grant_refs[i] != INVALID_GRANT_REF) {
-            /* This already frees pages. No need to free them ourselves. */
+	for (i = 0; i < num_pages; i++) {
+		if (mcs_info->grant_refs[i] != INVALID_GRANT_REF) {
+			/* This already frees pages. No need to free them ourselves. */
 			gnttab_end_foreign_access(mcs_info->grant_refs[i], 0,
 				(unsigned long)mcs_info->shmem_virt + i * PAGE_SIZE);
-            mcs_info->grant_refs[i] = INVALID_GRANT_REF;
+			mcs_info->grant_refs[i] = INVALID_GRANT_REF;
 
 			/* Remove gref key from xenstore */
 			snprintf(gref_key, sizeof(gref_key), "%s%u", XENSTORE_KEY_GREF_PREFIX, i);
 			(void) xenbus_rm(XBT_NIL, mcs_info->xdev->nodename, gref_key);
-        }
-    }
+		}
+	}
 
 	(void) xenbus_rm(XBT_NIL, mcs_info->xdev->nodename, XENSTORE_KEY_GREF_NUM);
 
@@ -411,18 +411,18 @@ static void mcs_cleanup_gnttab(struct mcs_backend_info *mcs_info, int num_pages)
  */
 static void mcs_cleanup_evtchn(struct mcs_backend_info *mcs_info)
 {
-    if (mcs_info->evtchn_irq >= 0) {
-        unbind_from_irqhandler(mcs_info->evtchn_irq, mcs_info);
-        mcs_info->evtchn_irq = 0;
-    }
-    
-    if (mcs_info->evtchn != INVALID_EVTCHN) {
+	if (mcs_info->evtchn_irq >= 0) {
+		unbind_from_irqhandler(mcs_info->evtchn_irq, mcs_info);
+		mcs_info->evtchn_irq = 0;
+	}
+
+	if (mcs_info->evtchn != INVALID_EVTCHN) {
 		// This could fail due to unreleased evtchn from remote.
 		// Make sure remote RTOS release it before 
-        xenbus_free_evtchn(mcs_info->xdev, mcs_info->evtchn);
-        mcs_info->evtchn = INVALID_EVTCHN;
+		xenbus_free_evtchn(mcs_info->xdev, mcs_info->evtchn);
+		mcs_info->evtchn = INVALID_EVTCHN;
 		mcs_info->evtchn_irq = 0;
-    }
+	}
 	(void) xenbus_rm(XBT_NIL, mcs_info->xdev->nodename, XENSTORE_KEY_EVTCHN);
 
 	pr_info("Ending access for evtchn\n");
@@ -543,7 +543,7 @@ static int mcs_backend_probe(struct xenbus_device *dev, const struct xenbus_devi
 	}
 	INIT_LIST_HEAD(&mcs_info->list);
 	mcs_info->xdev = dev;
-	mcs_info->shmem_size = 4096 * SHMEM_NPAGES; // 16KB example
+	mcs_info->shmem_size = 4096 * SHMEM_NPAGES;
 	mcs_info->evtchn = INVALID_EVTCHN;
 	mcs_info->shmem_virt = NULL;
 	mcs_info->domuid = dev->otherend_id;

@@ -27,7 +27,7 @@
 #define PIPE_READ_END  0
 #define PIPE_WRITE_END 1
 
-#define MCS_DEVICE_NAME    "/dev/mcs_xen"
+#define MCS_DEVICE_NAME	"/dev/mcs_xen"
 
 #define MAGIC_NUMBER		'M'
 #define IOC_SET_DOMID		_IOW(MAGIC_NUMBER, 0, int)
@@ -35,19 +35,19 @@
 #define IOC_INVOKE_EVTCHN	_IOW(MAGIC_NUMBER, 2, int)
 
 /* shared memory pool size: 128 K */
-#define SHM_POOL_SIZE      0x20000
+#define SHM_POOL_SIZE	   0x20000
 #define MAX_CFG_LINE_LEN   256
 
 enum xenbus_state {
-    XenbusStateUnknown       = 0,
-    XenbusStateInitialising  = 1,
-    XenbusStateInitWait      = 2,
-    XenbusStateInitialised   = 3,
-    XenbusStateConnected     = 4,
-    XenbusStateClosing       = 5,
-    XenbusStateClosed        = 6,
-    XenbusStateReconfiguring = 7,
-    XenbusStateReconfigured  = 8
+	XenbusStateUnknown       = 0,
+	XenbusStateInitialising  = 1,
+	XenbusStateInitWait      = 2,
+	XenbusStateInitialised   = 3,
+	XenbusStateConnected     = 4,
+	XenbusStateClosing       = 5,
+	XenbusStateClosed        = 6,
+	XenbusStateReconfiguring = 7,
+	XenbusStateReconfigured  = 8
 };
 
 /**
@@ -129,45 +129,45 @@ static int generate_xen_cfg(struct mica_client *client)
 
 	/* validate required fields */
 	if (setup->vcpu_num < 0) {
-        syslog(LOG_ERR, "VCPU number not set (%d). Must be >= 0.", setup->vcpu_num);
-        return -EINVAL;
-    }
-    if (setup->memory < 0) {
-        syslog(LOG_ERR, "Memory size not set (%d). Must be >= 0.", setup->memory);
-        return -EINVAL;
-    }
-    if (strlen(client->ped_cfg) == 0) {
-        syslog(LOG_ERR, "PedestalConfg (ped_cfg) is empty. Required for client path.");
-        return -EINVAL;
-    }
+		syslog(LOG_ERR, "VCPU number not set (%d). Must be >= 0.", setup->vcpu_num);
+		return -EINVAL;
+	}
+	if (setup->memory < 0) {
+		syslog(LOG_ERR, "Memory size not set (%d). Must be >= 0.", setup->memory);
+		return -EINVAL;
+	}
+	if (strlen(client->ped_cfg) == 0) {
+		syslog(LOG_ERR, "PedestalConfg (ped_cfg) is empty. Required for client path.");
+		return -EINVAL;
+	}
 
 	/* generate xen cfg */
 	snprintf(xen_cfg_path, sizeof(xen_cfg_path), "/etc/xen/%s-xen.cfg", setup->name);
-    fp = fopen(xen_cfg_path, "w");
-    if (!fp) {
-        syslog(LOG_ERR, "Failed to create Xen config %s: %s", xen_cfg_path, strerror(errno));
-        return -EIO;
-    }
+	fp = fopen(xen_cfg_path, "w");
+	if (!fp) {
+		syslog(LOG_ERR, "Failed to create Xen config %s: %s", xen_cfg_path, strerror(errno));
+		return -EIO;
+	}
 
-    fprintf(fp, "name = \"%s\"\n", setup->name);
-    fprintf(fp, "vcpus = %d\n", setup->vcpu_num);
-    fprintf(fp, "memory = %d\n", setup->memory);
-    fprintf(fp, "kernel = \"%s\"\n", client->ped_cfg);
+	fprintf(fp, "name = \"%s\"\n", setup->name);
+	fprintf(fp, "vcpus = %d\n", setup->vcpu_num);
+	fprintf(fp, "memory = %d\n", setup->memory);
+	fprintf(fp, "kernel = \"%s\"\n", client->ped_cfg);
 	fprintf(fp, "gic_version = \"v3\"\n");
-    
+
 	if (strlen(setup->cpu_str) > 0) {
-        fprintf(fp, "cpus = \"%s\"\n", setup->cpu_str);
-    }
+		fprintf(fp, "cpus = \"%s\"\n", setup->cpu_str);
+	}
 	if (setup->cpu_weight >= 0) {
-        fprintf(fp, "cpu_weight = %d\n", setup->cpu_weight);
-    }
+		fprintf(fp, "cpu_weight = %d\n", setup->cpu_weight);
+	}
 	if (setup->cpu_capacity >= 0) {
-        fprintf(fp, "cpu_capacity = %d\n", setup->cpu_capacity);
-    }
+		fprintf(fp, "cpu_capacity = %d\n", setup->cpu_capacity);
+	}
 	if (strlen(setup->network) > 0) {
-        fprintf(fp, "network = \"%s\"\n", setup->network);
-    }
-    fclose(fp);
+		fprintf(fp, "network = \"%s\"\n", setup->network);
+	}
+	fclose(fp);
 
 	/* Update client->ped_cfg to the new Xen config file */
 	strlcpy(client->ped_cfg, xen_cfg_path, sizeof(client->ped_cfg));
@@ -180,12 +180,12 @@ static void rm_xen_cfg(struct mica_client *client)
 {
 	if (strlen(client->ped_cfg) > 0) {
 		if (unlink(client->ped_cfg) < 0) {
-            DEBUG_PRINT("Failed to delete xen cfg: %s (%s)", 
-                   client->ped_cfg, strerror(errno));
-        } else {
-            DEBUG_PRINT("Deleted xen cfg: %s", client->ped_cfg);
-        }
-    }
+			DEBUG_PRINT("Failed to delete xen cfg: %s (%s)",
+				   client->ped_cfg, strerror(errno));
+		} else {
+			DEBUG_PRINT("Deleted xen cfg: %s", client->ped_cfg);
+		}
+	}
 	return;
 }
 
@@ -195,7 +195,7 @@ static int init_domu_name(struct mica_client *client, struct rproc_pdata *pdata)
 	char line[MAX_CFG_LINE_LEN];
 	const char *target_line = "name";
 	char *left_quote, *right_quote;
-	
+
 	file = fopen(client->ped_cfg, "r");
 	if (file == NULL) {
 		syslog(LOG_ERR, "Error opening xen cfg(%s): %s", client->ped_cfg, strerror(errno));
@@ -273,92 +273,89 @@ static int wait_for_xenbus_probe(struct rproc_pdata *pdata)
 	int ret = -1;
 	char dom0_key_xenstore_evtchn[PATH_MAX];
 	struct timespec start, now;
-    const int timeout_sec = 5;    // Total timeout: 5 seconds
-    const int retry_delay_ms = 1000; // Retry interval: 100ms
+	const int timeout_sec = 5;	/* Total timeout: 5 seconds */
+	const int retry_delay_ms = 1000; /* Retry interval: 100ms */
 
 	snprintf(dom0_key_xenstore_evtchn, PATH_MAX, "/local/domain/0/backend/mica/%d/0/evtchn_port", pdata->domu_id);
-
-	// Get initial timestamp
-    clock_gettime(CLOCK_MONOTONIC, &start);
+	clock_gettime(CLOCK_MONOTONIC, &start);
 
 	while (ret != 0) {
-        // Check if timeout has elapsed
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if ((now.tv_sec - start.tv_sec) >= timeout_sec) {
-            syslog(LOG_ERR, "Timeout waiting for evtchn_port in xenstore (5s)");
-            return -ETIMEDOUT;
-        }
+		/* Check timeout */
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		if ((now.tv_sec - start.tv_sec) >= timeout_sec) {
+			syslog(LOG_ERR, "Timeout waiting for evtchn_port in xenstore (5s)");
+			return -ETIMEDOUT;
+		}
 
-        // Retry xenstore-ls command
-        ret = run_command("xenstore-ls", dom0_key_xenstore_evtchn, NULL);
-        if (ret != 0) {
-            usleep(retry_delay_ms * 1000);
+		/* If evtchn xenstore is filled, it means xen-mcsback finished initializing probing */
+		ret = run_command("xenstore-ls", dom0_key_xenstore_evtchn, NULL);
+		if (ret != 0) {
+			usleep(retry_delay_ms * 1000);
 			syslog(LOG_INFO, "Timeout for xenstore probe. Try again.");
-        } else {
+		} else {
 			syslog(LOG_INFO, "Success for xenstore probe.");
 			return 0;
 		}
-    }
+	}
 
 	return -ENOENT;
 }
 
 static int trigger_mcs_backend_probe(struct rproc_pdata *pdata)
 {
-    int ret;
+	int ret;
 
-    char domu_key_backend_id[PATH_MAX];
-    char domu_key_backend[PATH_MAX];
-    char dom0_key_frontend_id[PATH_MAX];
-    char dom0_key_frontend[PATH_MAX];
-    char domu_key_state[PATH_MAX];
-    char dom0_key_state[PATH_MAX];
+	char domu_key_backend_id[PATH_MAX];
+	char domu_key_backend[PATH_MAX];
+	char dom0_key_frontend_id[PATH_MAX];
+	char dom0_key_frontend[PATH_MAX];
+	char domu_key_state[PATH_MAX];
+	char dom0_key_state[PATH_MAX];
 
 	char dom0_key_xenstore[PATH_MAX];
-    char frontend_id_str[16];
+	char frontend_id_str[16];
 
-    snprintf(domu_key_backend_id, PATH_MAX, "/local/domain/%d/device/mica/0/backend-id", pdata->domu_id);
-    snprintf(domu_key_backend, PATH_MAX, "/local/domain/%d/device/mica/0/backend", pdata->domu_id);
-    snprintf(dom0_key_frontend_id, PATH_MAX, "/local/domain/0/backend/mica/%d/0/frontend-id", pdata->domu_id);
-    snprintf(dom0_key_frontend, PATH_MAX, "/local/domain/0/backend/mica/%d/0/frontend", pdata->domu_id);
-    snprintf(domu_key_state, PATH_MAX, "/local/domain/%d/device/mica/0/state", pdata->domu_id);
-    snprintf(dom0_key_state, PATH_MAX, "/local/domain/0/backend/mica/%d/0/state", pdata->domu_id);
+	snprintf(domu_key_backend_id, PATH_MAX, "/local/domain/%d/device/mica/0/backend-id", pdata->domu_id);
+	snprintf(domu_key_backend, PATH_MAX, "/local/domain/%d/device/mica/0/backend", pdata->domu_id);
+	snprintf(dom0_key_frontend_id, PATH_MAX, "/local/domain/0/backend/mica/%d/0/frontend-id", pdata->domu_id);
+	snprintf(dom0_key_frontend, PATH_MAX, "/local/domain/0/backend/mica/%d/0/frontend", pdata->domu_id);
+	snprintf(domu_key_state, PATH_MAX, "/local/domain/%d/device/mica/0/state", pdata->domu_id);
+	snprintf(dom0_key_state, PATH_MAX, "/local/domain/0/backend/mica/%d/0/state", pdata->domu_id);
 	snprintf(dom0_key_xenstore, PATH_MAX, "/local/domain/0/backend/mica/%d/0", pdata->domu_id);
 
-    // Execute xenstore commands in sequence
-    ret = run_command("xenstore-write", domu_key_backend_id, "0", NULL);
-    if (ret) {
+	ret = run_command("xenstore-write", domu_key_backend_id, "0", NULL);
+	if (ret) {
 		return ret;
 	}
 
-    ret = run_command("xenstore-write", domu_key_backend, dom0_key_frontend, NULL);
-    if (ret) {
+	ret = run_command("xenstore-write", domu_key_backend, dom0_key_frontend, NULL);
+	if (ret) {
 		return ret;
 	}
 
 	snprintf(frontend_id_str, sizeof(frontend_id_str), "%d", pdata->domu_id);
 	ret = run_command("xenstore-write", dom0_key_frontend_id, frontend_id_str, NULL);
-    if (ret) {
+	if (ret) {
 		return ret;
 	}
 
-    ret = run_command("xenstore-write", dom0_key_frontend, domu_key_backend, NULL);
-    if (ret) {
+	ret = run_command("xenstore-write", dom0_key_frontend, domu_key_backend, NULL);
+	if (ret) {
 		return ret;
 	}
 
-    ret = run_command("xenstore-chmod", dom0_key_frontend_id, "r", NULL);
-    if (ret) {
+	ret = run_command("xenstore-chmod", dom0_key_frontend_id, "r", NULL);
+	if (ret) {
 		return ret;
 	}
 
-    ret = run_command("xenstore-write", domu_key_state, "1", NULL);
-    if (ret) {
+	ret = run_command("xenstore-write", domu_key_state, "1", NULL);
+	if (ret) {
 		return ret;
 	}
 
-    ret = run_command("xenstore-write", dom0_key_state, "1", NULL);
-    if (ret) {
+	ret = run_command("xenstore-write", dom0_key_state, "1", NULL);
+	if (ret) {
 		return ret;
 	}
 
@@ -374,7 +371,7 @@ static int trigger_mcs_backend_probe(struct rproc_pdata *pdata)
 		return ret;
 	}
 
-    return 0;
+	return 0;
 }
 
 static struct remoteproc *rproc_init(struct remoteproc *rproc,
@@ -383,7 +380,6 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	int ret;
 	struct mica_client *client = arg;
 	struct rproc_pdata *pdata;
-	// struct ioctl_info info;
 
 	if (!client)
 		return NULL;
@@ -477,7 +473,7 @@ static void *rproc_mmap(struct remoteproc *rproc,
 		*io = tmpio;
 
 	DEBUG_PRINT("mmap succeeded, paddr: 0x%lx, vaddr: %p, size 0x%lx\n",
-		     (unsigned long)mem->pa, va + offset, size);
+			(unsigned long)mem->pa, va + offset, size);
 	return metal_io_phys_to_virt(tmpio, mem->pa);
 
 err_unmap:
@@ -725,8 +721,8 @@ static int rproc_shutdown(struct remoteproc *rproc)
 	uint32_t dummy;
 	struct ioctl_info info;
 	char state_path[PATH_MAX];
-    char state_str[16];
-	
+	char state_str[16];
+
 	ret = run_command("xl", "destroy", pdata->domu_name, NULL);
 	if (ret) {
 		syslog(LOG_ERR, "Failed to run 'xl destroy %s'", pdata->domu_name);
@@ -756,7 +752,7 @@ static int rproc_shutdown(struct remoteproc *rproc)
 	snprintf(state_path, sizeof(state_path), "/local/domain/%d/device/mica/0/backend/state", pdata->domu_id);
 	snprintf(state_str, sizeof(state_str), "%d", XenbusStateClosed);
 	ret = run_command("xenstore-write", state_path, state_str, NULL);
-    if (ret) {
+	if (ret) {
 		// Try to proceed anyway?
 		syslog(LOG_ERR, "Failed to run 'xenstore-write %s %s'. Unable to release resource.", state_path, state_str);
 	}
