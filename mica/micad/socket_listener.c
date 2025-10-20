@@ -359,6 +359,9 @@ static int init_mica_client(struct mica_client *client, struct create_msg msg)
 {
 	/* configs for mica */
 	strlcpy(client->path, msg.path, MAX_FIRMWARE_PATH_LEN);
+	#ifdef RPMSG_TTY_USE_CLIENT_NAME
+	strlcpy(client->name, msg.name, MAX_NAME_LEN);
+	#endif
 
 	if (strcmp(msg.ped, "jailhouse") == 0)
 		client->ped = JAILHOUSE;

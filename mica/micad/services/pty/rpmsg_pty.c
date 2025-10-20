@@ -11,24 +11,40 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#ifdef RPMSG_TTY_USE_CLIENT_NAME
+#include <stdint.h>
+#include <errno.h>
+#endif
 
 #include "mica/mica.h"
 #include "rpmsg_pty.h"
 
 #define RPMSG_TTY_NAME		"rpmsg-tty"
+#ifdef RPMSG_TTY_USE_CLIENT_NAME
+#define RPMSG_TTY_DEV		"/dev/ttyRPMSG_"
+/* /dev/ttyRPMSG_ (14) + MAX_NAME_LEN (32) + \0 (1) = 47 */
+#define RPMSG_TTY_DEV_LEN	47
+#else
 #define RPMSG_TTY_DEV		"/dev/ttyRPMSG"
 #define RPMSG_TTY_DEV_LEN	20
 #define RPMSG_TTY_MAX_DEV	10
+#endif
 #define BUF_SIZE		256
 
+#ifndef RPMSG_TTY_USE_CLIENT_NAME
 static int tty_id[RPMSG_TTY_MAX_DEV] = { [0 ... (RPMSG_TTY_MAX_DEV-1)] = -1 };
+#endif
 
 struct rpmsg_tty_service {
 	atomic_int active;
 	struct rpmsg_endpoint ept;
 	int pty_master_fd;
 	int pty_slave_fd;
+	#ifdef RPMSG_TTY_USE_CLIENT_NAME
+	char tty_suffix[MAX_NAME_LEN];
+	#else
 	int tty_index;
+	#endif
 	char tty_dev[RPMSG_TTY_DEV_LEN];
 	struct metal_list node;
 };
@@ -39,7 +55,9 @@ static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
 
 	metal_list_del(&tty_svc->node);
 	rpmsg_destroy_ept(&tty_svc->ept);
+	#ifndef RPMSG_TTY_USE_CLIENT_NAME
 	tty_id[tty_svc->tty_index] = -1;
+	#endif
 	unlink(tty_svc->tty_dev);
 
 	close(tty_svc->pty_master_fd);
@@ -51,6 +69,7 @@ static void rpmsg_tty_unbind(struct rpmsg_endpoint *ept)
 	tty_svc->active = 0;
 }
 
+#ifndef RPMSG_TTY_USE_CLIENT_NAME
 static int rpmsg_tty_new_index(void)
 {
 	int i;
@@ -64,21 +83,55 @@ static int rpmsg_tty_new_index(void)
 
 	return -1;
 }
+#endif
+
+#ifdef RPMSG_TTY_USE_CLIENT_NAME
+static void sanitize_client_tty_name(char *dst, const char *src, size_t max_len)
+{
+	size_t i;
+
+	if (!src || !dst || max_len == 0)
+		return;
+
+	for (i = 0; i < max_len - 1 && src[i] != '\0'; i++) {
+		char c = src[i];
+		if ((c >= 'a' && c <= 'z') ||
+		    (c >= 'A' && c <= 'Z') ||
+		    (c >= '0' && c <= '9') ||
+		    c == '_' || c == '-') {
+			dst[i] = c;
+		} else {
+			dst[i] = '_';
+		}
+	}
+	dst[i] = '\0';
+}
+#endif
 
 /**
- * opens an unused pseudo terminal, and create a link to this
- * with the name RPMSG_TTY_DEV.
+ * Opens an unused pseudo terminal, and create a link to this
+ * with the name RPMSG_TTY_DEV_<client_name>.
+ * In legacy suffix style, client_name is ignored and we use index-based naming
  */
-static int create_tty_device(struct rpmsg_tty_service *tty_svc)
+static int create_tty_device(struct rpmsg_tty_service *tty_svc, const char *client_name)
 {
 	int ret;
 	int master_fd, slave_fd;
 	char pts_name[RPROC_MAX_NAME_LEN] = {0};
 
+	#ifdef RPMSG_TTY_USE_CLIENT_NAME
+	if (!client_name || strlen(client_name) == 0) {
+		fprintf(stderr, "Invalid client name\n");
+		return -EINVAL;
+	}
+
+	sanitize_client_tty_name(tty_svc->tty_suffix, client_name, sizeof(tty_svc->tty_suffix));
+	#else
 	ret = rpmsg_tty_new_index();
 	if (ret == -1)
 		return ret;
 	tty_svc->tty_index = ret;
+	#endif
 
 	ret = posix_openpt(O_RDWR | O_NOCTTY);
 	if (ret == -1)
@@ -97,8 +150,13 @@ static int create_tty_device(struct rpmsg_tty_service *tty_svc)
 	if (ret != 0)
 		goto err;
 
+	#ifdef RPMSG_TTY_USE_CLIENT_NAME
+	snprintf(tty_svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%s",
+		 RPMSG_TTY_DEV, tty_svc->tty_suffix);
+	#else
 	snprintf(tty_svc->tty_dev, RPMSG_TTY_DEV_LEN, "%s%d",
 		 RPMSG_TTY_DEV, tty_svc->tty_index);
+	#endif
 
 	unlink(tty_svc->tty_dev);
 	ret = symlink(pts_name, tty_svc->tty_dev);
@@ -108,16 +166,22 @@ static int create_tty_device(struct rpmsg_tty_service *tty_svc)
 	/* keep open a handle to the slave to prevent EIO */
 	slave_fd = open(pts_name, O_RDWR);
 	if (slave_fd == -1) {
+		#ifdef RPMSG_TTY_USE_CLIENT_NAME
+		unlink(tty_svc->tty_dev);
+		#else
 		unlink(pts_name);
+		#endif
 		goto err;
 	}
 
 	tty_svc->pty_master_fd = master_fd;
 	tty_svc->pty_slave_fd = slave_fd;
-	return ret;
+	return 0;
 err:
 	close(master_fd);
+	#ifndef RPMSG_TTY_USE_CLIENT_NAME
 	tty_id[tty_svc->tty_index] = -1;
+	#endif
 	return ret;
 }
 
@@ -220,13 +284,29 @@ static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
 	pthread_t tty_thread;
 	struct rpmsg_tty_service *tty_svc;
 	struct metal_list *tty_dev_list = priv;
+	const char *client_name = NULL;
+	#ifdef RPMSG_TTY_USE_CLIENT_NAME
+	struct rpmsg_virtio_device *rvdev;
+	struct remoteproc_virtio *rpvdev;
+	struct remoteproc *rproc;
+	struct mica_client *client;
+	#endif
 
 	tty_svc = malloc(sizeof(struct rpmsg_tty_service));
 	if (!tty_svc)
 		return;
 	tty_svc->ept.priv = tty_svc;
 
-	ret = create_tty_device(tty_svc);
+	#ifdef RPMSG_TTY_USE_CLIENT_NAME
+	/* extract client name from rpmsg device hierarchy */
+	rvdev = metal_container_of(rdev, struct rpmsg_virtio_device, rdev);
+	rpvdev = metal_container_of(rvdev->vdev, struct remoteproc_virtio, vdev);
+	rproc = rpvdev->priv;
+	client = metal_container_of(rproc, struct mica_client, rproc);
+	client_name = client->name;
+	#endif
+
+	ret = create_tty_device(tty_svc, client_name);
 	if (ret)
 		goto free_mem;
 
