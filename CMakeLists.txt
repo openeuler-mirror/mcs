@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.19)
 
 project(openeuler_mica)
 
+## Add option to enable rpmsg tty name-based suffix
+## todo: put this option handling into cmake system better, after the feature is stable
+option(RPMSG_TTY_USE_CLIENT_NAME "Use client name for rpmsg tty suffix" OFF)
+if(RPMSG_TTY_USE_CLIENT_NAME)
+    add_compile_definitions(RPMSG_TTY_USE_CLIENT_NAME=1)
+endif()
+
 ## set common FLAGS
 set(CMAKE_SHARED_LINKER_FLAGS "-pthread")
 set(CMAKE_C_FLAGS "-fstack-protector-all -O2 -Wall")
