@@ -1,10 +1,25 @@
-# no object files
+# no prequisites
+*.d
+
+# no binary and libraries
+*.so
+*.so.*
 *.o
+*.lib
 *.a
-*.mod.c
 *.symvers
 *.order
-*.mod
+*.elf
+
+# kernel module compile results
+*.mod.c
+*.mod*
 *.ko
 *.cmd
+*.tmp_versions/
+
+# ide file and editor files
 *.vscode
+
+# no build artifacts 
+build/
