@@ -162,7 +162,7 @@ static int generate_xen_cfg(struct mica_client *client)
 		fprintf(fp, "cpu_weight = %d\n", setup->cpu_weight);
 	}
 	if (setup->cpu_capacity >= 0) {
-		fprintf(fp, "cpu_capacity = %d\n", setup->cpu_capacity);
+		fprintf(fp, "cap = %d\n", setup->cpu_capacity);
 	}
 	if (strlen(setup->network) > 0) {
 		fprintf(fp, "network = \"%s\"\n", setup->network);
