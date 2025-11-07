@@ -9,7 +9,6 @@
 *.a
 *.symvers
 *.order
-*.elf
 
 # kernel module compile results
 *.mod.c
