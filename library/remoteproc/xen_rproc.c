@@ -394,17 +394,11 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 		goto err_malloc;
 	}
 
-	pdata->mcs_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
-	if (pdata->mcs_fd < 0) {
-		syslog(LOG_ERR, "open %s device failed, err %d\n", MCS_DEVICE_NAME, pdata->mcs_fd);
-		goto err_cfg;
-	}
-
 	/* record domU name and domid for further xl usage */
 	ret = init_domu_name(client, pdata);
 	if (ret) {
 		syslog(LOG_ERR, "Failed to find 'name' configuration in %s", client->ped_cfg);
-		goto err_open;
+		goto err_cfg;
 	}
 
 	rproc->priv = pdata;
@@ -412,8 +406,6 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 
 	return rproc;
 
-err_open:
-	close(pdata->mcs_fd);
 err_cfg:
 	rm_xen_cfg(client);
 err_malloc:
@@ -545,17 +537,23 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct ioctl_info info;
 
+	pdata->mcs_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
+	if (pdata->mcs_fd < 0) {
+		syslog(LOG_ERR, "open %s device failed, err %d\n", MCS_DEVICE_NAME, pdata->mcs_fd);
+		return -ENODEV;
+	}
+
 	ret = create_and_pause_domu(rproc, data);
 	if (ret) {
 		syslog(LOG_ERR, "Create new domU failed, err %d", ret);
-		return ret;
+		goto err_close_fd;
 	}
 
 	info.domu_id = pdata->domu_id;
 	ret = ioctl(pdata->mcs_fd, IOC_QUERY_MEM, &info);
 	if (ret) {
 		syslog(LOG_ERR, "ioctl(IOC_QUERY_MEM) failed: %s\n", strerror(errno));
-		return -EINVAL;
+		goto err_close_fd;
 	}
 
 	pdata->shmem_addr = info.phy_addr;
@@ -564,7 +562,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	ret = init_shmem_pool(client, info.phy_addr, info.size);
 	if (ret) {
 		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
-		return ret;
+		goto err_close_fd;
 	}
 
 	client->shmem_dynamic = true;
@@ -626,8 +624,13 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	 * We don't need to release the rsc table here.
 	 * It will be released when rproc is destroyed.
 	 */
+	loader->release(limg_info);
+	return ret;
+
 err:
 	loader->release(limg_info);
+err_close_fd:
+	close(pdata->mcs_fd);
 	return ret;
 }
 
@@ -757,6 +760,8 @@ static int rproc_shutdown(struct remoteproc *rproc)
 		syslog(LOG_ERR, "Failed to run 'xenstore-write %s %s'. Unable to release resource.", state_path, state_str);
 	}
 
+	close(pdata->mcs_fd);
+
 	/* exit notifier */
 	(void)!write(pdata->pipe_fd[PIPE_WRITE_END], &dummy, sizeof(dummy));
 
@@ -774,8 +779,7 @@ static void rproc_remove(struct remoteproc *rproc)
 	/* delete auto-generated xen cfg */
 	rm_xen_cfg(client);
 
-	/* clean up mcs_fd etc. */
-	close(pdata->mcs_fd);
+	/* clean up pdata etc. */
 	free(pdata);
 	rproc->priv = NULL;
 }
