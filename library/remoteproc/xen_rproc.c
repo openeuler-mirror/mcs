@@ -152,6 +152,8 @@ static int generate_xen_cfg(struct mica_client *client)
 	fprintf(fp, "memory = %d\n", setup->memory);
 	fprintf(fp, "kernel = \"%s\"\n", client->ped_cfg);
 	fprintf(fp, "gic_version = \"v3\"\n");
+	fprintf(fp, "acpi = 0\n");
+
 
 	if (setup->max_vcpu_num > 0) {
 		fprintf(fp, "maxvcpus = %d\n", setup->max_vcpu_num);
