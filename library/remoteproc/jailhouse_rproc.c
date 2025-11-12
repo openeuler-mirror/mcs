@@ -306,6 +306,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	/* After creating cell, we need the name of cell to manage the corresponding cell. */
 	strlcpy(pdata->cell_name, cell_desc_hdr.name, sizeof(pdata->cell_name));
 
+	client->ped_ops = NULL;
 	rproc->ops = ops;
 	rproc->priv = pdata;
 	return rproc;

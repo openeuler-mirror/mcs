@@ -62,9 +62,12 @@ struct create_msg {
 	/* optional configs for pedestal */
 	char cpu_str[MAX_CPUSTR_LEN];
 	int vcpu_num;
+	int max_vcpu_num;
 	int cpu_weight;
 	int cpu_capacity;
 	int memory;
+	int max_memory;
+	char iomem[MAX_IOMEM_LEN];
 	char network[MAX_NETWORK_LEN];
 };
 
@@ -271,6 +274,8 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 	struct listen_unit *unit = data;
 	socklen_t addrlen = sizeof(addr);
 	char msg[CTRL_MSG_SIZE] = { 0 };
+	char msg_copy[CTRL_MSG_SIZE] = { 0 };
+	char *cmd, *key, *value;
 
 	msg_fd = accept(unit->socket_fd, (struct sockaddr *)&addr, &addrlen);
 	if (msg_fd == -1) {
@@ -328,6 +333,25 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 			goto err;
 		}
 		mica_remove(unit->client);
+	} else if (strncmp(msg, "set", 3) == 0) {
+		strlcpy(msg_copy, msg, sizeof(msg_copy));
+
+		cmd = strtok(msg_copy, " ");
+		key = strtok(NULL, " ");
+		value = strtok(NULL, " ");
+
+		if (!cmd || !key || !value || strtok(NULL, " ") != NULL) {
+			send_log(msg_fd, "Invalid set command. Usage: set <key> <value>");
+			syslog(LOG_ERR, "Invalid set command format: %s", msg);
+			goto err;
+		}
+
+		ret = mica_set(unit->client, key, value);
+		if (ret != 0) {
+			syslog(LOG_ERR, "Failed to set %s of %s to %s, ret(%d)",
+				key, unit->name, value, ret);
+			goto err;
+		}
 	} else if (strncmp(msg, "status", CTRL_MSG_SIZE) == 0) {
 		show_status(msg_fd, unit);
 	} else if (strncmp(msg, "gdb", CTRL_MSG_SIZE) == 0) {
@@ -379,9 +403,12 @@ static int init_mica_client(struct mica_client *client, struct create_msg msg)
 	strlcpy(client->ped_setup.name, msg.name, MAX_NAME_LEN);
 	strlcpy(client->ped_setup.cpu_str, msg.cpu_str, MAX_CPUSTR_LEN);
 	client->ped_setup.vcpu_num = msg.vcpu_num;
+	client->ped_setup.max_vcpu_num = msg.max_vcpu_num;
 	client->ped_setup.cpu_weight = msg.cpu_weight;
 	client->ped_setup.cpu_capacity = msg.cpu_capacity;
 	client->ped_setup.memory = msg.memory;
+	client->ped_setup.max_memory = msg.max_memory;
+	strlcpy(client->ped_setup.iomem, msg.iomem, MAX_IOMEM_LEN);
 	strlcpy(client->ped_setup.network, msg.network, MAX_NETWORK_LEN);
 
 	return 0;

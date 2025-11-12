@@ -18,6 +18,7 @@ extern "C" {
 #define MAX_NAME_LEN			32
 #define MAX_FIRMWARE_PATH_LEN	128
 #define MAX_CPUSTR_LEN			128
+#define MAX_IOMEM_LEN			512
 #define MAX_NETWORK_LEN			512
 
 #ifdef DEBUG
@@ -40,10 +41,17 @@ struct pedestal_setup {
 	char cpu_str[MAX_CPUSTR_LEN];
 	unsigned int cpu_id;
 	int vcpu_num;
+	int max_vcpu_num;
 	int cpu_weight;
 	int cpu_capacity;
-	int memory;
+	int memory; /* in MB */
+	int max_memory; /* in MB */
+	char iomem[MAX_IOMEM_LEN];
 	char network[MAX_NETWORK_LEN];
+};
+
+struct pedestal_ops {
+	int (*set_resource)(struct remoteproc *rproc, char *key, char *value);
 };
 
 struct mica_client {
@@ -61,6 +69,8 @@ struct mica_client {
 	/* pedestal configuration */
 	char			ped_cfg[MAX_FIRMWARE_PATH_LEN];
 	struct pedestal_setup ped_setup;
+	/* pedestal customized operations */
+	struct pedestal_ops *ped_ops;
 
 	/* The mechanism used to manage the lifecycle of a remoteproc */
 	enum			pedestal_type ped;

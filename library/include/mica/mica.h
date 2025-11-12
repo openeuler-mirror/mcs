@@ -23,6 +23,7 @@ int mica_create(struct mica_client *client);
 int mica_start(struct mica_client *client);
 void mica_stop(struct mica_client *client);
 void mica_remove(struct mica_client *client);
+int mica_set(struct mica_client *client, char *key, char *value);
 const char *mica_status(struct mica_client *client);
 
 /* register a rpmsg/user-defined service */
