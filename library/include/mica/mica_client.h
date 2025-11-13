@@ -15,8 +15,8 @@
 extern "C" {
 #endif
 
-#define MAX_NAME_LEN			32
-#define MAX_FIRMWARE_PATH_LEN	128
+#define MAX_NAME_LEN			66
+#define MAX_FIRMWARE_PATH_LEN	256
 #define MAX_CPUSTR_LEN			128
 #define MAX_NETWORK_LEN			512
 
@@ -130,5 +130,6 @@ struct mica_service {
 #if defined __cplusplus
 }
 #endif
+
 
 #endif	/* MICA_CLIENT_H */

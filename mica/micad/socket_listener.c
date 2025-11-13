@@ -24,7 +24,7 @@
 #include <services/umt/rpmsg_umt.h>
 
 #define MAX_EVENTS		64
-#define MAX_PATH_LEN		64
+#define MAX_PATH_LEN		128
 
 #define CTRL_MSG_SIZE		32
 #define RESPONSE_MSG_SIZE	256
@@ -229,16 +229,30 @@ static int check_create_msg(struct create_msg msg, int msg_fd)
 	return 0;
 }
 
+static void truncate_name_for_display(const char *name, char *display_name, size_t display_size)
+{
+	if (strlen(name) <= display_size - 1) {
+		strlcpy(display_name, name, display_size);
+	} else {
+		snprintf(display_name, display_size, "%.12s...%c", name, name[strlen(name) - 1]);
+	}
+}
+
 static void show_status(int msg_fd, struct listen_unit *unit)
 {
 	const char *status;
 	char response[RESPONSE_MSG_SIZE * 2] = { 0 };
 	char buffer[RESPONSE_MSG_SIZE] = { 0 };
+	char display_name[16] = { 0 };
 
 	status = mica_status(unit->client);
 	mica_print_service(unit->client, buffer, RESPONSE_MSG_SIZE);
-	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-30s%-20s%-20s%s",
-		 unit->name, unit->client->ped_setup.cpu_str, status, buffer);
+
+	/* Truncate long names for display due to expansion of fields*/
+	truncate_name_for_display(unit->name, display_name, sizeof(display_name));
+
+	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-16s%-20s%-20s%s",
+		 display_name, unit->client->ped_setup.cpu_str, status, buffer);
 
 	send_log(msg_fd, "%s", response);
 }
@@ -390,7 +404,7 @@ static int init_mica_client(struct mica_client *client, struct create_msg msg)
 static int create_mica_client(int epoll_fd, void *data)
 {
 	int msg_fd, ret;
-	struct create_msg msg;
+	struct create_msg msg = {0};
 	struct sockaddr_un addr;
 	struct mica_client *client;
 	struct listen_unit *unit = data;
@@ -408,11 +422,23 @@ static int create_mica_client(int epoll_fd, void *data)
 		goto out;
 	}
 
-	ret = check_create_msg(msg, msg_fd);
-	if (ret < 0)
-		goto out;
+	msg.name[MAX_NAME_LEN - 1] = '\0';
+	msg.path[MAX_FIRMWARE_PATH_LEN - 1] = '\0';
+	msg.ped[MAX_NAME_LEN - 1] = '\0';
+	msg.ped_cfg[MAX_FIRMWARE_PATH_LEN - 1] = '\0';
+	msg.cpu_str[MAX_CPUSTR_LEN - 1] = '\0';
+	msg.network[MAX_NETWORK_LEN - 1] = '\0';
 
-	syslog(LOG_INFO, "receive create msg. cpu: %s, name:%s, path:%s", msg.cpu_str, msg.name, msg.path);
+	ret = check_create_msg(msg, msg_fd);
+	if (ret < 0) {
+	    syslog(LOG_ERR, "Failed to check create message, ret: %d", ret);
+		goto out;
+	}
+
+	DEBUG_PRINT("mica-create: name=%s path=%s ped=%s ped_cfg=%s debug=%d cpu_str=%s vcpu_num=%d cpu_weight=%d cpu_capacity=%d memory=%d network=%s\n",
+			msg.name, msg.path, msg.ped, msg.ped_cfg, msg.debug, msg.cpu_str,
+			msg.vcpu_num, msg.cpu_weight, msg.cpu_capacity, msg.memory, msg.network);
+
 
 	client = calloc(1, sizeof(*client));
 	if (!client) {
@@ -553,4 +579,3 @@ void unregister_socket_listener(void)
 	free_all_listeners();
 	rmrf(MICA_SOCKET_DIRECTORY);
 }
-
