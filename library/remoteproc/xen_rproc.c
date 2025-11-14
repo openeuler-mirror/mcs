@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <syslog.h>
+#include <ctype.h>
 #include <metal/alloc.h>
 #include <metal/cache.h>
 #include <metal/io.h>
@@ -34,8 +35,6 @@
 #define IOC_QUERY_MEM		_IOW(MAGIC_NUMBER, 1, int)
 #define IOC_INVOKE_EVTCHN	_IOW(MAGIC_NUMBER, 2, int)
 
-/* shared memory pool size: 128 K */
-#define SHM_POOL_SIZE	   0x20000
 #define MAX_CFG_LINE_LEN   256
 
 enum xenbus_state {
@@ -48,6 +47,30 @@ enum xenbus_state {
 	XenbusStateClosed        = 6,
 	XenbusStateReconfiguring = 7,
 	XenbusStateReconfigured  = 8
+};
+
+/* Resource type management */
+#define RSC_KEYS(X) \
+	X(cpucapacity) \
+	X(cpuweight) \
+	X(cpu) \
+	X(vcpu) \
+	X(memory) \
+	X(maxmemory) \
+	X(maxvcpu)
+
+typedef enum {
+#define X(name) RSC_##name,
+	RSC_KEYS(X)
+#undef X
+	RSC_UNKNOWN
+} resource_key_t;
+
+static const char *resource_keys[] = {
+#define X(name) #name,
+	RSC_KEYS(X)
+#undef X
+	NULL
 };
 
 /**
@@ -154,7 +177,15 @@ static int generate_xen_cfg(struct mica_client *client)
 	fprintf(fp, "memory = %d\n", setup->memory);
 	fprintf(fp, "kernel = \"%s\"\n", client->ped_cfg);
 	fprintf(fp, "gic_version = \"v3\"\n");
+	fprintf(fp, "acpi = 0\n");
 
+
+	if (setup->max_vcpu_num > 0) {
+		fprintf(fp, "maxvcpus = %d\n", setup->max_vcpu_num);
+	}
+	if (setup->max_memory > 0) {
+		fprintf(fp, "maxmem = %d\n", setup->max_memory);
+	}
 	if (strlen(setup->cpu_str) > 0) {
 		fprintf(fp, "cpus = \"%s\"\n", setup->cpu_str);
 	}
@@ -163,6 +194,9 @@ static int generate_xen_cfg(struct mica_client *client)
 	}
 	if (setup->cpu_capacity >= 0) {
 		fprintf(fp, "cap = %d\n", setup->cpu_capacity);
+	}
+	if (strlen(setup->iomem) > 0) {
+		fprintf(fp, "iomem = %s\n", setup->iomem);
 	}
 	if (strlen(setup->network) > 0) {
 		fprintf(fp, "network = \"%s\"\n", setup->network);
@@ -374,6 +408,101 @@ static int trigger_mcs_backend_probe(struct rproc_pdata *pdata)
 	return 0;
 }
 
+static void key_to_lower(char *key)
+{
+	int i;
+	for (i = 0; key[i]; i++) {
+		key[i] = tolower(key[i]);
+	}
+}
+
+static bool match_cmd(char *cmd, const char *target)
+{
+	bool len_same = (strlen(cmd) == strlen(target));
+	bool str_same = (strncmp(cmd, target, strlen(target)) == 0);
+	return len_same && str_same;
+}
+
+static resource_key_t get_resource_key(const char *key)
+{
+	int i;
+	for (i = 0; resource_keys[i] != NULL; i++) {
+		if (match_cmd((char *)key, resource_keys[i]))
+			return (resource_key_t)i;
+	}
+
+	return RSC_UNKNOWN; /* Invalid type */
+}
+
+static int set_resource(struct remoteproc *rproc, char *key, char *value)
+{
+	struct rproc_pdata *pdata = rproc->priv;
+	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
+	struct pedestal_setup *ped_setup = &client->ped_setup;
+	char mem_value[64];
+	int ret;
+	resource_key_t rsc_key;
+
+	syslog(LOG_INFO, "set_resource key %s value %s", key, value);
+
+	key_to_lower(key);
+	rsc_key = get_resource_key(key);
+
+	switch (rsc_key) {
+	case RSC_cpucapacity:
+		ret = run_command("xl", "sched-credit2", "-d", pdata->domu_name, "-c", value, NULL);
+		if (!ret)
+			ped_setup->cpu_capacity = atoi(value);
+		break;
+
+	case RSC_cpuweight:
+		ret = run_command("xl", "sched-credit2", "-d", pdata->domu_name, "-w", value, NULL);
+		if (!ret)
+			ped_setup->cpu_weight = atoi(value);
+		break;
+
+	case RSC_cpu:
+		ret = run_command("xl", "vcpu-pin", pdata->domu_name, "all", value, NULL);
+		if (!ret)
+			strlcpy(ped_setup->cpu_str, value, sizeof(ped_setup->cpu_str));
+		break;
+
+	case RSC_vcpu:
+		ret = run_command("xl", "vcpu-set", pdata->domu_name, value, NULL);
+		if (!ret)
+			ped_setup->vcpu_num = atoi(value);
+		break;
+
+	case RSC_memory:
+		/* xl mem-set default is KB. Change to our default MB */
+		snprintf(mem_value, sizeof(mem_value), "%sm", value);
+		ret = run_command("xl", "mem-set", pdata->domu_name, mem_value, NULL);
+		if (!ret)
+			ped_setup->memory = atoi(value);
+		break;
+
+	case RSC_maxmemory:
+		/* xl mem-max default is KB. Change to our default MB */
+		snprintf(mem_value, sizeof(mem_value), "%sm", value);
+		ret = run_command("xl", "mem-max", pdata->domu_name, mem_value, NULL);
+		if (!ret)
+			ped_setup->max_memory = atoi(value);
+		break;
+
+	case RSC_maxvcpu:
+		/* MaxVCPU cannot be updated by xl */
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
+
+static struct pedestal_ops xen_ped_ops = {
+	.set_resource = set_resource,
+};
+
 static struct remoteproc *rproc_init(struct remoteproc *rproc,
 					 const struct remoteproc_ops *ops, void *arg)
 {
@@ -401,6 +530,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 		goto err_cfg;
 	}
 
+	client->ped_ops = &xen_ped_ops;
 	rproc->priv = pdata;
 	rproc->ops = ops;
 

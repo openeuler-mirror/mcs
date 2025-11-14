@@ -85,6 +85,22 @@ void mica_remove(struct mica_client *client)
 	destory_client(client);
 }
 
+int mica_set(struct mica_client *client, char *key, char *value)
+{
+	int ret;
+	struct remoteproc *rproc = &client->rproc;
+
+	if (!client->ped_ops)
+		return -EINVAL;
+
+	if (client->ped_ops->set_resource)
+		ret = client->ped_ops->set_resource(rproc, key, value);
+	else
+		ret = -EINVAL;
+
+	return ret;
+}
+
 const char *mica_status(struct mica_client *client)
 {
 	return show_client_status(client);

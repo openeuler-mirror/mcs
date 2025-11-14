@@ -154,6 +154,8 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 		goto err;
 	}
 
+	client->ped_ops = NULL;
+
 	return rproc;
 err:
 	close(mcs_fd);
