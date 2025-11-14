@@ -2,17 +2,19 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MulanPSL-2.0
 
-from argparse import ArgumentParser
-from configparser import ConfigParser
-import argcomplete
-import sys
 import os
 import socket
 import struct
+import sys
+from argparse import ArgumentParser
+from configparser import ConfigParser
+
+import argcomplete
 
 __version__ = "0.0.1"
 
 MICA_CONFIG_PATH = "/etc/mica"
+
 
 class mica_create_msg:
     # def __init__(self, mica_config, name, path, ped, ped_cfg, debug):
@@ -37,6 +39,9 @@ class mica_create_msg:
         vcpu = -1
         if parser.has_option('Mica', 'VCPU'):
             vcpu = int(parser.get('Mica', 'VCPU'))
+        max_vcpu = -1
+        if parser.has_option('Mica', 'MaxVCPU'):
+            max_vcpu = int(parser.get('Mica', 'MaxVCPU'))
         cpu_weight = -1
         if parser.has_option('Mica', 'CPUWeight'):
             cpu_weight = int(parser.get('Mica', 'CPUWeight'))
@@ -46,6 +51,12 @@ class mica_create_msg:
         memory = -1
         if parser.has_option('Mica', 'Memory'):
             memory = int(parser.get('Mica', 'Memory'))
+        max_memory = -1
+        if parser.has_option('Mica', 'MaxMemory'):
+            max_memory = int(parser.get('Mica', 'MaxMemory'))
+        iomem = ''
+        if parser.has_option('Mica', 'IOMem'):
+            iomem = parser.get('Mica', 'IOMem')
         network = ''
         if parser.has_option('Mica', 'Network'):
             network = parser.get('Mica', 'Network')
@@ -57,17 +68,21 @@ class mica_create_msg:
         self.debug = debug
         self.cpu = cpu
         self.vcpu = vcpu
+        self.max_vcpu = max_vcpu
         self.cpu_weight = cpu_weight
         self.cpu_capacity = cpu_capacity
         self.memory = memory
+        self.max_memory = max_memory
+        self.iomem = iomem
         self.network = network
 
     def pack(self):
-        # max name length: 32
-        # max path length: 128
+        # max name length: 66 (support sha256-based client names)
+        # max path length: 256 (support longer firmware paths)
         # max cpumask length: 128
+        # iomem length: 512
         # max network config length: 512
-        return struct.pack('32s128s32s128s?128siiii512s',
+        return struct.pack('66s256s66s256s?128siiiiii512s512s',
                            self.name.encode(), \
                            self.path.encode(), \
                            self.ped.encode(), \
@@ -75,9 +90,12 @@ class mica_create_msg:
                            self.debug, \
                            self.cpu.encode(), \
                            self.vcpu, \
+                           self.max_vcpu, \
                            self.cpu_weight, \
                            self.cpu_capacity, \
                            self.memory, \
+                           self.max_memory, \
+                           self.iomem.encode(), \
                            self.network.encode()
                            )
 
@@ -194,7 +212,7 @@ def query_status() -> None:
         print('Error occurred! Please check if micad is running.')
         exit(1)
 
-    output = f"{'Name':<30}{'Assigned CPU':<20}{'State':<20}{'Service'}"
+    output = f"{'Name':<16}{'Assigned CPU':<20}{'State':<20}{'Service'}"
     print(output)
     directory = '/run/mica'
     files = os.listdir(directory)
@@ -212,13 +230,16 @@ def query_status() -> None:
                     name = filename[:-7]
                     print(f'Query {name} status failed!')
 
-def send_ctrl_msg(command: str, client: str) -> None:
+def send_ctrl_msg(command: str, client: str, key: str, value: str) -> None:
     ctrl_socket = f'/run/mica/{client}.socket'
     if not os.path.exists(ctrl_socket):
         print(f"Cannot find {client}. Please run 'mica create <config>' to create it.")
         return
 
     with mica_socket(ctrl_socket) as socket:
+        if command == 'set':
+            command = f'{command} {key} {value}'
+
         socket.send_msg(command.encode())
         response = socket.recv()
         if response == 'MICA-SUCCESS':
@@ -254,6 +275,12 @@ def create_parser() -> ArgumentParser:
     stop_parser = subparsers.add_parser('rm', help='Remove a client')
     stop_parser.add_argument('client', help='the name of the client')
 
+    # set command
+    set_parser = subparsers.add_parser('set', help='Update settings for a client')
+    set_parser.add_argument('client', help='the name of the client')
+    set_parser.add_argument('key', help='the key of the setting')
+    set_parser.add_argument('value', help='the value of the setting')
+
     # Query status
     status_parser = subparsers.add_parser('status', help='query the mica client status')
 
@@ -281,17 +308,20 @@ def main() -> None:
             parser.print_help()
     elif args.command == 'start':
         print(f'starting {args.client}...')
-        send_ctrl_msg(args.command, args.client)
+        send_ctrl_msg(args.command, args.client, '', '')
     elif args.command == 'stop':
         print(f'stopping {args.client}...')
-        send_ctrl_msg(args.command, args.client)
+        send_ctrl_msg(args.command, args.client, '', '')
     elif args.command == 'rm':
         print(f'removing {args.client}...')
-        send_ctrl_msg(args.command, args.client)
+        send_ctrl_msg(args.command, args.client, '', '')
+    elif args.command == 'set':
+        print(f'setting {args.client}...')
+        send_ctrl_msg(args.command, args.client, args.key, args.value)
     elif args.command == 'status':
         query_status()
     elif args.command == "gdb":
-        send_ctrl_msg(args.command, args.client)
+        send_ctrl_msg(args.command, args.client, '', '')
 
 
 if __name__ == '__main__':
