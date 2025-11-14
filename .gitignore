@@ -22,3 +22,5 @@
 
 # no build artifacts 
 build/
+.cache/
+__pycache__/
