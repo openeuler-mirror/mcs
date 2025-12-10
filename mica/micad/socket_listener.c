@@ -259,7 +259,7 @@ static void show_status(int msg_fd, struct listen_unit *unit)
 	/* Truncate long names for display due to expansion of fields*/
 	truncate_name_for_display(unit->name, display_name, sizeof(display_name));
 
-	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-30s%-20s%-32s%s",
+	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-30s%-20s%-20s%s",
 		 display_name, unit->client->ped_setup.cpu_str, status, buffer);
 
 	send_log(msg_fd, "%s", response);
@@ -402,10 +402,6 @@ static int init_mica_client(struct mica_client *client, struct create_msg msg)
 {
 	/* configs for mica */
 	strlcpy(client->path, msg.path, MAX_FIRMWARE_PATH_LEN);
-	#ifdef RPMSG_TTY_USE_CLIENT_NAME
-	strlcpy(client->name, msg.name, MAX_NAME_LEN);
-	#endif
-
 	if (strcmp(msg.ped, "jailhouse") == 0)
 		client->ped = JAILHOUSE;
 	else if (strcmp(msg.ped, "xen") == 0)
