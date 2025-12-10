@@ -61,10 +61,6 @@ struct mica_client {
 	bool debug;
 	/* mica gdb server pthread_t */
 	pthread_t gdb_server_thread;
-	#ifdef RPMSG_TTY_USE_CLIENT_NAME
-	/* client name */
-	char			name[MAX_NAME_LEN];
-	#endif
 	/* client os firmware path */
 	char			path[MAX_FIRMWARE_PATH_LEN];
 	/* pedestal configuration */
