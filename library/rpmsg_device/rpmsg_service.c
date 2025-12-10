@@ -25,7 +25,7 @@ void print_device_of_service(struct mica_client *client, char *str, size_t size)
 {
 	struct metal_list *node;
 	struct mica_service *svc;
-	char display_name[16] = { 0 };
+	char display_name[32] = { 0 };
 
 	metal_list_for_each(&client->services, node) {
 		svc = metal_container_of(node, struct mica_service, node);

@@ -56,7 +56,7 @@ struct create_msg {
 	char name[MAX_NAME_LEN];
 	char path[MAX_FIRMWARE_PATH_LEN];
 	/* optional configs for MICA*/
-	char ped[MAX_NAME_LEN];
+	char ped[MAX_PED_LEN];
 	char ped_cfg[MAX_FIRMWARE_PATH_LEN];
 	bool debug;
 	/* optional configs for pedestal */
@@ -232,6 +232,10 @@ static int check_create_msg(struct create_msg msg, int msg_fd)
 	return 0;
 }
 
+/*
+ * copy truncated string to display name with `display_size - 1` characters
+ * display_size > 16
+ */
 static void truncate_name_for_display(const char *name, char *display_name, size_t display_size)
 {
 	if (strlen(name) <= display_size - 1) {
@@ -246,7 +250,8 @@ static void show_status(int msg_fd, struct listen_unit *unit)
 	const char *status;
 	char response[RESPONSE_MSG_SIZE * 2] = { 0 };
 	char buffer[RESPONSE_MSG_SIZE] = { 0 };
-	char display_name[16] = { 0 };
+	// legacy client name length(MAX_NAME_LEN)
+	char display_name[32] = { 0 };
 
 	status = mica_status(unit->client);
 	mica_print_service(unit->client, buffer, RESPONSE_MSG_SIZE);
@@ -254,7 +259,7 @@ static void show_status(int msg_fd, struct listen_unit *unit)
 	/* Truncate long names for display due to expansion of fields*/
 	truncate_name_for_display(unit->name, display_name, sizeof(display_name));
 
-	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-16s%-20s%-20s%s",
+	snprintf(response, RESPONSE_MSG_SIZE * 2, "%-30s%-20s%-32s%s",
 		 display_name, unit->client->ped_setup.cpu_str, status, buffer);
 
 	send_log(msg_fd, "%s", response);
@@ -451,7 +456,7 @@ static int create_mica_client(int epoll_fd, void *data)
 
 	msg.name[MAX_NAME_LEN - 1] = '\0';
 	msg.path[MAX_FIRMWARE_PATH_LEN - 1] = '\0';
-	msg.ped[MAX_NAME_LEN - 1] = '\0';
+	msg.ped[MAX_PED_LEN - 1] = '\0';
 	msg.ped_cfg[MAX_FIRMWARE_PATH_LEN - 1] = '\0';
 	msg.cpu_str[MAX_CPUSTR_LEN - 1] = '\0';
 	msg.network[MAX_NETWORK_LEN - 1] = '\0';

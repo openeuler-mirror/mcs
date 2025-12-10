@@ -15,7 +15,8 @@
 extern "C" {
 #endif
 
-#define MAX_NAME_LEN			66
+#define MAX_NAME_LEN			66 // MicRun container name contains 65 chars
+#define MAX_PED_LEN             16
 #define MAX_FIRMWARE_PATH_LEN	256
 #define MAX_CPUSTR_LEN			128
 #define MAX_IOMEM_LEN			512

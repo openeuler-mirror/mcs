@@ -15,7 +15,6 @@ __version__ = "0.0.1"
 
 MICA_CONFIG_PATH = "/etc/mica"
 
-
 class mica_create_msg:
     # def __init__(self, mica_config, name, path, ped, ped_cfg, debug):
     def __init__(self, parser):
@@ -77,12 +76,13 @@ class mica_create_msg:
         self.network = network
 
     def pack(self):
-        # max name length: 66 (support sha256-based client names)
+        # max client name length: 66 (support sha256-based client names)
+        # max ped type name length: 16
         # max path length: 256 (support longer firmware paths)
         # max cpumask length: 128
         # iomem length: 512
         # max network config length: 512
-        return struct.pack('66s256s66s256s?128siiiiii512s512s',
+        return struct.pack('66s256s16s256s?128siiiiii512s512s',
                            self.name.encode(), \
                            self.path.encode(), \
                            self.ped.encode(), \
@@ -212,7 +212,7 @@ def query_status() -> None:
         print('Error occurred! Please check if micad is running.')
         exit(1)
 
-    output = f"{'Name':<16}{'Assigned CPU':<20}{'State':<20}{'Service'}"
+    output = f"{'Name':<30}{'Assigned CPU':<20}{'State':<20}{'Service'}"
     print(output)
     directory = '/run/mica'
     files = os.listdir(directory)
