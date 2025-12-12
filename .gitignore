@@ -9,6 +9,7 @@
 *.a
 *.symvers
 *.order
+*.cache
 
 # kernel module compile results
 *.mod.c
@@ -22,5 +23,6 @@
 
 # no build artifacts 
 build/
+
 .cache/
 __pycache__/
