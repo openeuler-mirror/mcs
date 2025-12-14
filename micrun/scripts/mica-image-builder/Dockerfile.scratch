@@ -1,0 +1,12 @@
+FROM scratch
+
+LABEL org.opencontainer.image.description="Mica RTOS Container Image"
+LABEL org.opencontainer.image.version="1.0.0"
+LABEL org.opencontainer.image.created="2025-10-21T14:17:24.277275"
+LABEL org.openeuler.mica.pedestal="xen"
+LABEL org.openeuler.mica.pedestal_conf="{{xen_image_path}}"
+LABEL org.openeuler.mica.pedestal_version="4.18.2"
+LABEL org.openeuler.mica.os_type="zephyr"
+LABEL org.openeuler.mica.compatibility.openamp="2023.04+"
+LABEL org.openeuler.mica.compatibility.zephyr="3.7.1"
+LABEL org.openeuler.mica.compatibility.uniproton="latest"

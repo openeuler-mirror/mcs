@@ -1,0 +1,43 @@
+[base]
+description = "{{description}}"
+version = "0.0.1"
+created = "{{timestamp}}"
+
+[pedestal.xen]
+pedestal = "xen"
+conf = "{{xen_image_path}}"
+pedestal_version = "4.18.2"
+
+[pedestal.openamp]
+pedestal = "openamp"
+conf = "firmware.elf"
+pedestal_version = "2023.04+"
+
+[os.zephyr]
+os = "zephyr"
+firmware_path = "{{firmware_path}}"
+version = "{{zephyr_version}}"
+
+[os.uniproton]
+os = "uniproton"
+firmware_path = "{{firmware_path}}"
+version = "{{uniproton_version}}"
+
+[compatibility.zephyr]
+# Zephyr-specific compatibility
+zephyr = "{{zephyr_version}}"
+
+[compatibility.uniproton]
+# Uniproton-specific compatibility
+uniproton = "{{uniproton_version}}"
+
+[default-compatibility]
+# Fallback compatibility when OS-specific doesn't exist
+openamp = "2023.04+"
+zephyr = "3.7.1"
+uniproton = "latest"
+
+# Example custom extension section (users can add their own)
+[custom.example]
+build_date = "{{timestamp}}"
+maintainer = "openEuler Embedded"

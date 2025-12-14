@@ -1,0 +1,18 @@
+FROM localhost:5000/mica-zephyr-xen-scratch:latest
+
+ARG FIRMWARE_BUNDLE_PATH="/firmware.elf"
+ARG XEN_BIN_IMG="/image.bin"
+
+LABEL org.opencontainer.image.description="Mica RTOS Container Image"
+LABEL org.opencontainer.image.version="1.0.0"
+LABEL org.opencontainer.image.created="2025-10-21T14:17:24.277424"
+LABEL org.openeuler.mica.pedestal="xen"
+LABEL org.openeuler.mica.pedestal_conf="test.bin"
+LABEL org.openeuler.mica.pedestal_version="4.18.2"
+LABEL org.openeuler.mica.os_type="zephyr"
+LABEL org.openeuler.mica.compatibility.openamp="2023.04+"
+LABEL org.openeuler.mica.compatibility.zephyr="3.7.1"
+LABEL org.openeuler.mica.compatibility.uniproton="latest"
+
+ADD test.elf ${FIRMWARE_BUNDLE_PATH}
+ADD test.bin ${XEN_BIN_IMG}
