@@ -1,5 +1,5 @@
-//go:build release
-// +build release
+//go:build debug
+// +build debug
 
 package defs
 
@@ -7,8 +7,8 @@ import "os"
 
 const (
 	MicaConfDir  = "/etc/mica"
-	MicaStateDir = "/run/mica"
-	DaemonRoot   = "/run"
+	MicaStateDir = "/tmp/mica"
+	DaemonRoot   = "/tmp"
 
 	DirMode  = os.FileMode(0700) | os.ModeDir
 	FileMode = os.FileMode(0644)
@@ -16,12 +16,12 @@ const (
 
 const (
 	// the external state directory for a container, which containers cached rootfs and serialized states
-	MicrunStateDir            = "/run/micrun"
-	DefaultMicaContainersRoot = "/run/micrun/containers"
+	MicrunStateDir            = "/tmp/micrun"
+	DefaultMicaContainersRoot = MicrunStateDir + "/containers"
 	MicrunContainerStateFile  = "state.json"
 	SandboxStateFile          = "state.json"
 	// directory for sandbox data storage
-	SandboxDataDir = "/run/micrun/sandbox"
+	SandboxDataDir = MicrunStateDir + "/sandbox"
 
 	// Micrun configuration (INI today, easy to switch to TOML later).
 	MicrunConfDir    = "/etc/mica/micrun"

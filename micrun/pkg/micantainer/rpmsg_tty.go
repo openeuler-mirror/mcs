@@ -48,7 +48,7 @@ func candiateTTYs(containerID string) []string {
 	}
 	return []string{
 		filepath.Join("/dev", fmt.Sprintf(ttyPattern, name)),
-		filepath.Join(defs.MockDir, fmt.Sprintf(ttyPattern, name)),
+		filepath.Join(defs.MicrunStateDir, fmt.Sprintf(ttyPattern, name)),
 	}
 }
 

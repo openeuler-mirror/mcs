@@ -6,15 +6,12 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=gnu99 -O2 -g
 LDFLAGS = -pthread -lrt
 
-TARGET = mock_micad
-SRC = mock_micad.c
+TARGET = mocker.py
 
 .PHONY: all clean clean-all gc run test help
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET)

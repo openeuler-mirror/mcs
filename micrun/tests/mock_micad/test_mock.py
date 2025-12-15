@@ -204,18 +204,25 @@ def cleanup_existing():
         os.rmdir(MICA_SOCKET_DIR)
         print(f"Removed socket directory: {MICA_SOCKET_DIR}")
 
+def proc_running(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
 def start_mock_micad():
     """Start mock_micad process"""
     print("\nStarting mock_micad...")
+    pidf = Path("/tmp/micad.pid")
+    if pidf.exists():
+      with open(pidf, "r") as f:
+        pid = int(f.read().strip())
+        if proc_running(pid):
+            print(f"micad mocker already running with PID {pid}")
+            return None
 
-    # Check if already running
-    result = subprocess.run(["pgrep", "-f", "mock_micad"], capture_output=True)
-    if result.returncode == 0:
-        print("mock_micad already running")
-        return None
-
-    # Start mock_micad
-    proc = subprocess.Popen(["./mock_micad"],
+    proc = subprocess.Popen(["./mocker.py"],
                           stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT,
                           text=True,
@@ -256,11 +263,6 @@ def main():
     print("Mock micad Test Suite")
     print("=" * 60)
 
-    # Check if mock_micad exists
-    if not os.path.exists("./mock_micad"):
-        print("✗ mock_micad binary not found")
-        print("Please run 'make' first")
-        return 1
 
     # Clean up existing resources
     cleanup_existing()

@@ -22,7 +22,6 @@ import tty
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Constants matching mica.py (for compatibility)
 MICA_SOCKET_DIRECTORY = "/tmp/mica"
 MICA_GDB_SERVER_PORT = 5678
 
@@ -35,6 +34,10 @@ RESPONSE_MSG_SIZE = 256
 
 MICA_MSG_SUCCESS = "MICA-SUCCESS"
 MICA_MSG_FAILED = "MICA-FAILED"
+
+# PID file for micad compatibility
+MICAD_PIDFILE = "/run/micad.pid"
+MOCK_PIDFILE = "/tmp/mica/micad.pid"
 
 # Max lengths from mica.py pack() method (line 85)
 # Format: '66s256s16s256s?128siiiiii512s512s'
@@ -84,8 +87,9 @@ class MockClient:
         self.pty_slave_path: Optional[str] = None
         self.pty_symlink: Optional[str] = None
         self.socket_path = f"{MICA_SOCKET_DIRECTORY}/{name}.socket"
+        self.quick_pty_proc = None  # subprocess.Popen instance for quick_pty
+        self.quick_pty_pid = None   # PID of quick_pty process
 
-        # Configuration from create message
         self.path = ""
         self.ped = ""
         self.ped_cfg = ""
@@ -116,13 +120,15 @@ class MockClient:
 
 class Mocker:
     """Main mock micad server."""
-    def __init__(self, socket_dir: str = MICA_SOCKET_DIRECTORY):
+    def __init__(self, socket_dir: str = MICA_SOCKET_DIRECTORY, use_quick_pty: bool = False):
         self.socket_dir = socket_dir
+        self.use_quick_pty = use_quick_pty
         self.clients: Dict[str, MockClient] = {}
         self.listeners: Dict[str, socket.socket] = {}  # name -> socket
         self.running = False
         self.epoll_fd: Optional[select.epoll] = None
         self.lock = threading.RLock()
+        self.pid_file = None
 
         os.makedirs(self.socket_dir, mode=0o700, exist_ok=True)
 
@@ -136,17 +142,56 @@ class Mocker:
                 sanitized.append('_')
         return ''.join(sanitized)
 
-    def _create_pty(self, client: MockClient) -> bool:
-        """Create PTY for client and start mock zephyr shell thread."""
+    def _create_pid_file(self) -> bool:
+        """Create PID file for micad compatibility."""
         try:
-            # Create PTY master/slave pair
+            pid_dir = os.path.dirname(MICAD_PIDFILE)
+            if not os.path.exists(pid_dir):
+                try:
+                    os.makedirs(pid_dir, mode=0o755, exist_ok=True)
+                except PermissionError:
+                    logger.warning(f"Cannot create PID directory {pid_dir}, falling back to mock location")
+                    self.pid_file = MOCK_PIDFILE
+            else:
+                if os.access(pid_dir, os.W_OK):
+                    self.pid_file = MICAD_PIDFILE
+                else:
+                    logger.warning(f"Cannot write to PID directory {pid_dir}, falling back to mock location")
+                    self.pid_file = MOCK_PIDFILE
+
+            if self.pid_file == MOCK_PIDFILE:
+                os.makedirs(os.path.dirname(self.pid_file), mode=0o755, exist_ok=True)
+
+            with open(self.pid_file, 'w') as f:
+                f.write(str(os.getpid()))
+
+            logger.info(f"Created PID file: {self.pid_file}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to create PID file: {e}")
+            self.pid_file = None
+            return False
+
+    def _remove_pid_file(self):
+        if self.pid_file and os.path.exists(self.pid_file):
+            try:
+                os.unlink(self.pid_file)
+                logger.info(f"Removed PID file: {self.pid_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove PID file {self.pid_file}: {e}")
+            self.pid_file = None
+
+    def _create_pty(self, client: MockClient) -> bool:
+        if self.use_quick_pty:
+            return self._create_pty_with_quick_pty(client)
+        try:
             master_fd, slave_fd = pty.openpty()
             slave_name = os.ttyname(slave_fd)
 
             client.pty_master_fd = master_fd
             client.pty_slave_path = slave_name
 
-            # Create symlink
             sanitized_name = self._sanitize_name(client.name)
             symlink_path = f"{self.socket_dir}/ttyRPMSG_{sanitized_name}_0"
             if os.path.exists(symlink_path):
@@ -156,7 +201,6 @@ class Mocker:
 
             logger.info(f"Created PTY for client {client.name}: slave={slave_name}, symlink={symlink_path}")
 
-            # Start mock zephyr shell thread
             client.running = True
             client.shell_thread = threading.Thread(
                 target=self._run_zephyr_mock,
@@ -174,19 +218,79 @@ class Mocker:
                 client.pty_master_fd = None
             return False
 
+    def _create_pty_with_quick_pty(self, client: MockClient) -> bool:
+        try:
+            import subprocess
+
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            script_path = os.path.join(script_dir, "quick_pty.py")
+
+            if not os.path.exists(script_path):
+                logger.error(f"quick_pty.py not found at {script_path}")
+                return False
+
+            proc = subprocess.Popen(
+                [sys.executable, script_path, client.name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+
+            client.quick_pty_proc = proc
+            client.quick_pty_pid = proc.pid
+
+            time.sleep(0.5)
+
+            if proc.poll() is not None:
+                stdout, _ = proc.communicate(timeout=1)
+                logger.error(f"quick_pty.py exited early: {stdout}")
+                client.quick_pty_proc = None
+                client.quick_pty_pid = None
+                return False
+
+            sanitized_name = self._sanitize_name(client.name)
+            symlink_path = f"{self.socket_dir}/ttyRPMSG_{sanitized_name}_0"
+            if not os.path.exists(symlink_path):
+                logger.warning(f"PTY symlink not created: {symlink_path}")
+                # Process might still be running, we'll keep it
+                # but return False? Actually quick_pty.py creates the symlink immediately
+                # so if not created, something went wrong
+                # Don't kill process yet, maybe it's slow
+                time.sleep(1)
+                if not os.path.exists(symlink_path):
+                    logger.error(f"PTY symlink still not created after wait")
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                    client.quick_pty_proc = None
+                    client.quick_pty_pid = None
+                    return False
+
+            logger.info(f"Started quick_pty.py for client {client.name} (PID: {proc.pid})")
+            logger.info(f"PTY symlink: {symlink_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to start quick_pty.py for {client.name}: {e}")
+            if 'proc' in locals() and proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=2)
+            client.quick_pty_proc = None
+            client.quick_pty_pid = None
+            return False
+
     def _run_zephyr_mock(self, client: MockClient, master_fd: int, slave_fd: int):
         """Run mock zephyr shell (similar to quick_pty.py)."""
         try:
             slave_name = os.ttyname(slave_fd)
-            logger.info(f"【RPMSG Proxy】模拟程序启动 for {client.name}.")
-            logger.info(f"【RPMSG Proxy】虚拟串口已建立: {slave_name}")
+            logger.info(f"【RPMSG Proxy】Mock for {client.name}.")
+            logger.info(f"【RPMSG Proxy】PTY: {slave_name}")
 
-            # Set non-blocking for master
             import fcntl
             flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
             fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
-            # Simulate Zephyr boot message
             prompt = b"uart:~$ "
             os.write(master_fd, b"\r\n*** Booting Zephyr OS build v3.x.x ***\r\n")
             os.write(master_fd, prompt)
@@ -195,7 +299,6 @@ class Mocker:
 
             while client.running:
                 try:
-                    # Read from master (data from slave)
                     data = os.read(master_fd, 1024)
                 except (OSError, IOError) as e:
                     if e.errno == errno.EAGAIN or e.errno == errno.EWOULDBLOCK:
@@ -208,20 +311,17 @@ class Mocker:
                     time.sleep(0.01)
                     continue
 
-                # Echo back (serial echo)
+                # Echo
                 os.write(master_fd, data)
 
-                # Process input
                 input_buffer += data
 
-                # Detect newline
                 if b'\r' in data or b'\n' in data:
                     os.write(master_fd, b"\r\n")
 
                     cmd = input_buffer.decode(errors='ignore').strip()
                     input_buffer = b""
 
-                    # Simple command parsing
                     if cmd == "help":
                         resp = (
                             "Please press the <Tab> button to see all available commands.\r\n"
@@ -239,7 +339,6 @@ class Mocker:
                         msg = f"Error: {cmd} not found\r\n"
                         os.write(master_fd, msg.encode())
 
-                    # Print prompt again
                     os.write(master_fd, prompt)
 
         except Exception as e:
@@ -251,6 +350,21 @@ class Mocker:
 
     def _destroy_pty(self, client: MockClient):
         """Destroy PTY and stop shell thread."""
+        if client.quick_pty_proc:
+            try:
+                client.quick_pty_proc.terminate()
+                client.quick_pty_proc.wait(timeout=2.0)
+                logger.info(f"Terminated quick_pty process for client {client.name}")
+            except Exception as e:
+                logger.warning(f"Error terminating quick_pty process for {client.name}: {e}")
+                try:
+                    client.quick_pty_proc.kill()
+                except:
+                    pass
+            finally:
+                client.quick_pty_proc = None
+                client.quick_pty_pid = None
+
         client.running = False
         if client.shell_thread and client.shell_thread.is_alive():
             client.shell_thread.join(timeout=1.0)
@@ -272,15 +386,12 @@ class Mocker:
     def _setup_socket(self, socket_path: str) -> Optional[socket.socket]:
         """Create and bind a Unix domain socket."""
         try:
-            # Remove existing socket
             if os.path.exists(socket_path):
                 os.unlink(socket_path)
 
-            # Create socket
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-            # Bind
             sock.bind(socket_path)
             sock.listen(MAX_CLIENTS)
             sock.setblocking(False)
@@ -321,7 +432,6 @@ class Mocker:
     def _handle_create_message(self, conn: socket.socket, data: bytes):
         """Handle client creation message."""
         try:
-            # Unpack create message
             if len(data) < struct.calcsize(CREATE_MSG_FORMAT):
                 logger.error(f"Create message too short: {len(data)} bytes")
                 self._send_response(conn, "Invalid create message", False)
@@ -329,7 +439,6 @@ class Mocker:
 
             unpacked = struct.unpack(CREATE_MSG_FORMAT, data)
 
-            # Extract fields and decode strings
             name_bytes = unpacked[0]
             path_bytes = unpacked[1]
             ped_bytes = unpacked[2]
@@ -345,7 +454,6 @@ class Mocker:
             iomem_bytes = unpacked[12]
             network_bytes = unpacked[13]
 
-            # Decode strings (strip null bytes)
             name = name_bytes.decode('utf-8', errors='ignore').rstrip('\x00')
             path = path_bytes.decode('utf-8', errors='ignore').rstrip('\x00')
             ped = ped_bytes.decode('utf-8', errors='ignore').rstrip('\x00')
@@ -357,13 +465,11 @@ class Mocker:
             logger.info(f"Creating client: name={name}, path={path}, ped={ped}, debug={debug}")
 
             with self.lock:
-                # Check if client already exists
                 if name in self.clients:
                     logger.error(f"Client {name} already exists")
                     self._send_response(conn, f"Client {name} already exists", False)
                     return
 
-                # Create client
                 client = MockClient(name)
                 config = {
                     'path': path,
@@ -382,15 +488,12 @@ class Mocker:
                 }
                 client.update_config(config)
 
-                # Create client socket
                 client_socket_path = f"{self.socket_dir}/{name}.socket"
                 if not self._add_listener(name, client_socket_path, is_create=False):
                     self._send_response(conn, f"Failed to create socket for {name}", False)
                     return
 
-                # Create PTY and start shell
                 if not self._create_pty(client):
-                    # Clean up socket on failure
                     with self.lock:
                         sock = self.listeners.pop(name, None)
                         if sock:
@@ -400,7 +503,6 @@ class Mocker:
                     self._send_response(conn, f"Failed to create PTY for {name}", False)
                     return
 
-                # Add client to dictionary
                 self.clients[name] = client
                 client.status = "Running"
 
@@ -427,7 +529,6 @@ class Mocker:
                     self._send_response(conn, f"Client {client_name} is already running", True)
                     return
 
-                # Re-create PTY if needed
                 if client.pty_master_fd is None:
                     if not self._create_pty(client):
                         self._send_response(conn, f"Failed to start client {client_name}", False)
@@ -446,23 +547,18 @@ class Mocker:
                 self._send_response(conn, f"Stopped client {client_name}", True)
 
             elif command == "rm":
-                # Remove client
                 self._destroy_pty(client)
 
-                # Close and remove socket
                 with self.lock:
                     sock = self.listeners.pop(client_name, None)
-                    # Unlink socket file first
                     if os.path.exists(client.socket_path):
                         try:
                             os.unlink(client.socket_path)
                         except Exception as e:
                             logger.warning(f"Failed to unlink socket {client.socket_path}: {e}")
-                    # Then close socket
                     if sock:
                         sock.close()
 
-                # Remove from clients dict
                 self.clients.pop(client_name, None)
 
                 self._send_response(conn, f"Removed client {client_name}", True)
@@ -473,7 +569,6 @@ class Mocker:
                 self._send_response(conn, status_line, True)
 
             elif command.startswith("set "):
-                # Simulate set command
                 parts = command.split()
                 if len(parts) != 3:
                     self._send_response(conn, "Invalid set command. Usage: set <key> <value>", False)
@@ -484,7 +579,6 @@ class Mocker:
                 self._send_response(conn, f"Set {key}={value} (simulated)", True)
 
             elif command == "gdb":
-                # Simulate gdb command
                 if not client.debug:
                     self._send_response(conn, "The elf file does not support debugging", False)
                     return
@@ -502,16 +596,13 @@ class Mocker:
             conn.setblocking(True)
 
             if is_create_socket:
-                # Receive create message
                 data = conn.recv(struct.calcsize(CREATE_MSG_FORMAT))
                 if data:
                     self._handle_create_message(conn, data)
             else:
-                # Receive control command (max CTRL_MSG_SIZE)
                 data = conn.recv(CTRL_MSG_SIZE)
                 if data:
                     command = data.decode('utf-8', errors='ignore').rstrip('\x00')
-                    # Find which client this socket belongs to
                     client_name = None
                     with self.lock:
                         for name, listener_sock in self.listeners.items():
@@ -544,7 +635,6 @@ class Mocker:
                     events = self.epoll_fd.poll(1.0)  # timeout 1 second
                     for fileno, event in events:
                         if event & select.EPOLLIN:
-                            # Find the socket
                             sock = None
                             is_create = False
                             with self.lock:
@@ -577,7 +667,6 @@ class Mocker:
 
         logger.info(f"Starting mock micad on socket directory: {self.socket_dir}")
 
-        # Clean up any existing sockets
         for item in os.listdir(self.socket_dir):
             path = os.path.join(self.socket_dir, item)
             if os.path.isfile(path) or os.path.islink(path):
@@ -586,18 +675,20 @@ class Mocker:
                 except:
                     pass
 
-        # Create main create socket
         main_socket_path = f"{self.socket_dir}/mica-create.socket"
         if not self._add_listener("mica-create", main_socket_path, is_create=True):
             return False
 
         self.running = True
 
-        # Start event loop in a thread
         self.event_thread = threading.Thread(target=self._event_loop, daemon=True)
         self.event_thread.start()
 
         logger.info("Mock micad started successfully")
+
+        if not self._create_pid_file():
+            logger.warning("Failed to create PID file, but continuing...")
+
         return True
 
     def stop(self):
@@ -608,32 +699,29 @@ class Mocker:
         logger.info("Stopping mock micad...")
         self.running = False
 
-        # Wait for event thread
         if hasattr(self, 'event_thread') and self.event_thread.is_alive():
             self.event_thread.join(timeout=2.0)
 
-        # Cleanup all clients
         with self.lock:
             for client in list(self.clients.values()):
                 self._destroy_pty(client)
             self.clients.clear()
 
-        # Close all sockets
         with self.lock:
             for name, sock in self.listeners.items():
                 socket_path = f"{self.socket_dir}/{name}.socket" if name != "mica-create" else f"{self.socket_dir}/mica-create.socket"
-                # Unlink socket file first
                 if os.path.exists(socket_path):
                     try:
                         os.unlink(socket_path)
                     except:
                         pass
-                # Then close socket
                 try:
                     sock.close()
                 except:
                     pass
             self.listeners.clear()
+
+        self._remove_pid_file()
 
         logger.info("Mock micad stopped")
 
@@ -643,7 +731,6 @@ class Mocker:
             return
 
         try:
-            # Keep main thread alive
             while self.running:
                 time.sleep(1)
         except KeyboardInterrupt:
@@ -660,12 +747,14 @@ def main():
     parser.add_argument('--socket-dir', default=MICA_SOCKET_DIRECTORY,
                         help=f'Socket directory (default: {MICA_SOCKET_DIRECTORY})')
     parser.add_argument('--quiet', action='store_true', help='Reduce output')
+    parser.add_argument('-z', '--use-quick-pty', action='store_true',
+                        help='Use quick_pty.py for Zephyr simulation')
     args = parser.parse_args()
 
     if args.quiet:
         logging.getLogger().setLevel(logging.WARNING)
 
-    mocker = Mocker(socket_dir=args.socket_dir)
+    mocker = Mocker(socket_dir=args.socket_dir, use_quick_pty=args.use_quick_pty)
     mocker.run()
 
 

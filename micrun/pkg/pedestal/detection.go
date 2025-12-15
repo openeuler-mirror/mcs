@@ -25,6 +25,9 @@ func GetHostPed() PedType {
 	hostPedOnce.Do(func() {
 		hostPedCache = computeHostPed()
 	})
+	if defs.IsMock {
+		return Xen
+	}
 	return hostPedCache
 }
 

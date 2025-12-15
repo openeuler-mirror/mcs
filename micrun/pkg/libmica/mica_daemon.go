@@ -14,7 +14,7 @@ import (
 )
 
 // Constants
-const MICAD_PIDFILE = defs.DaemonRoot + "/micad.pid"
+const MICAD_PIDFILE = defs.MicaStateDir + "/micad.pid"
 const (
 	DaemonRunning = "running"
 	DaemonStopped = "stopped"
