@@ -86,7 +86,7 @@ vendor-verify:
 	@echo "🔍 Verifying vendor directory..."
 	go mod verify
 
-install: build
+install: build-module
 	@echo "🏭 Installing $(BIN) to $(SHIM_DIR)"
 	sudo install -m 755 $(BIN) $(SHIM_DIR)$(BINNAME)
 	@echo "md5sums:"

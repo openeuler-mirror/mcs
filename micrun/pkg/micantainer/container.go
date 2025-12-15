@@ -25,6 +25,7 @@ import (
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"golang.org/x/sys/unix"
 )
 
 // Container represents a single container instance, encapsulating its configuration,
@@ -323,8 +324,17 @@ func (c *Container) monitorInfraExit(cmd *exec.Cmd) {
 
 func (c *Container) ioStream(taskID string) (io.WriteCloser, io.Reader, io.Reader, error) {
 	_ = taskID
-	// TODO: hook up actual PTY/TTY endpoints for mica clients.
-	return noopWriteCloser{}, bytes.NewReader(nil), bytes.NewReader(nil), nil
+	if c.config != nil && c.config.IsInfra {
+		return noopWriteCloser{}, bytes.NewReader(nil), bytes.NewReader(nil), nil
+	}
+
+	stdin, stdout, _, err := dialTTY(c.ctx, c.id)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// stdout/stderr are permanently merged for mica clients.
+	return stdin, stdout, stdout, nil
 }
 
 func extractExitCode(err error) int {
@@ -1197,12 +1207,23 @@ func (c *Container) setVcpuAffinity(cpuSet cpuset.CPUSet) error {
 }
 
 // winresize resizes the container's PTY.
-// TODO: Resize the terminal connected to /dev/ttyRPMSG*.
 func (c *Container) winresize(height, width uint32) error {
 	if c.notOperational() {
 		return fmt.Errorf("container not ready or running, impossible to resize the container pty")
 	}
 	log.Debugf("resizing PTY for container %s to [%dx%d]", c.id, width, height)
+	stdin, stdout, p, err := dialTTY(c.ctx, c.id)
+	if err != nil {
+		return err
+	}
+	_ = stdin.Close()
+	defer stdout.Close()
+	log.Debugf("resizing rpmsg tty at %s", p)
+
+	ws := &unix.Winsize{Row: uint16(height), Col: uint16(width)}
+	if err := unix.IoctlSetWinsize(int(stdout.Fd()), unix.TIOCSWINSZ, ws); err != nil {
+		return fmt.Errorf("set winsize: %w", err)
+	}
 	return nil
 }
 

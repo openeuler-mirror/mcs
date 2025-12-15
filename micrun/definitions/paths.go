@@ -14,6 +14,7 @@ const (
 const (
 	// the external state directory for a container, which containers cached rootfs and serialized states
 	MicrunStateDir            = "/run/micrun"
+	MockDir                   = "/tmp/micrun"
 	DefaultMicaContainersRoot = "/run/micrun/containers"
 	MicrunContainerStateFile  = "state.json"
 	SandboxStateFile          = "state.json"

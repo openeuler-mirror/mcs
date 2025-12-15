@@ -2,8 +2,6 @@ import os
 import pty
 from pathlib import Path
 
-from numpy.random.mtrand import f
-
 
 def run_zephyr_mock(id: str):
     # 1. pty master-slave pair
@@ -14,7 +12,9 @@ def run_zephyr_mock(id: str):
     slave_name = os.ttyname(slave_fd)
     tty_dir = Path("/tmp/mica")
     tty_dir.mkdir(parents=True, exist_ok=True)
-    link_name=tty_dir / f"ttyRPMSG_{str}_0"
+    link_name = tty_dir / f"ttyRPMSG_{id}_0"
+    if link_name.exists():
+        link_name.unlink()
     os.symlink(slave_name, link_name)
     print(f"【RPMSG Proxy】Virt pty established : {link_name} -> {slave_name}")
     print("【Zephyr】Ready")
