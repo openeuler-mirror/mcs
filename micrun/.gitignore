@@ -37,6 +37,5 @@ go.work.sum
 .env
 
 # Editor/IDE and agents, waiting for adding more
-.vscode/
 .clinerules/
 .claude/
