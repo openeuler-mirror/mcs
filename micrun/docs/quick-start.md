@@ -58,6 +58,17 @@ oci容器化有至少3种策略，
 
 ### 构建 MicRun
 
+1. 生成构建环境
+
+更新 oebuild, 
+
+```shell
+oebuild neo-generate -p qemu-aarch64 -f zephyr -f micrun -f systemd -d playmicrun # 最好是 systemd
+cd playmicrun
+oebuild bitbake
+bitbake openeuler-image
+```
+
 进入 `oebuild bitbake` 创建的容器环境中构建 opeuler-image 镜像。MicRun 在构建镜像时会被自动打包进系统。使用 `bitbake micrun` 可以单独构建该软件包
 
 MicRun 是一个不使用 CGO的用户态静态链接的golang二进制, 是一个标准的golang实践。
@@ -90,16 +101,32 @@ bitbake openeuler-image
 
 1. [参考mica-xen指导文档](https://embedded.pages.openeuler.org/master/features/mica/instruction.html) 确保配置好 xen, 
 
-如果使用 qemu-aarch64 来试用，请注意 qemu 版本不宜过低:
-> 1. 低版本qemu存在影响xen的bug，会造成RTOS xen镜像卡死，建议使用高版本qemu。 
+如果使用 qemu-aarch64 来试用 MicRun，请注意 
+> 1. qemu 版本不宜过低:
+> 低版本qemu存在影响xen的bug，会造成RTOS xen镜像卡死，建议使用高版本qemu。 
 > 可参考 [qemu.org — Build instructions](https://www.qemu.org/download/)
+> 2. 请确保xen dts 为 domain-0 预留了一个更大的内存(根据实际情况, qemu sample中是 `1536M` ) 
+> 如果要调整该值，请在 `conf/local.conf`中设置 `QB_XEN_CMDLINE_EXTRA = <size with unit>` 的值
 
 1. (可选)构建镜像
 > 和标准 docker 镜像 `[os,arch]` 2元组不同，RTOS 容器的匹配需要这样的4元组: `[board, os, arch, hypervisor]`
 > 因此, 可用的构建镜像需要同时匹配这四个特征，我们需要用特化的镜像打包方式
-> 
+> 目前，你会在 构建产物目录 output 下 找到 `micrun-files/mica-image-builder`
+```
+# 由于是一个简单脚本，所以只使用 requirements.txt 保存依赖
+# 环境没uv则使用
+# pip install -r requirements.txt
+# python mica-image-builder.py 也可以
+cd micrun-files
+uv init
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+uv run ./mica-image-builder # 根据交互来选择构建
+```
+
 1. 启动系统
-1. load本地镜像或pull镜像
+1. load本地镜像或从镜像仓pull镜像
 1. 为 containerd 注册运行时
 1. (如果使用集群) 为 k3s-agent 注册 micrun runtimeclass
 
