@@ -73,7 +73,7 @@ oci容器化有至少3种策略，
 更新 oebuild, 
 
 ```shell
-oebuild neo-generate -p qemu-aarch64 -f zephyr -f micrun -f systemd -d containerd -d playmicrun # 使用containerd 作容器引擎,目前这个是必须的。最好是 systemd
+oebuild neo-generate -p qemu-aarch64 -f zephyr -f micrun -f systemd -f containerd -d playmicrun # 使用containerd 作容器引擎,目前这个是必须的。最好是 systemd
 cd playmicrun
 oebuild bitbake
 bitbake openeuler-image

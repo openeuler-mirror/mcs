@@ -33,17 +33,17 @@ type Config struct {
 	Attributes []attribute.KeyValue
 }
 
-// NewConfig returns a Config pre-populated with a conservative sampler and service name.
-func NewConfig(serviceName string) Config {
+// newConfig returns a Config pre-populated with a conservative sampler and service name.
+func newConfig(serviceName string) Config {
 	return Config{
 		ServiceName: serviceName,
 		Sampler:     sdktrace.ParentBased(sdktrace.TraceIDRatioBased(1.0)),
 	}
 }
 
-// NewTracerProvider builds and returns an OTEL TracerProvider according to cfg.
+// newTracerProvider builds and returns an OTEL TracerProvider according to cfg.
 // The caller is responsible for calling Shutdown when the shim exits.
-func NewTracerProvider(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, error) {
+func newTracerProvider(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, error) {
 	if cfg.ServiceName == "" {
 		return nil, errors.New("tracer: service name is required")
 	}

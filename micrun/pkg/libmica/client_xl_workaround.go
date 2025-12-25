@@ -17,7 +17,7 @@ func handleMicaUpdateWithXl(id string, opts ...string) error {
 	if len(opts) == 0 {
 		return fmt.Errorf("update command requires at least one parameter")
 	}
-	if pedestal.GetHostPed() != pedestal.Xen {
+	if pedestal.Host.Type() != pedestal.Xen {
 		return fmt.Errorf("xl command workaround only supported on Xen pedestal")
 	}
 

@@ -19,13 +19,13 @@ func PlanEssentialResources(spec *specs.Spec) *EssentialResource {
 	return plannerForHost().FromSpec(spec)
 }
 
-// LinuxResource2Essential is kept for backward compatibility; new code should call PlanEssentialResources.
-func LinuxResource2Essential(spec *specs.Spec) *EssentialResource {
+// linuxResource2Essential is kept for backward compatibility; new code should call PlanEssentialResources.
+func linuxResource2Essential(spec *specs.Spec) *EssentialResource {
 	return PlanEssentialResources(spec)
 }
 
 func plannerForHost() resourcePlanner {
-	switch GetHostPed() {
+	switch Host.Type() {
 	case Xen:
 		return xenPlanner{}
 	default:

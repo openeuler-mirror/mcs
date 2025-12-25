@@ -10,6 +10,14 @@ type PedestalConfig struct {
 	MiniVCPUNum uint32
 }
 
+// Host is the global pedestal instance for the detected host pedestal type.
+// Initialized at package startup via init().
+var Host Pedestal
+
+func init() {
+	Host = newHostPed()
+}
+
 const (
 	Xen PedType = iota
 	FusionDock
@@ -67,7 +75,7 @@ func New(pedType PedType) Pedestal {
 	}
 }
 
-// NewHostPedestal returns a Pedestal implementation for the detected host pedestal type.
-func NewHostPedestal() Pedestal {
-	return New(GetHostPed())
+// newHostPed returns a Pedestal implementation for the detected host pedestal type.
+func newHostPed() Pedestal {
+	return New(hostPed())
 }

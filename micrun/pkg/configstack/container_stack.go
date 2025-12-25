@@ -19,10 +19,10 @@ type ContainerLayer struct {
 	OS           string
 }
 
-// FallbackConfLayer parses bundleRootfs/client.conf and returns overrides, if any.
+// fallbackConfLayer parses bundleRootfs/client.conf and returns overrides, if any.
 // should be the final fallback, if no other overrides are found.
 // mirun-image-builder may not include client.conf file in bundle due to size concerns
-func FallbackConfLayer(dir string) (ContainerLayer, error) {
+func fallbackConfLayer(dir string) (ContainerLayer, error) {
 	var layer ContainerLayer
 	clientConf := filepath.Join(dir, clientConfName)
 	if strings.TrimSpace(dir) == "" || !utils.FileExist(clientConf) {

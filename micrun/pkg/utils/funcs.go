@@ -1,6 +1,6 @@
 package utils
 
-func FilterSlice[T any](s []T, filter func(T) bool) []T {
+func filterSlice[T any](s []T, filter func(T) bool) []T {
 	var result []T
 	for _, item := range s {
 		if filter(item) {

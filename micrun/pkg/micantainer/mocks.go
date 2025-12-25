@@ -2,23 +2,23 @@ package micantainer
 
 import "github.com/opencontainers/runtime-spec/specs-go"
 
-type DummyNetwork struct{}
+type dummyNetwork struct{}
 
-func (dn *DummyNetwork) NetworkIsCreated() bool {
+func (dn *dummyNetwork) NetworkIsCreated() bool {
 	return true
 }
 
-func (dn *DummyNetwork) NetID() string {
+func (dn *dummyNetwork) NetID() string {
 	return "dummy"
 }
 
-func (dn *DummyNetwork) NetworkCleanup(id string) error {
+func (dn *dummyNetwork) NetworkCleanup(id string) error {
 	return nil
 }
 
-// DummySandboxConfig creates a minimal sandbox config for quick development/test
+// dummySandboxConfig creates a minimal sandbox config for quick development/test
 // Note: Workload resources are calculated dynamically from containers.
-func DummySandboxConfig(cid string, spec *specs.Spec) (*SandboxConfig, error) {
+func dummySandboxConfig(cid string, spec *specs.Spec) (*SandboxConfig, error) {
 	return &SandboxConfig{
 		ID:       cid,
 		Hostname: spec.Hostname,

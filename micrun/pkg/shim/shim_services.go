@@ -843,14 +843,14 @@ func (s *shimService) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*task
 	c, found := s.containers[r.ID]
 	if c == nil || !found {
 		return &taskAPI.StatsResponse{
-			Stats: EmptyMetricsV1(),
+			Stats: emptyMetricsV1(),
 		}, nil
 	}
 
 	data, err := marshalMetrics(ctx, s, r.ID)
 	if err != nil {
 		return &taskAPI.StatsResponse{
-			Stats: EmptyMetricsV1(),
+			Stats: emptyMetricsV1(),
 		}, nil
 	}
 

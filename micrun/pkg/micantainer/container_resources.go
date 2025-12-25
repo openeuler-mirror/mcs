@@ -234,7 +234,7 @@ func (r *ContainerConfig) ParseOCIResources(spec *specs.Spec) error {
 		if cpu := r.Resources.CPU; cpu != nil && cpu.Cpus != "" {
 			cpus, err := libmica.ParseCPUString(cpu.Cpus)
 			if err == nil {
-				if ok, out := CpusetRangeValid(cpus); !ok {
+				if ok, out := cpusetRangeValid(cpus); !ok {
 					valid := make([]int, 0, len(cpus))
 					bad := map[int]struct{}{}
 					for _, x := range out {

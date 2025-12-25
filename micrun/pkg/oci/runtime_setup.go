@@ -38,9 +38,9 @@ const defaultMaxContainerVCPUs = 8
 const defaultContainerInitMemMiB = 32
 
 var (
-	HostPedType       = pedestal.GetHostPed()
-	thredsholdMemHigh = pedestal.MemHighThreshold()
-	thredsholdMemLow  = pedestal.MemLowThreshold()
+	HostPedType       = pedestal.Host.Type()
+	thredsholdMemHigh = pedestal.Host.MemHighThreshold()
+	thredsholdMemLow  = pedestal.Host.MemLowThreshold()
 	runtimeConfigKeys = []string{
 		KeyStaticResource,
 		KeyClientLimit,
@@ -87,9 +87,8 @@ type RuntimeConfig struct {
 
 // NewRuntimeConfig returns a default RuntimeConfig.
 func NewRuntimeConfig() *RuntimeConfig {
-	ped := pedestal.GetHostPed()
 	var staticResource bool
-	if ped == pedestal.OpenAMP {
+	if pedestal.Host.Type() == pedestal.Baremetal {
 		staticResource = true
 	}
 

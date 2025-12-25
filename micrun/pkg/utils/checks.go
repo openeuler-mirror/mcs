@@ -66,9 +66,9 @@ func InList(list []string, item string) bool {
 	return false
 }
 
-// LsofSocket returns a slice of PIDs using the given socket path
+// lsofSocket returns a slice of PIDs using the given socket path
 // It runs lsof to check which processes are using the socket
-func LsofSocket(socketPath string, command string) []int {
+func lsofSocket(socketPath string, command string) []int {
 	var pids []int
 	cmd := exec.Command("lsof", socketPath)
 	output, err := cmd.Output()
@@ -95,7 +95,6 @@ func LsofSocket(socketPath string, command string) []int {
 	}
 	return pids
 }
-
 
 // Validate the bundle and rootfs.
 func ValidBundle(containerID, bundlePath string) (string, error) {

@@ -1,12 +1,8 @@
 package pedestal
 
 import (
-	"sync/atomic"
-
 	"micrun/pkg/cpuset"
 )
-
-var baremetalReservedCPUs atomic.Uint32
 
 // baremetal is the baremetal pedestal implementation using openAMP/rpmsg.
 // Linux exposes all physical CPUs; RTOS clients run on reserved cores.
