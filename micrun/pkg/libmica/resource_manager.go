@@ -228,7 +228,7 @@ func (me *MicaExecutor) NeedUpdateCpuCap(target uint32) bool {
 	if me.records.cpuCapacity > 0 {
 		current = uint32(me.records.cpuCapacity)
 	}
-	hostCPUs := pedestal.HostCPUCounts().Physical
+	hostCPUs := pedestal.Host.MaxCPUNum()
 	if current == target && target >= uint32(cpuCapRatio)*hostCPUs {
 		return false
 	}
@@ -246,7 +246,7 @@ func (me *MicaExecutor) NeedUpdateMemThreshold(target uint32) bool {
 	return me.memoryThresholdMB < target
 }
 func (me *MicaExecutor) NeedUpdateVCpus(target uint32) bool {
-	maxCPUs := pedestal.HostCPUCounts().Physical
+	maxCPUs := pedestal.Host.MaxCPUNum()
 	if target == 0 || target > maxCPUs {
 		return false
 	}

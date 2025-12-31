@@ -65,7 +65,7 @@ var (
 // HostCPUCounts returns cached host CPU counts (physical vs. Linux visible).
 func HostCPUCounts() HostCPUInventory {
 	hostCPUOnce.Do(func() {
-		physical := MaxCPUNum()
+		physical := Host.MaxCPUNum()
 		linux := min(uint32(runtime.NumCPU()), physical)
 		hostCPUInventory = HostCPUInventory{
 			Physical:     physical,
@@ -81,10 +81,10 @@ func HostCPUCounts() HostCPUInventory {
 // recorded via SetBaremetalReservedCPUs instead of re-reading /proc/cpuinfo.
 func ClientCPUCapacity() uint32 {
 	inv := HostCPUCounts()
-	switch GetHostPed() {
+	switch Host.Type() {
 	case Xen:
 		// TODO: linux cpu can be shared with clients by default, for xen case.
-		if inv.Physical > inv.LinuxVisible && ExclusiveDom0CPUEnabled() {
+		if inv.Physical > inv.LinuxVisible && exclusiveDom0CPUEnabled() {
 			return inv.Physical - inv.LinuxVisible
 		}
 		return inv.Physical
@@ -99,18 +99,18 @@ func ClientCPUCapacity() uint32 {
 
 // HostMemoryMiB returns the current host memory capacity snapshot in MiB.
 func HostMemoryMiB() HostMemoryInventory {
-	free, total := MemoryMB()
+	free, total := Host.MemoryMB()
 	return HostMemoryInventory{
 		FreeMB:  free,
 		TotalMB: total,
 	}
 }
 
-// SetBaremetalReservedCPUs records how many CPUs must remain with Linux when
+// setBaremetalReservedCPUs records how many CPUs must remain with Linux when
 // running on baremetal pedestals. Linux always exposes the full CPU set, so
 // we persist the reservation in shared state instead of recalculating it from
 // /proc/cpuinfo on every request.
-func SetBaremetalReservedCPUs(count uint32) {
+func setBaremetalReservedCPUs(count uint32) {
 	inv := HostCPUCounts()
 	if count > inv.Physical {
 		count = inv.Physical
@@ -118,8 +118,8 @@ func SetBaremetalReservedCPUs(count uint32) {
 	baremetalReservedC.Store(count)
 }
 
-// BaremetalReservedCPUs returns the currently recorded baremetal reservation.
-func BaremetalReservedCPUs() uint32 {
+// baremetalReservedCPUs returns the currently recorded baremetal reservation.
+func baremetalReservedCPUs() uint32 {
 	return baremetalReservedC.Load()
 }
 
@@ -128,7 +128,7 @@ func EnableDom0CPUExclusive(enabled bool) {
 	exclusiveDom0Flag.Store(enabled)
 }
 
-// ExclusiveDom0CPUEnabled reports whether Dom0 CPUs are reserved exclusively.
-func ExclusiveDom0CPUEnabled() bool {
+// exclusiveDom0CPUEnabled reports whether Dom0 CPUs are reserved exclusively.
+func exclusiveDom0CPUEnabled() bool {
 	return exclusiveDom0Flag.Load()
 }

@@ -26,7 +26,7 @@ func IsRegular(path string) bool {
 	return stat.Mode().IsRegular()
 }
 
-func IsFifo(path string) bool {
+func isFifo(path string) bool {
 	stat, err := os.Stat(path)
 	if err != nil {
 		return false
@@ -34,7 +34,7 @@ func IsFifo(path string) bool {
 	return stat.Mode()&os.ModeNamedPipe != 0
 }
 
-func IsSymlink(path string) bool {
+func isSymlink(path string) bool {
 	stat, err := os.Lstat(path)
 	if err != nil {
 		return false
@@ -103,10 +103,10 @@ func getAllParentPaths(path string) []string {
 	return paths[1:]
 }
 
-// MkdirAllWithInheritedOwner creates a directory named path, along with any necessary parents.
+// mkdirAllWithInheritedOwner creates a directory named path, along with any necessary parents.
 // It creates the missing directories with the ownership of the last existing parent.
 // The path needs to be absolute and the method doesn't handle symlink.
-func MkdirAllWithInheritedOwner(path string, perm os.FileMode) error {
+func mkdirAllWithInheritedOwner(path string, perm os.FileMode) error {
 	if len(path) == 0 {
 		return fmt.Errorf("path cannot be empty")
 	}
@@ -181,8 +181,8 @@ func SetReadonly(path string) error {
 	})
 }
 
-// remove state file in micran state directory
-func RemoveExternalStatFile(id string) error {
+// removeExternalStatFile removes state file in micran state directory
+func removeExternalStatFile(id string) error {
 	// if the file does not exist, return nil
 	path := filepath.Join(defs.MicrunStateDir, id, defs.MicrunContainerStateFile)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -191,7 +191,7 @@ func RemoveExternalStatFile(id string) error {
 	return os.Remove(path)
 }
 
-func RemoveStateDir(id string) error {
+func removeStateDir(id string) error {
 	return os.RemoveAll(filepath.Join(defs.MicrunStateDir, id))
 }
 
@@ -249,7 +249,7 @@ func MountDirs(mounts []*cdtypes.Mount, dest string) error {
 	return nil
 
 }
-func Backup(srcDir string) error {
+func backup(srcDir string) error {
 	backupDir := "/tmp/backupbundle"
 
 	// Test source directory access first

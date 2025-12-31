@@ -605,7 +605,7 @@ func (s *Sandbox) StoreSandbox(ctx context.Context) error {
 	switch netCfg := s.network.(type) {
 	case *NetworkConfig:
 		serializable.Network = *netCfg
-	case *DummyNetwork:
+	case *dummyNetwork:
 		serializable.Network = NetworkConfig{
 			NetworkID:      netCfg.NetID(),
 			NetworkCreated: netCfg.NetworkIsCreated(),
@@ -706,7 +706,7 @@ func newSandbox(ctx context.Context, config SandboxConfig) (sb *Sandbox, retErr 
 			Ped:     HostPedType.String(),
 			Version: defs.SandboxVersion,
 		},
-		resManager: *NewResMgmt(),
+		resManager: *newResMgmt(),
 		wg:         &sync.WaitGroup{},
 		annotaLock: &sync.RWMutex{},
 	}
@@ -714,7 +714,7 @@ func newSandbox(ctx context.Context, config SandboxConfig) (sb *Sandbox, retErr 
 	if s.config != nil {
 		s.network = &s.config.NetworkConfig
 	} else {
-		s.network = &DummyNetwork{}
+		s.network = &dummyNetwork{}
 	}
 
 	if err := s.restore(); err != nil {
@@ -805,7 +805,7 @@ func (s *Sandbox) restore() error {
 			s.config.NetworkConfig = ss.Network
 			s.network = &s.config.NetworkConfig
 		} else {
-			s.network = &DummyNetwork{}
+			s.network = &dummyNetwork{}
 		}
 	}
 
@@ -927,7 +927,7 @@ func (s *Sandbox) checkVCPUsPinning(ctx context.Context) error {
 
 	match := true
 
-	if valid, outOfRangeCPUs := CpusetRangeValid(cpuList); !valid {
+	if valid, outOfRangeCPUs := cpusetRangeValid(cpuList); !valid {
 		match = false
 		log.Debugf("these cpus are out of range: %v", outOfRangeCPUs)
 		// TODO: handle the overrange cpus

@@ -206,8 +206,8 @@ func marshalMetrics(ctx context.Context, s *shimService, cid string) (*ptypes.An
 	}, nil
 }
 
-// EmptyMetricsV1 returns empty metrics for when stats collection fails.
-func EmptyMetricsV1() *ptypes.Any {
+// emptyMetricsV1 returns empty metrics for when stats collection fails.
+func emptyMetricsV1() *ptypes.Any {
 	m := statsToMetricsV1(nil)
 	typeAny, err := typeurl.MarshalAny(m)
 	if err != nil {

@@ -328,7 +328,7 @@ type Filter struct {
 
 // Public API
 
-func NewMicaCreateMsgWithOpts(opts MicaClientConfCreateOptions) MicaClientConf {
+func newMicaCreateMsgWithOpts(opts MicaClientConfCreateOptions) MicaClientConf {
 	msg := MicaClientConf{}
 	msg.InitWithOpts(opts)
 	return msg
@@ -341,7 +341,7 @@ func Create(config MicaClientConf) error {
 	return s.handleMsg(config.pack())
 }
 
-func CreateMicaClient(conf MicaClientConf) error {
+func createMicaClient(conf MicaClientConf) error {
 	s := newMicaSocket(defs.MicaCreatSocketPath)
 	// Do not dereference s here, as it is dropped in handleMsg().
 	msg := conf.pack()
@@ -419,26 +419,24 @@ func Stop(id string) error {
 // TALK: xen supports pause, but mica...
 // TODO: might passthrough mica, directly to ped?
 func Pause(id string) error {
-	if pedestal.GetHostPed() == pedestal.Xen {
-		return pedestal.Pause(id)
-	} else {
-		if err := micaCtl(MPause, id); err != nil {
-			return fmt.Errorf("failed to pause mica client %s %w", id, err)
-		}
-		return nil
+	if lm, ok := pedestal.Host.(pedestal.LifecycleManager); ok {
+		return lm.Pause(id)
 	}
+	if err := micaCtl(MPause, id); err != nil {
+		return fmt.Errorf("failed to pause mica client %s %w", id, err)
+	}
+	return nil
 }
 
 // TODO: mica may not support, we handle this via ped directly
 func Resume(id string) error {
-	if pedestal.GetHostPed() == pedestal.Xen {
-		return pedestal.Resume(id)
-	} else {
-		if err := micaCtl(MResume, id); err != nil {
-			return fmt.Errorf("failed to pause mica client %s %w", id, err)
-		}
-		return nil
+	if lm, ok := pedestal.Host.(pedestal.LifecycleManager); ok {
+		return lm.Resume(id)
 	}
+	if err := micaCtl(MResume, id); err != nil {
+		return fmt.Errorf("failed to pause mica client %s %w", id, err)
+	}
+	return nil
 }
 
 func Remove(id string) error {
@@ -473,16 +471,16 @@ func Status(id string, filter Filter) (*MicaStatus, error) {
 	return status, nil
 }
 
-// StatusToString converts MicaStatus back to string format for backward compatibility
-func StatusToString(status *MicaStatus) string {
+// statusToString converts MicaStatus back to string format for backward compatibility
+func statusToString(status *MicaStatus) string {
 	if status == nil {
 		return ""
 	}
 	return status.Raw
 }
 
-// FilterStatuses filters a list of statuses based on criteria
-func FilterStatuses(statuses []*MicaStatus, nameFilter string, stateFilter MicaState, serviceFilter MicaService) []*MicaStatus {
+// filterStatuses filters a list of statuses based on criteria
+func filterStatuses(statuses []*MicaStatus, nameFilter string, stateFilter MicaState, serviceFilter MicaService) []*MicaStatus {
 	var filtered []*MicaStatus
 
 	for _, status := range statuses {

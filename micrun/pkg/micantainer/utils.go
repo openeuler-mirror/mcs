@@ -186,7 +186,7 @@ func calculateSandboxMemory(s *Sandbox) uint64 {
 	return memorySandbox
 }
 
-func CpusetRangeValid(sortedCpuList []int) (bool, []int) {
+func cpusetRangeValid(sortedCpuList []int) (bool, []int) {
 	maxCpus := pedestal.HostCPUCounts().Physical
 	outrange := []int{}
 

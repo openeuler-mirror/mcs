@@ -10,7 +10,7 @@ var (
 )
 
 func init() {
-	HostPedType = ped.GetHostPed()
+	HostPedType = ped.Host.Type()
 	if HostPedType == ped.Unsupported {
 		log.Warnf("unsupported host ped type")
 	}

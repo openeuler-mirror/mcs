@@ -19,9 +19,9 @@ var (
 	DefaultMaxVCPUs uint32
 )
 
-// GetHostPed returns the host pedestal type with lazy initialization and caching
+// hostPed returns the host pedestal type with lazy initialization and caching
 // This is the preferred function for new code
-func GetHostPed() PedType {
+func hostPed() PedType {
 	hostPedOnce.Do(func() {
 		hostPedCache = computeHostPed()
 	})
@@ -104,7 +104,7 @@ const hpsupport = false
 
 // for xen, if ballooning driver was enable, hugepage is not supported
 func HugePageSupport(dynamicMem bool) bool {
-	if dynamicMem || GetHostPed() != Xen {
+	if dynamicMem || Host.Type() != Xen {
 		return false
 	}
 

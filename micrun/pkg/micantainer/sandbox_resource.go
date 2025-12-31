@@ -26,7 +26,7 @@ type SandboxResource struct {
 }
 
 // nolint:golint
-func NewResMgmt() *SandboxResource {
+func newResMgmt() *SandboxResource {
 	return &SandboxResource{
 		ContainerVcpus:   make(map[string][]int),
 		ContainerCpuSets: make(map[string]cpuset.CPUSet),

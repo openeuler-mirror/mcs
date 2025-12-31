@@ -23,7 +23,7 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
-var hostPed = pedestal.GetHostPed()
+var hostPed = pedestal.Host.Type()
 
 type annotationContainerType struct {
 	annotation    string
@@ -353,9 +353,9 @@ func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID 
 	staticResMngt := rc.StaticResourceManagement
 	hugePage := pedestal.HugePageSupport(staticResMngt)
 
-	// update container resource for openamp-based client is out of plan
+	// update container resource for baremetal-based client is out of plan
 
-	if pedestal.GetHostPed() == pedestal.OpenAMP {
+	if pedestal.Host.Type() == pedestal.Baremetal {
 		staticResMngt = true
 	}
 
@@ -364,7 +364,7 @@ func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID 
 		Hostname: ocispec.Hostname,
 		PedConfig: pedestal.PedestalConfig{
 			// Use host pedestal type and resolved pedestal config path from container config.
-			PedType:     pedestal.GetHostPed(),
+			PedType:     pedestal.Host.Type(),
 			PedConfig:   containerConfig.PedestalConf,
 			MiniVCPUNum: rc.MiniVCPUNum,
 		},
