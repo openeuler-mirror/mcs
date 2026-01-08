@@ -320,6 +320,12 @@ func copyUint32(v uint32) *uint32 {
 	return &val
 }
 
+// LoadSandbox restores a sandbox from disk by its ID.
+// Exported for use by shim package to restore sandbox on restart.
+func LoadSandbox(ctx context.Context, id string) (sandbox *Sandbox, err error) {
+	return loadSandbox(ctx, id)
+}
+
 // loadSandbox restores a sandbox from disk by its ID.
 func loadSandbox(ctx context.Context, id string) (sandbox *Sandbox, err error) {
 	if id == "" {

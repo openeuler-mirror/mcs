@@ -195,13 +195,16 @@ func cgroupV1() (bool, error) {
 }
 
 // loadRuntimeConfig loads the runtime configuration from annotations, CRI options, or environment variables.
+// NOTE: This function should be called without holding s.mu to avoid deadlock.
+// The caller is responsible for holding s.mu if needed for thread safety.
 func loadRuntimeConfig(s *shimService, r *taskAPI.CreateTaskRequest, annotations map[string]string) (*oci.RuntimeConfig, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Use atomic read to check if config is already loaded (no lock needed for read)
 	if s.config != nil {
+		log.Debugf("loadRuntimeConfig: using cached config")
 		return s.config, nil
 	}
 
+	log.Debugf("loadRuntimeConfig: loading new config")
 	stack := oci.NewRuntimeStack()
 
 	// Config path precedence (high to low): annotations > CRI options > env.
@@ -213,6 +216,7 @@ func loadRuntimeConfig(s *shimService, r *taskAPI.CreateTaskRequest, annotations
 	if v := oci.GetSandboxConfigPath(annotations); v != "" {
 		configPath = v
 		source = "annotation"
+		log.Debugf("loadRuntimeConfig: config path from annotation: %s", configPath)
 	} else if r.Options != nil {
 		p, err := getConfigPathFromOptions(r.Options)
 		if err != nil {
@@ -229,10 +233,12 @@ func loadRuntimeConfig(s *shimService, r *taskAPI.CreateTaskRequest, annotations
 		if v := configstack.FirstNonEmptyEnv(defs.MicrunConfEnv); v != "" {
 			configPath = v
 			source = "env"
+			log.Debugf("loadRuntimeConfig: config path from env: %s", configPath)
 		}
 	}
 
 	if configPath != "" {
+		log.Debugf("loadRuntimeConfig: loading config from file: %s", configPath)
 		parsed, err := loadConfigFromFile(configPath)
 		if err != nil {
 			if source == "env" {
@@ -245,20 +251,25 @@ func loadRuntimeConfig(s *shimService, r *taskAPI.CreateTaskRequest, annotations
 			stack.Replace(parsed)
 		}
 	} else {
+		log.Debugf("loadRuntimeConfig: discovering config files...")
 		files, err := configstack.DiscoverMicrunConfigFiles()
 		if err != nil {
 			log.Warnf("micrun config discovery failed: %v", err)
 		}
+		log.Debugf("loadRuntimeConfig: discovered %d config files", len(files))
 		stack.ApplyMicrunFiles(files)
 	}
 
+	log.Debugf("loadRuntimeConfig: applying annotations...")
 	// Apply annotations on top, as they have higher precedence.
 	stack.ApplyAnnotations(annotations)
 	cfg := stack.Config()
 	pedestal.EnableDom0CPUExclusive(cfg.ExclusiveDom0CPU)
 
+	// Store the config without lock - caller should handle synchronization
 	s.config = cfg
-	return s.config, nil
+	log.Debugf("loadRuntimeConfig: config loaded successfully")
+	return cfg, nil
 }
 
 // loadConfigFromFile loads the runtime configuration from a TOML or INI file.

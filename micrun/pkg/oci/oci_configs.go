@@ -87,6 +87,34 @@ func bundleRootfs(bundle string) string {
 	return filepath.Join(bundle, "rootfs")
 }
 
+// resolvePedestalPath resolves pedestal image path with precedence: annotation > runtime default.
+// Returns an absolute path if the file exists, otherwise returns the path as-is for later validation.
+func resolvePedestalPath(baseRootfs, annotationPedestal string) string {
+	var pedPath string
+
+	// Try annotation path first
+	if annotationPedestal != "" {
+		candidatePath := getBundleImageFile(baseRootfs, annotationPedestal)
+		if candidatePath != "" {
+			pedPath = candidatePath
+			log.Debugf("using pedestal from annotation: %s", pedPath)
+			return pedPath
+		}
+	}
+
+	// Fallback to default image name and try to find it in rootfs
+	defaultPath := getBundleImageFile(baseRootfs, defs.DefaultXenImg)
+	if defaultPath != "" {
+		pedPath = defaultPath
+		log.Debugf("using default pedestal path: %s", pedPath)
+		return pedPath
+	}
+
+	// Return the relative path as fallback - will be validated/used by micad
+	log.Debugf("pedestal file not found in rootfs, using relative path: %s", defs.DefaultXenImg)
+	return defs.DefaultXenImg
+}
+
 // extPedConfig extracts and validates pedestal configuration from annotations.
 // Returns pedestal type, config path, or error if validation fails.
 // This includes checking pedestal type compatibility and resolving Xen image paths.
@@ -100,29 +128,34 @@ func extPedConfig(getAnnotation func(string) (string, bool), baseRootfs, id stri
 		}
 	}
 
-	var pedconf string
+	var pedconfAnnotation string
 	if cfg, ok := getAnnotation(defs.PedestalConf); ok {
-		pedconf = cfg
-		log.Debugf("pedestal config path from annotation: %s", pedconf)
+		pedconfAnnotation = cfg
+		log.Debugf("pedestal config path from annotation: %s", pedconfAnnotation)
 	}
 
+	var pedconf string
 	if pedtype == pedestal.Xen {
-		// Resolve Xen pedestal image path with annotation > default fallback
-		pedconf = inBundlePath(baseRootfs, pedconf, defs.DefaultXenImg)
+		// Resolve Xen pedestal image path to absolute path
+		pedconf = resolvePedestalPath(baseRootfs, pedconfAnnotation)
 		log.Debugf("Resolved Xen pedestal config path: %s", pedconf)
+	} else {
+		pedconf = pedconfAnnotation
 	}
 
 	return pedtype, pedconf, nil
 }
 
 // getOSInfo extracts OS name from annotations.
+// Returns the OS from annotation, or defaults to defs.DefaultOS if not specified.
 func getOSInfo(getAnnotation func(string) (string, bool)) string {
 	var osName string
 	if osAnno, ok := getAnnotation(defs.OSAnnotation); ok {
 		osName = osAnno
 		log.Debugf("found OS annotation: %s", osName)
 	} else {
-		log.Warnf("unable to know the RTOS type ")
+		osName = defs.DefaultOS
+		log.Debugf("OS annotation not found, using default OS: %s", osName)
 	}
 	return osName
 }

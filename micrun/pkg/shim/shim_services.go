@@ -89,6 +89,7 @@ func New(ctx context.Context, id string, publisher shimv2.Publisher, shutdown fu
 		events:    make(chan any, channelSize),
 		ss:        shutdown,
 		monitor:   make(chan error),
+		containers: make(map[string]*shimContainer),
 	}
 
 	log.Debugf("starting service background goroutines exit listener")
@@ -99,8 +100,56 @@ func New(ctx context.Context, id string, publisher shimv2.Publisher, shutdown fu
 	forwarder := s.newEventsForwarder(ctx, publisher)
 	go forwarder.forward()
 
+	// Try to restore sandbox and containers if they exist
+	if err := s.restoreSandboxAndContainers(ctx); err != nil {
+		log.Debugf("no existing sandbox to restore: %v", err)
+		// This is expected for new containers, not an error
+	}
+
 	log.Debugf("completed successfully, returning shimService")
 	return s, nil
+}
+
+// restoreSandboxAndContainers restores the sandbox and containers from disk
+// if they exist from a previous shim invocation
+func (s *shimService) restoreSandboxAndContainers(ctx context.Context) error {
+	sandbox, err := cntr.LoadSandbox(ctx, s.id)
+	if err != nil {
+		return err
+	}
+
+	s.sandbox = sandbox
+
+	// Restore containers from the sandbox
+	containers := sandbox.GetAllContainers()
+	for _, c := range containers {
+		// Determine container type
+		var cType cntr.ContainerType
+		if c.GetAnnotations() != nil {
+			if _, isSandbox := c.GetAnnotations()["io.kubernetes.cri.sandbox-id"]; isSandbox {
+				cType = cntr.PodContainer
+			} else if c.GetAnnotations()["io.kubernetes.cri.container-type"] == "sandbox" {
+				cType = cntr.PodSandbox
+			} else {
+				cType = cntr.SingleContainer
+			}
+		} else {
+			cType = cntr.SingleContainer
+		}
+
+		sc := &shimContainer{
+			s:           s,
+			id:          c.ID(),
+			cType:       cType,
+			status:      task.Status_CREATED,
+			exitIOch:    make(chan struct{}),
+			stdinCloser: make(chan struct{}),
+		}
+		s.containers[c.ID()] = sc
+		log.Debugf("restored container %s (type: %v)", c.ID(), cType)
+	}
+
+	return nil
 }
 
 func newCommand(ctx context.Context, opts shimv2.StartOpts, cwd string) (*exec.Cmd, error) {
@@ -113,8 +162,9 @@ func newCommand(ctx context.Context, opts shimv2.StartOpts, cwd string) (*exec.C
 	var args []string
 	if opts.Debug {
 		args = append(args, "-debug")
-		args = append(args, "-id", opts.ID)
 	}
+	// Always add -id parameter, not just in debug mode
+	args = append(args, "-id", opts.ID)
 
 	// TTRPC_ADDRESS the address of containerd's ttrpc API socket
 	// GRPC_ADDRESS the address of containerd's grpc API socket (1.7+)
@@ -244,10 +294,12 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 		tipSchedCore()
 	}
 
+	log.Debugf("starting daemon shim process...")
 	if err := cmd.Start(); err != nil {
 		_ = sock.Close()
 		return "", fmt.Errorf("failed to start shim task service: %w", err)
 	}
+	log.Debugf("daemon shim process started with PID: %d", cmd.Process.Pid)
 
 	runtime.UnlockOSThread()
 
@@ -387,11 +439,9 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 	if err != nil {
 		return nil, err
 	}
-	// lock when updating shared state
-	s.mu.Lock()
+	// update shared state (already holding lock from function entry)
 	container.status = task.Status_CREATED
 	s.containers[r.ID] = container
-	s.mu.Unlock()
 
 	pid := container.pid
 	if pid <= 0 {
@@ -411,12 +461,14 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 		Pid:        pid,
 	})
 
+	log.Debugf("[CREATE] Container created (not started), returning PID=%d", pid)
 	return &taskAPI.CreateTaskResponse{
 		Pid: pid,
 	}, nil
 }
 
 func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
+	log.Debugf("[START METHOD] Start method called! Container ID: %s, Exec ID: %s", r.ID, r.ExecID)
 	log.Debugf("starting container %s", r.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()

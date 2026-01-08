@@ -591,8 +591,10 @@ func (s *Sandbox) setSandboxState(state StateString) error {
 func (s *Sandbox) StoreSandbox(ctx context.Context) error {
 	target, err := s.newSandboxStoragePath()
 	if err != nil {
+		log.Errorf("StoreSandbox: failed to get storage path: %v", err)
 		return err
 	}
+	log.Debugf("StoreSandbox: saving sandbox state to %s", target)
 
 	// Create serializable representation of sandbox
 	serializable := SandboxStorage{
@@ -617,8 +619,10 @@ func (s *Sandbox) StoreSandbox(ctx context.Context) error {
 	}
 
 	if err := utils.SaveStructToJSON(target, serializable); err != nil {
+		log.Errorf("StoreSandbox: failed to save to %s: %v", target, err)
 		return err
 	}
+	log.Debugf("StoreSandbox: successfully saved sandbox state to %s", target)
 	return nil
 }
 
@@ -627,11 +631,15 @@ func (s *Sandbox) sandboxStoragePath() string {
 }
 
 func (s *Sandbox) newSandboxStoragePath() (string, error) {
+	log.Debugf("newSandboxStoragePath: sandbox id=%s", s.id)
 	dir := s.sandboxStoragePath()
+	log.Debugf("newSandboxStoragePath: creating directory %s with mode %v", dir, defs.DirMode)
 	if err := os.MkdirAll(dir, defs.DirMode); err != nil {
+		log.Errorf("newSandboxStoragePath: failed to create directory %s: %v", dir, err)
 		return "", err
 	}
 	stateFile := filepath.Join(dir, defs.SandboxStateFile)
+	log.Debugf("newSandboxStoragePath: returning state file path %s", stateFile)
 	return stateFile, nil
 }
 

@@ -164,7 +164,18 @@ func SaveStructToJSON(file string, state any) error {
 		log.Pretty("err: %v, state: %v", err, state)
 		return fmt.Errorf("failed to serialize struct: %w", err)
 	}
-	return os.WriteFile(file, structBytes, defs.FileMode)
+	log.Debugf("SaveStructToJSON: writing %d bytes to %s", len(structBytes), file)
+	if err := os.WriteFile(file, structBytes, defs.FileMode); err != nil {
+		log.Errorf("SaveStructToJSON: failed to write to %s: %v", file, err)
+		return err
+	}
+	// Verify file was written
+	if _, err := os.Stat(file); err != nil {
+		log.Errorf("SaveStructToJSON: file %s not found after write: %v", file, err)
+		return fmt.Errorf("file not found after write: %w", err)
+	}
+	log.Debugf("SaveStructToJSON: successfully wrote %s", file)
+	return nil
 }
 
 func SetReadonly(path string) error {

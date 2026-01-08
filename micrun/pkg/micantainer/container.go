@@ -333,8 +333,25 @@ func (c *Container) ioStream(taskID string) (io.WriteCloser, io.Reader, io.Reade
 		return nil, nil, nil, err
 	}
 
+	// dialTTY now returns the SAME file descriptor for both stdin and stdout
+	// This prevents PTY buffer corruption from dual-fd contention
+	// stdin and stdout both point to the same os.File object
+	// Wrap stdout and stderr with noCloseFile to prevent double-close issues
+	// since stdin and stdout share the same underlying fd
 	// stdout/stderr are permanently merged for mica clients.
-	return stdin, stdout, stdout, nil
+	return stdin, &noCloseFile{stdout}, &noCloseFile{stdout}, nil
+}
+
+// noCloseFile wraps an os.File to prevent actual closure
+// When Close() is called, it does nothing, keeping the underlying file open
+type noCloseFile struct {
+	*os.File
+}
+
+func (f *noCloseFile) Close() error {
+	// Don't close the underlying TTY file descriptor
+	// This prevents the stdout copy goroutine from closing stdin's fd
+	return nil
 }
 
 func extractExitCode(err error) int {
@@ -799,12 +816,15 @@ func validOS(os string) bool {
 // validComponent checks if a component file is a regular file.
 func validComponent(component string) bool {
 	if !utils.IsRegular(component) {
+		log.Debugf("validComponent: %s is not a regular file", component)
 		return false
 	}
 
 	hostArch := runtime.GOARCH
+	log.Debugf("validComponent: checking %s on host arch %s", component, hostArch)
 
 	if match, _ := utils.IsELFForHost(component); match {
+		log.Debugf("validComponent: %s is a valid ELF for host", component)
 		return true
 	}
 
@@ -857,10 +877,15 @@ func (c *Container) validMicaContainer() bool {
 		return true
 	}
 
-	osValid := validOS(c.os())
-	fwValid := validFirmware(c.getFirmware())
+	os := c.os()
+	firmware := c.getFirmware()
+	log.Debugf("validMicaContainer: os=%q, firmware=%q", os, firmware)
+
+	osValid := validOS(os)
+	fwValid := validFirmware(firmware)
 	if HostPedType == ped.Xen {
 		binFile := validBinfile(c.getPedConf())
+		log.Debugf("validMicaContainer: pedConf=%q, binFile valid=%v", c.getPedConf(), binFile)
 		fwValid = binFile && fwValid
 	}
 	judge := osValid && fwValid
@@ -940,17 +965,20 @@ func (c *Container) checkState() StateString {
 // register client when container is missing and the container is not a infra container
 func (c *Container) ensureClientPresence() (StateString, error) {
 	state := c.checkState()
+	log.Debugf("ensureClientPresence: container %s state=%s shouldPresent=%v", c.id, state, c.shouldPresent())
 	if state != StateDown {
 		return state, nil
 	}
 
-	if c.shouldPresent() && !libmica.ClientNotExist(c.id) {
+	if c.shouldPresent() && libmica.ClientNotExist(c.id) {
+		log.Debugf("ensureClientPresence: registering client %s", c.id)
 		if err := c.registerClient(); err != nil {
 			return StateDown, err
 		}
 	}
 
 	state = c.checkState()
+	log.Debugf("ensureClientPresence: after registration, container %s state=%s", c.id, state)
 	if state == StateDown {
 		return StateDown, er.ContainerNotFound
 	}
@@ -966,15 +994,18 @@ func (c *Container) shouldPresent() bool {
 }
 
 func (c *Container) registerClient() error {
-
+	log.Debugf("registerClient: creating mica client conf for %s", c.id)
 	conf, err := createMicaClientConf(c)
 	if err != nil {
 		return err
 	}
 
+	log.Debugf("registerClient: calling libmica.Create for %s", c.id)
 	if err := libmica.Create(conf); err != nil {
+		log.Errorf("registerClient: libmica.Create failed: %v", err)
 		return err
 	}
+	log.Debugf("registerClient: libmica.Create succeeded for %s", c.id)
 
 	limit := c.config.memoryLimitMB()
 	initialMem := limit

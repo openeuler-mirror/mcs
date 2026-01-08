@@ -257,15 +257,9 @@ func (m *MicaClientConf) InitWithOpts(opts MicaClientConfCreateOptions) {
 	m.cpuCapacity = opts.CPUCapacity
 	m.memoryMB = opts.MemoryMB
 	m.iomem = [MaxConfigStrLen]byte{}
-	memInitThreshold := opts.MemoryThreshold
-	if memInitThreshold == 0 {
-		if opts.MemoryMB > 0 {
-			memInitThreshold = opts.MemoryMB * 2
-		} else {
-			memInitThreshold = fallbackMaxMemoryMB
-		}
-	}
-	m.memoryThresholdMB = memInitThreshold
+	// On ARM64, Xen requires maxmem == memory (no Populate-on-Demand support)
+	// So we set memoryThresholdMB equal to memoryMB to ensure maxmem == memory
+	m.memoryThresholdMB = m.memoryMB
 	if opts.IOMem != "" {
 		copy(m.iomem[:], opts.IOMem)
 	}

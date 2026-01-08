@@ -7,8 +7,8 @@ import "os"
 
 const (
 	MicaConfDir  = "/etc/mica"
-	MicaStateDir = "/tmp/mica"
-	DaemonRoot   = "/tmp"
+	MicaStateDir = "/run/mica"
+	DaemonRoot   = "/run"
 
 	DirMode  = os.FileMode(0700) | os.ModeDir
 	FileMode = os.FileMode(0644)

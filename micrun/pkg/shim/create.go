@@ -75,6 +75,7 @@ import (
 // if any step in the creation process fails. The function ensures proper cleanup of
 // partially created resources on error.
 func create(ctx context.Context, s *shimService, r *taskAPI.CreateTaskRequest) (*shimContainer, error) {
+	log.Debugf("create: id=%s bundle=%s rootfs_count=%d", r.ID, r.Bundle, len(r.Rootfs))
 
 	rootfs := cntr.RootFs{}
 	// the first of r.Rootfs is the bundle rootfs
@@ -86,22 +87,33 @@ func create(ctx context.Context, s *shimService, r *taskAPI.CreateTaskRequest) (
 	}
 
 	detach := r.Terminal
+	log.Debugf("create: loading OCI spec...")
 	ociSpec, bundlePath, err := loadSpec(r.ID, r.Bundle)
 
 	if err != nil {
+		log.Errorf("create: failed to load spec: %v", err)
 		return nil, err
 	}
 
+	log.Debugf("create: getting container type...")
 	containerType, err := oci.GetContainerType(ociSpec)
 	if err != nil {
+		log.Errorf("create: failed to get container type: %v", err)
 		return nil, err
 	}
 
 	disableOutput := detach && ociSpec.Process.Terminal
 	rootfsPath := filepath.Join(r.Bundle, "rootfs")
+	log.Debugf("create: loading runtime config...")
 	runtimeConfig, err := loadRuntimeConfig(s, r, ociSpec.Annotations)
+	if err != nil {
+		log.Errorf("create: failed to load runtime config: %v", err)
+		return nil, err
+	}
 
+	log.Debugf("create: calling setupContainer...")
 	if err := setupContainer(ctx, s, containerType, r, ociSpec, runtimeConfig, bundlePath, rootfsPath, disableOutput, &rootfs); err != nil {
+		log.Errorf("create: setupContainer failed: %v", err)
 		return nil, err
 	}
 
@@ -140,6 +152,7 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 	}
 
 	s.config = runtimeConfig
+	log.Debugf("createSandboxContainer: containerType=%v bundlePath=%s rootfsPath=%s", containerType, bundlePath, rootfsPath)
 
 	if containerType != cntr.PodSandbox {
 		log.Debug("rootfs mounted for single container, showing rootfs contents:")
@@ -147,6 +160,7 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 	}
 
 	if errC := mountRootfs(rootfsPath, r.Rootfs); errC != nil {
+		log.Errorf("failed to mount rootfs: %v", errC)
 		return errC
 	}
 	rootfs.Mounted = true
@@ -171,6 +185,22 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 	}
 
 	s.sandbox = sandbox
+
+	// Store sandbox state to disk for recovery on shim restart
+	// StoreSandbox is a method on *Sandbox, not on the SandboxTraits interface
+	log.Debugf("sandbox type: %T", sandbox)
+	if sb, ok := sandbox.(*cntr.Sandbox); ok {
+		log.Debugf("storing sandbox state for %s", sb.SandboxID())
+		if err := sb.StoreSandbox(ctx); err != nil {
+			log.Warnf("failed to store sandbox state: %v", err)
+			// Continue anyway, as the sandbox is created in memory
+		} else {
+			log.Debugf("sandbox state stored successfully")
+		}
+	} else {
+		log.Warnf("sandbox is not of type *cntr.Sandbox, cannot store state")
+	}
+
 	return nil
 }
 
@@ -249,8 +279,11 @@ func createSandbox(ctx context.Context, ocispec *specs.Spec,
 	runtimeConfig *oci.RuntimeConfig, rootfs cntr.RootFs,
 	containerId, bundle string, disableOutput bool) (_ cntr.SandboxTraits, err error) {
 
+	log.Debugf("createSandbox: containerId=%s bundle=%s rootfs.Mounted=%v", containerId, bundle, rootfs.Mounted)
+
 	sandboxConfig, err := oci.SandboxConfig(ocispec, *runtimeConfig, bundle, containerId, disableOutput)
 	if err != nil {
+		log.Errorf("createSandbox: failed to get sandbox config: %v", err)
 		return nil, err
 	}
 
