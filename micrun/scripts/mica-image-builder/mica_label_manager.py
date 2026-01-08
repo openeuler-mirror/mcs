@@ -11,7 +11,7 @@ from pathlib import Path
 class MicaLabelManager:
     def __init__(self, config_path="mica-labels.toml"):
         # Resolve default config relative to this file to be robust to CWD.
-        self.micran_annotation_prefix = "org.openeuler.micran"
+        self.micrun_annotation_prefix = "org.openeuler.micrun"
         self.runtime_label_prefix = "org.opencontainers.image"
         default_path = Path(__file__).absolute().parent / "mica-labels.toml"
         self.config_path = Path(config_path)
@@ -43,7 +43,7 @@ class MicaLabelManager:
             for key, value in pedestal_config.items():
                 rendered_value = self._render_template(value, kwargs)
                 if rendered_value is not None:
-                    annotations[f"{self.micran_annotation_prefix}.ped.{key}"] = rendered_value
+                    annotations[f"{self.micrun_annotation_prefix}.ped.{key}"] = rendered_value
 
         # Add OS-specific annotations (build-time metadata)
         if os_type and 'os' in self.labels_config and os_type in self.labels_config['os']:
@@ -51,20 +51,20 @@ class MicaLabelManager:
             for key, value in os_config.items():
                 rendered_value = self._render_template(value, kwargs)
                 if rendered_value is not None:
-                    annotations[f"{self.micran_annotation_prefix}.container.{key}"] = rendered_value
+                    annotations[f"{self.micrun_annotation_prefix}.container.{key}"] = rendered_value
 
         # Add compatibility annotations (build-time metadata)
         if os_type and 'compatibility' in self.labels_config and os_type in self.labels_config['compatibility']:
             for key, value in self.labels_config['compatibility'][os_type].items():
                 rendered_value = self._render_template(value, kwargs)
                 if rendered_value is not None:
-                    annotations[f"{self.micran_annotation_prefix}.compatibility.{key}"] = rendered_value
+                    annotations[f"{self.micrun_annotation_prefix}.compatibility.{key}"] = rendered_value
         elif 'default-compatibility' in self.labels_config:
             # Fallback to default compatibility if OS-specific doesn't exist
             for key, value in self.labels_config['default-compatibility'].items():
                 rendered_value = self._render_template(value, kwargs)
                 if rendered_value is not None:
-                    annotations[f"{self.micran_annotation_prefix}.compatibility.{key}"] = rendered_value
+                    annotations[f"{self.micrun_annotation_prefix}.compatibility.{key}"] = rendered_value
 
         # Add custom annotations from non-default sections (excluding default- sections)
         for section_name, section_config in self.labels_config.items():
@@ -73,13 +73,13 @@ class MicaLabelManager:
                 for key, value in section_config.items():
                     rendered_value = self._render_template(value, kwargs)
                     if rendered_value is not None:
-                        annotations[f"{self.micran_annotation_prefix}.{section_name}.{key}"] = rendered_value
+                        annotations[f"{self.micrun_annotation_prefix}.{section_name}.{key}"] = rendered_value
 
-        # Ensure critical MicRan annotations are always present
+        # Ensure critical MicRun annotations are always present
         if pedestal:
-            annotations[f"{self.micran_annotation_prefix}.ped.pedestal"] = pedestal
+            annotations[f"{self.micrun_annotation_prefix}.ped.pedestal"] = pedestal
         if os_type:
-            annotations[f"{self.micran_annotation_prefix}.container.os"] = os_type
+            annotations[f"{self.micrun_annotation_prefix}.container.os"] = os_type
 
         return labels, annotations
 

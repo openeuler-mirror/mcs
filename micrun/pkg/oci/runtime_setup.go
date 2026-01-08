@@ -102,7 +102,7 @@ func NewRuntimeConfig() *RuntimeConfig {
 }
 
 // ini conf
-// TODO: with expanding of micran runtime config, we will migrate gookit.ini/v2 to
+// TODO: with expanding of micrun runtime config, we will migrate gookit.ini/v2 to
 // out ParseConfigINI, ParseConfigINI requires only half memory of ini package and faster
 // for large ini file parsing
 func (r *RuntimeConfig) ParseRuntimeFromINI(configPath string) error {
@@ -329,12 +329,12 @@ func LoadSpec(bundle string) (specs.Spec, error) {
 // 2MB < cfgmem <
 func memoryOutOfRange(cfgmem uint32) bool {
 	if cfgmem > thredsholdMemHigh {
-		log.Debugf("configurated micran memory out of range, set to %dMB by default", thredsholdMemHigh)
+		log.Debugf("configurated micrun memory out of range, set to %dMB by default", thredsholdMemHigh)
 		return true
 	}
 
 	if cfgmem < thredsholdMemLow {
-		log.Debugf("configurated micran memory out of range, set to %dMB by default", thredsholdMemLow)
+		log.Debugf("configurated micrun memory out of range, set to %dMB by default", thredsholdMemLow)
 		return true
 	}
 

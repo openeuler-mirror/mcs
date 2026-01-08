@@ -79,7 +79,7 @@ func createMicaClientConf(container *Container) (libmica.MicaClientConf, error) 
 //
 // 如果启用了 shared_cpu_pool:
 // sandbox 内的 所有容器都只能运行在这个 cpu pool 的pcpu上。
-// 目前这是一个仅在 MicRan 中保留的概念，未来**或许**我们会完成对pedestal
+// 目前这是一个仅在 MicRun 中保留的概念，未来**或许**我们会完成对pedestal
 // cpu pool 的实际操控, 那么sandbox 为容器workload 申请的 vcpu number = Size(cpuSetUnion)
 // 并且这个 sandbox 管理 cpupool 的点子未必合适，因为机器上可能有多个sandbox, sandbox 管理的 cpuppol 的范围有可能重合，比如
 // sandbox1: (0,1,2,) sandbox2: (1,2,3) 这种情况

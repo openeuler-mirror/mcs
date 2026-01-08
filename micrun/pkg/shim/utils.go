@@ -162,10 +162,10 @@ func cleanupContainer(ctx context.Context, sandboxID, containerID, bundle string
 	return nil
 }
 
-// setupStateDir ensures the state directory for micran exists.
+// setupStateDir ensures the state directory for micrun exists.
 func setupStateDir() error {
 	if err := os.MkdirAll(defs.MicrunStateDir, 0755); err != nil {
-		return fmt.Errorf("failed to create micran state directory: %w", err)
+		return fmt.Errorf("failed to create micrun state directory: %w", err)
 	}
 	return nil
 }

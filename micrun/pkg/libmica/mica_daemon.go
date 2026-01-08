@@ -55,7 +55,7 @@ func micadDetect() (int, error) {
 }
 
 // TODO: when to check?
-// return nil => failed to setup, no need to run micran
+// return nil => failed to setup, no need to run micrun
 // return state => daemon state
 func DaemonState() (*MicaDaemonState, error) {
 	log.Info("DaemonState() called")

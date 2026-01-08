@@ -62,7 +62,7 @@ var (
 	MicadOpFailed   = new(micadFailed, "mica operation failed")
 	MicadNotRunning = new(micadAbnormal, "mica daemon is not running")
 	MicaSocketDown  = new(micadAbnormal, "mica-create socket is not alive")
-	NotSupported    = new(notSupported, "micran or mica does not support this")
+	NotSupported    = new(notSupported, "micrun or mica does not support this")
 	InvalidSignal   = new(invalid, "invalid signal for client os")
 )
 
@@ -76,6 +76,6 @@ var (
 // Warnings
 
 var (
-	FlexibleTaskUnsupported = new(micadFailed, "micran does not support exec task, task are immutable inside client os")
+	FlexibleTaskUnsupported = new(micadFailed, "micrun does not support exec task, task are immutable inside client os")
 	ContainerVCPUNotPined   = new(micadFailed, "container's vcpus are not pinned")
 )

@@ -16,7 +16,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const debugFileName = "/tmp/micran/runtime.log"
+const debugFileName = "/tmp/micrun/runtime.log"
 
 var (
 	Log = logrus.New()

@@ -181,7 +181,7 @@ func SetReadonly(path string) error {
 	})
 }
 
-// removeExternalStatFile removes state file in micran state directory
+// removeExternalStatFile removes state file in micrun state directory
 func removeExternalStatFile(id string) error {
 	// if the file does not exist, return nil
 	path := filepath.Join(defs.MicrunStateDir, id, defs.MicrunContainerStateFile)

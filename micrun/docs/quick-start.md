@@ -172,14 +172,14 @@ kubelet --cpu-manager-policy=static
 ```shell
 # 注意，在 nerdctl 中 '--label' 选项不是 docker 中的 "Label"，它是 "Annotation"
 # 因此 -l 选项将注解传递给容器 oci 配置
-nerdctl run -d --runtime io.containerd.mica.v2 -l org.openeuler.micran.auto_disconnect=true <image>
+nerdctl run -d --runtime io.containerd.mica.v2 -l org.openeuler.micrun.auto_disconnect=true <image>
 nerdctl update --memory 1024m  <container_id>
 ```
 
 使用 ctr (`containerd-ctr` 测试工具, 用于开发者)
 
 ```shell
-ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micran.auto_disconnect=true <image> <container_id>
+ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.auto_disconnect=true <image> <container_id>
 ctr task start <container_id> # 会进入容器shell, 确认到 RTOS 被拉起了
 ctr task kill <container_id>
 ctr task del <container_id>

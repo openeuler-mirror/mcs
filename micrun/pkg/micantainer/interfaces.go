@@ -53,7 +53,7 @@ type SandboxTraits interface {
 	StatsContainer(ctx context.Context, id string) (ContainerStats, error)
 	IOStream(containerID, taskID string) (io.WriteCloser, io.Reader, io.Reader, error)
 	// Not supported well
-	// TODO: aftet unified micran and micad, we can achive sending signals to RTOS clients
+	// TODO: aftet unified micrun and micad, we can achive sending signals to RTOS clients
 	PauseContainer(ctx context.Context, id string) error
 	ResumeContainer(ctx context.Context, id string) error
 	UpdateContainer(ctx context.Context, id string, resources specs.LinuxResources) error

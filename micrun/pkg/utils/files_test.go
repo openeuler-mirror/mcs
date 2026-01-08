@@ -66,7 +66,7 @@ type MockSandboxStorage struct {
 
 func TestRestoreStructFromFile(t *testing.T) {
 	// Create a temporary directory for test files
-	tempDir, err := os.MkdirTemp("", "micran_test")
+	tempDir, err := os.MkdirTemp("", "micrun_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempDir)
 
@@ -156,7 +156,7 @@ func TestRestoreStructFromFile(t *testing.T) {
 }
 
 func TestSaveAndRestoreIntegration(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "micran_integration_test")
+	tempDir, err := os.MkdirTemp("", "micrun_integration_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempDir)
 
@@ -207,7 +207,7 @@ func TestSaveAndRestoreIntegration(t *testing.T) {
 }
 
 func TestStoreAndRestoreMockSandboxState(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "micran_mock_sandbox_test")
+	tempDir, err := os.MkdirTemp("", "micrun_mock_sandbox_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempDir)
 
@@ -237,7 +237,7 @@ func TestStoreAndRestoreMockSandboxState(t *testing.T) {
 }
 
 func TestStoreAndRestoreMockContainerState(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "micran_mock_container_test")
+	tempDir, err := os.MkdirTemp("", "micrun_mock_container_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempDir)
 
@@ -269,7 +269,7 @@ func TestStoreAndRestoreMockContainerState(t *testing.T) {
 }
 
 func TestStoreAndRestoreMockSandboxStorage(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "micran_mock_sandbox_storage_test")
+	tempDir, err := os.MkdirTemp("", "micrun_mock_sandbox_storage_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempDir)
 

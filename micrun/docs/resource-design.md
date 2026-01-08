@@ -264,7 +264,7 @@ spec:
         memory: "1Gi"    # 可通过 kubectl patch 热更新
 ```
 
-kubelet 将 PodSpec 中的 `requested cpu`、`limited memory`、`limited cpu` 传给下游，`requested memory` 不会被填充，这是由 k8s 来监控的。因此 **micran 必须要能够准确反馈内存资源信息给 k8s**。
+kubelet 将 PodSpec 中的 `requested cpu`、`limited memory`、`limited cpu` 传给下游，`requested memory` 不会被填充，这是由 k8s 来监控的。因此 **micrun 必须要能够准确反馈内存资源信息给 k8s**。
 
 ### 3.2 资源计算
 
@@ -469,7 +469,7 @@ type LinuxMemory struct {
 | `hugepage_limits` | nil | **暂时忽略** (未来可扩展) | **暂时忽略** | 忽略 |
 | `unified` (cgroup v2) | nil | **完全忽略** (不适用) | **完全忽略** (不适用) | 忽略 |
 
-## 9. LinuxContainerResources 到 Micran 资源映射完整对照表
+## 9. LinuxContainerResources 到 MicRun 资源映射完整对照表
 
 ### 9.1 CPU 资源转换
 
@@ -663,11 +663,11 @@ func convertMemoryResourcesBaremetal(res *LinuxContainerResources) BaremetalMemo
 
 ## 10. 资源管理器实现
 
-## 11. Micran 资源映射实现细节
+## 11. MicRun 资源映射实现细节
 
 ### 11.1 核心映射关系
 
-| Linux cgroup 参数 | Micran 映射目标 | 转换规则 |
+| Linux cgroup 参数 | MicRun 映射目标 | 转换规则 |
 |------------------|----------------|----------|
 | `cpu.shares` | `CPUWeight` | Xen: `W(S) = max(1, min(⌊S/R⌋, 65535)); R=4`<br>其他: 直接使用 `cpu.shares` 值 |
 | `cpu.quota`/`cpu.period` | `CpuCpacity` (百分比容量) | `capacity = (quota × 100) / period` |
@@ -675,7 +675,7 @@ func convertMemoryResourcesBaremetal(res *LinuxContainerResources) BaremetalMemo
 
 ### 11.2 cpuset 对 CPU 容量的影响
 
-Micran 遵循与 `runc` 相同的语义：**最终生效的 CPU 算力受 cpuset 和 quota/period 的双重约束**。
+MicRun 遵循与 `runc` 相同的语义：**最终生效的 CPU 算力受 cpuset 和 quota/period 的双重约束**。
 
 计算公式：
 ```
@@ -736,7 +736,7 @@ func linuxResourceToEssential(spec *specs.Spec, convertShares bool) *EssentialRe
 
 ### 11.5 与 runc 的语义对齐
 
-通过上述实现，Micran 实现了与 `runc` 相同的资源限制语义：
+通过上述实现，MicRun 实现了与 `runc` 相同的资源限制语义：
 - **cpuset**：作为物理天花板，限制容器可用的 CPU 核心数
 - **quota/period**：作为逻辑上限，限制容器可使用的 CPU 时间片
 - **最终限制**：取两者的最小值，确保配置的物理可实现性

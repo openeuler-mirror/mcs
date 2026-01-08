@@ -1067,7 +1067,7 @@ func (c *Container) SaveState() error {
 		log.Warnf("Failed to ensure bundle directory: %v.", err)
 	}
 	if err := utils.EnsureDir(filepath.Dir(stateInMicrunDir), defs.DirMode); err != nil {
-		log.Warnf("Failed to ensure micran state directory: %v.", err)
+		log.Warnf("Failed to ensure micrun state directory: %v.", err)
 	}
 
 	if err = utils.SaveStructToJSON(stateInBundle, serializable); err != nil {

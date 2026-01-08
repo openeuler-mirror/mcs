@@ -3,7 +3,7 @@ package defs
 // TODO: Migrate annotations.go to package annotations
 // OCI and runtime annotations.
 const (
-	// MicrunAnnotationPrefix is the prefix for all micran-specific annotations.
+	// MicrunAnnotationPrefix is the prefix for all micrun-specific annotations.
 	MicrunAnnotationPrefix = "org.openeuler.micrun." // For runtime-level configuration.
 	// PedPrefix is the prefix for pedestal-related configurations.
 	PedPrefix = MicrunAnnotationPrefix + "ped."
@@ -28,7 +28,7 @@ const (
 )
 
 // Configuration for mica clients, passed to the sandbox container.
-// NOTICE: Micad is shared for all micrans, which means that micad can not be configured differently.
+// NOTICE: Micad is shared for all micruntimes, which means that micad can not be configured differently.
 // Hence the freedom degree is limited.
 // TODO: An idea, support dynamic configuration loader module for micad.
 const (
