@@ -1,223 +1,390 @@
-//go:build !debug
-// +build !debug
-
 package log
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-	"time"
+	"sync"
 
 	"github.com/sirupsen/logrus"
 )
 
-const debugFileName = "/var/log/mica/mica-runtime.log"
+const (
+	// DefaultConfigPath is the default path for micrun configuration file
+	DefaultConfigPath = "/etc/micrun/config.json"
 
-var (
-	Log = logrus.New()
+	// DefaultLogFile is the default log file path for debug builds
+	DefaultLogFile = "/var/log/mica/mica-runtime.log"
+
+	// IDKey is the field key for container ID in log entries
+	// Using "id" to match containerd log format
+	IDKey = "id"
+
+	// NamespaceKey is the field key for namespace in log entries
+	NamespaceKey = "namespace"
 )
 
-// Set the default configuration for systemd compatibility.
+var (
+	// Log is the global logger instance
+	Log *logrus.Logger
+
+	// currentContainerID stores the container ID for the current context
+	currentContainerID string
+	containerIDMutex   sync.RWMutex
+
+	// currentNamespace stores the namespace for the current context
+	currentNamespace string
+	namespaceMutex   sync.RWMutex
+
+	currentConfig      *Config
+	currentConfigMutex sync.RWMutex
+)
+
 func init() {
-	Log.SetOutput(os.Stderr)
-	Log.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp:   true,
-		TimestampFormat: "01-02 15:04:05",
-	})
+	Log = logrus.New()
+	Log.SetOutput(io.Discard) // Initially discard, will be set during initialization
 }
 
 // Config represents the logger configuration.
 type Config struct {
-	// Level is the minimum log level.
-	Level string
-	// Format is the log format (text or json).
-	Format string
-	// Output is the log output file path. If empty, use stderr.
-	Output string
-	// Debug enables debug mode.
-	Debug bool
+	Log LogConfig `json:"log"`
 }
 
-func Init(config *Config) error {
-	if config == nil {
-		return nil
+// LogConfig holds logging specific configuration.
+type LogConfig struct {
+	// Level is the minimum log level (debug, info, warn, error).
+	// Default: info
+	Level string `json:"level,omitempty"`
+
+	// File is the log file path for debug builds.
+	// Default: /var/log/mica/mica-runtime.log
+	File string `json:"file,omitempty"`
+
+	// Color enables colored output for debug file logs.
+	// Default: false
+	Color bool `json:"color,omitempty"`
+
+	// Caller enables caller information (file:line func) in debug file logs.
+	// Default: true
+	Caller bool `json:"caller,omitempty"`
+}
+
+// DefaultConfig returns a default configuration.
+func DefaultConfig() *Config {
+	return &Config{
+		Log: LogConfig{
+			Level:  "info",
+			File:   DefaultLogFile,
+			Color:  false,
+			Caller: true,
+		},
+	}
+}
+
+// LoadConfig loads the configuration from the specified file.
+// If the file does not exist or cannot be read, returns default config.
+func LoadConfig(configPath string) (*Config, error) {
+	cfg := DefaultConfig()
+
+	if configPath == "" {
+		configPath = DefaultConfigPath
 	}
 
-	if config.Level != "" {
-		level, err := logrus.ParseLevel(config.Level)
-		if err != nil {
-			return err
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Config file doesn't exist, use defaults
+			return cfg, nil
 		}
-		Log.SetLevel(level)
+		return nil, fmt.Errorf("failed to read config file %s: %w", configPath, err)
 	}
 
-	switch config.Format {
-	case "json":
-		Log.SetFormatter(&logrus.JSONFormatter{})
-	case "text", "":
-		Log.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "01-02 15:04:05",
-		})
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file %s: %w", configPath, err)
 	}
 
-	if config.Output != "" {
-		file, err := os.OpenFile(config.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// Set defaults for empty fields
+	if cfg.Log.Level == "" {
+		cfg.Log.Level = "info"
+	}
+	if cfg.Log.File == "" {
+		cfg.Log.File = DefaultLogFile
+	}
+
+	return cfg, nil
+}
+
+// Initialize initializes the logger with the given configuration.
+// If cfg is nil, attempts to load from default config path.
+func Initialize(cfg *Config) error {
+	if cfg == nil {
+		var err error
+		cfg, err = LoadConfig("")
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to load config: %w", err)
 		}
-		Log.SetOutput(file)
 	}
 
-	if config.Debug {
-		Log.SetLevel(logrus.DebugLevel)
-		Log.SetReportCaller(true)
-		Log.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "01-02 15:04:05",
-			CallerPrettyfier: func(f *runtime.Frame) (string, string) {
-				_, file, _, _ := runtime.Caller(0)
-				prefix := filepath.Dir(file) + "/"
-				function := strings.TrimPrefix(f.Function, prefix) + "()"
-				fileLine := strings.TrimPrefix(f.File, prefix) + ":" + strconv.Itoa(f.Line)
-				return function, fileLine
-			},
-		})
+	currentConfigMutex.Lock()
+	currentConfig = cfg
+	currentConfigMutex.Unlock()
+
+	return initializeLogger(cfg)
+}
+
+// initializeLogger performs the actual logger initialization.
+func initializeLogger(cfg *Config) error {
+	// Parse log level
+	level, err := logrus.ParseLevel(cfg.Log.Level)
+	if err != nil {
+		return fmt.Errorf("invalid log level %q: %w", cfg.Log.Level, err)
+	}
+	Log.SetLevel(level)
+
+	// Set up formatters and outputs
+	return setupOutput(cfg)
+}
+
+// setupOutput sets up the output and formatter based on build type.
+// This function is implemented differently in logger_release.go and logger_debug.go.
+func setupOutput(cfg *Config) error {
+	// Implementation in platform-specific files
+	return setupOutputImpl(cfg)
+}
+
+// SilenceOutput redirects all log output to io.Discard.
+// Useful for bootstrap phase where any output corrupts the handshake.
+func SilenceOutput() {
+	Log.SetOutput(io.Discard)
+}
+
+// RestoreOutput restores log output after silence mode.
+func RestoreOutput() error {
+	currentConfigMutex.RLock()
+	cfg := currentConfig
+	currentConfigMutex.RUnlock()
+
+	if cfg == nil {
+		// Fallback to default config
+		cfg = DefaultConfig()
 	}
 
-	return nil
+	return setupOutput(cfg)
 }
 
-func WithField(key string, value interface{}) *logrus.Entry {
-	return Log.WithField(key, value)
+// SetContainerID sets the container ID for log context.
+func SetContainerID(id string) {
+	containerIDMutex.Lock()
+	currentContainerID = id
+	containerIDMutex.Unlock()
 }
 
+// GetContainerID returns the current container ID.
+func GetContainerID() string {
+	containerIDMutex.RLock()
+	defer containerIDMutex.RUnlock()
+	return currentContainerID
+}
+
+// SetNamespace sets the namespace for log context.
+func SetNamespace(ns string) {
+	namespaceMutex.Lock()
+	currentNamespace = ns
+	namespaceMutex.Unlock()
+}
+
+// GetNamespace returns the current namespace.
+func GetNamespace() string {
+	namespaceMutex.RLock()
+	defer namespaceMutex.RUnlock()
+	return currentNamespace
+}
+
+// GetDefaultNamespace returns the default namespace from environment or "default".
+func GetDefaultNamespace() string {
+	// Check CONTAINERD_NAMESPACE environment variable first
+	// This is set by containerd when launching the shim
+	if ns := os.Getenv("CONTAINERD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	// Fallback to "default" namespace
+	return "default"
+}
+
+// ensureLogDirectory creates the log directory if it doesn't exist.
+func ensureLogDirectory(filePath string) error {
+	dir := filepath.Dir(filePath)
+	return os.MkdirAll(dir, 0755)
+}
+
+// WithField adds a single field to the log entry.
+func WithField(key string, value any) *logrus.Entry {
+	entry := Log.WithField(key, value)
+	addContainerIDIfNeeded(entry)
+	return entry
+}
+
+// WithFields adds multiple fields to the log entry.
 func WithFields(fields logrus.Fields) *logrus.Entry {
-	return Log.WithFields(fields)
+	entry := Log.WithFields(fields)
+	addContainerIDIfNeeded(entry)
+	return entry
 }
 
+// WithError adds an error field to the log entry.
 func WithError(err error) *logrus.Entry {
-	return Log.WithError(err)
+	entry := Log.WithError(err)
+	addContainerIDIfNeeded(entry)
+	return entry
 }
 
-func Debug(args ...interface{}) {
+// addContainerIDIfNeeded adds container ID and namespace to entry if not already present.
+func addContainerIDIfNeeded(entry *logrus.Entry) {
+	containerIDMutex.RLock()
+	id := currentContainerID
+	containerIDMutex.RUnlock()
+
+	namespaceMutex.RLock()
+	ns := currentNamespace
+	namespaceMutex.RUnlock()
+
+	// Add namespace if not already present
+	if ns != "" && entry.Data[NamespaceKey] == nil {
+		entry.Data[NamespaceKey] = ns
+	}
+
+	// Add id if not already present
+	if id != "" && entry.Data[IDKey] == nil {
+		entry.Data[IDKey] = id
+	}
+}
+
+// addContainerIDToLogger returns a log entry with id and namespace if set.
+// Note: This should NOT be used for direct logging as it loses caller information.
+// Use the contextHook in logger_debug.go instead.
+func addContainerIDToLogger() *logrus.Entry {
+	containerIDMutex.RLock()
+	id := currentContainerID
+	containerIDMutex.RUnlock()
+
+	namespaceMutex.RLock()
+	ns := currentNamespace
+	namespaceMutex.RUnlock()
+
+	entry := logrus.NewEntry(Log)
+	if ns != "" {
+		entry = entry.WithField(NamespaceKey, ns)
+	}
+	if id != "" {
+		entry = entry.WithField(IDKey, id)
+	}
+	return entry
+}
+
+// Debug logs a message at debug level.
+func Debug(args ...any) {
 	Log.Debug(args...)
 }
 
-func Debugf(format string, args ...interface{}) {
-	prefix := getDebugInfoPrefix()
-	Log.Debugf(prefix+format+"\n", args...)
-}
-
-func Info(args ...interface{}) {
+// Info logs a message at info level.
+func Info(args ...any) {
 	Log.Info(args...)
 }
 
-func Warn(args ...interface{}) {
+// Warn logs a message at warning level.
+func Warn(args ...any) {
 	Log.Warn(args...)
 }
 
-func Error(args ...interface{}) {
+// Error logs a message at error level.
+func Error(args ...any) {
 	Log.Error(args...)
 }
 
-func Fatal(args ...interface{}) {
+// Fatal logs a message at fatal level and exits.
+func Fatal(args ...any) {
 	Log.Fatal(args...)
 }
 
-func Panic(args ...interface{}) {
+// Panic logs a message at panic level and panics.
+func Panic(args ...any) {
 	Log.Panic(args...)
 }
 
-// func locatedebugf(format string, args ...interface{}) {
-// 	prefix := getdebuginfoprefix()
-// 	debugf(prefix+format+"\n", args...)
-// }
+// DebugLevel logs a message at debug level (alias for Debug).
+func DebugLevel(args ...any) {
+	Log.Debug(args...)
+}
 
-func Infof(format string, args ...interface{}) {
+// InfoLevel logs a message at info level (alias for Info).
+func InfoLevel(args ...any) {
+	Log.Info(args...)
+}
+
+// WarnLevel logs a message at warning level (alias for Warn).
+func WarnLevel(args ...any) {
+	Log.Warn(args...)
+}
+
+// ErrorLevel logs a message at error level (alias for Error).
+func ErrorLevel(args ...any) {
+	Log.Error(args...)
+}
+
+// DebugLevelf logs a formatted message at debug level (alias for Debugf).
+func DebugLevelf(format string, args ...any) {
+	Log.Debugf(format, args...)
+}
+
+// InfoLevelf logs a formatted message at info level (alias for Infof).
+func InfoLevelf(format string, args ...any) {
 	Log.Infof(format, args...)
 }
 
-func Warnf(format string, args ...interface{}) {
+// WarnLevelf logs a formatted message at warning level (alias for Warnf).
+func WarnLevelf(format string, args ...any) {
 	Log.Warnf(format, args...)
 }
 
-func Errorf(format string, args ...interface{}) {
+// ErrorLevelf logs a formatted message at error level (alias for Errorf).
+func ErrorLevelf(format string, args ...any) {
 	Log.Errorf(format, args...)
 }
 
-func Fatalf(format string, args ...interface{}) {
+// Debugf logs a formatted message at debug level.
+func Debugf(format string, args ...any) {
+	Log.Debugf(format, args...)
+}
+
+// Infof logs a formatted message at info level.
+func Infof(format string, args ...any) {
+	Log.Infof(format, args...)
+}
+
+// Warnf logs a formatted message at warning level.
+func Warnf(format string, args ...any) {
+	Log.Warnf(format, args...)
+}
+
+// Errorf logs a formatted message at error level.
+func Errorf(format string, args ...any) {
+	Log.Errorf(format, args...)
+}
+
+// Fatalf logs a formatted message at fatal level and exits.
+func Fatalf(format string, args ...any) {
 	Log.Fatalf(format, args...)
 }
 
-func Panicf(format string, args ...interface{}) {
+// Panicf logs a formatted message at panic level and panics.
+func Panicf(format string, args ...any) {
 	Log.Panicf(format, args...)
 }
 
-// FatalWithCleanup logs a fatal error and executes a cleanup function before exiting.
-func FatalWithCleanup(cleanup func(), args ...interface{}) {
-	if cleanup != nil {
-		cleanup()
-	}
-	Log.Fatal(args...)
-}
-
-// BUG: facing multiinstance issue, there will be an conflict when cleaning debug file
-// solution:
-// create debug file with suffix <containerID>;
-// we need to parse ID in task service
-func CleanDebugFile() error {
-	f, err := os.OpenFile(debugFileName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	_, err = fmt.Fprintf(f, "\n\n%s", timestamp)
-	return err
-}
-
-// getDebugInfoPrefix gets the prefix for debug information.
-// This is used for debug points that need to be traced.
-func getDebugInfoPrefix() string {
-	var prefix = ""
-	pcParent, _, _, ok := runtime.Caller(3)
-	if ok {
-		fullFuncName := runtime.FuncForPC(pcParent).Name()
-		funcName := filepath.Base(fullFuncName)
-		prefix += fmt.Sprintf("%s-> ", funcName)
-	}
-	pc, _, _, ok := runtime.Caller(2)
-	if ok {
-		var caller string
-		fullFuncName := runtime.FuncForPC(pc).Name()
-		file, line := runtime.FuncForPC(pc).FileLine(pc)
-		file = filepath.Base(file)
-		caller = fullFuncName
-		caller = "\033[32m" + caller + "\033[0m"
-		prefix += fmt.Sprintf("[\033[33m%s:%d\033[0m] %s \n\t", file, line, caller)
-	}
-	return prefix
-}
-
-// FDebugf writes a debug message to the debug file.
-func FDebugf(format string, args ...interface{}) error {
-	f, err := os.OpenFile(debugFileName, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	prefix := getDebugInfoPrefix()
-	_, err = fmt.Fprintf(f, prefix+format+"\n", args...)
-	return err
-}
-
-func Pretty(format string, args ...interface{}) {
-	Debugf(format, args...)
+// Pretty logs a formatted message at debug level (alias for Debugf).
+// This function exists for backward compatibility.
+func Pretty(format string, args ...any) {
+	Log.Debugf(format, args...)
 }
