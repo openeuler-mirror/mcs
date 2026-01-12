@@ -99,14 +99,25 @@ func waitContainerExit(ctx context.Context, s *shimService, c *shimContainer) (i
 		ptyAutoClose = true
 	}
 
-	// TODO: keep this line until mica RTOS notifier finished
-	ptyAutoClose = true
+	// For containers with long auto_disconnect_timeout (> 60s), disable auto-close
+	// This allows containers to keep running for multiple attach sessions
+	if timeoutSet && ptyTimeout > 60*time.Second {
+		ptyAutoClose = false
+		log.Infof("[TIMEOUT] Long timeout detected (%v), disabling auto-close for container %s", ptyTimeout, c.id)
+	} else if !ptyAutoCloseSet {
+		// TODO: keep this line until mica RTOS notifier finished
+		// Only force auto-close if it wasn't explicitly set
+		ptyAutoClose = true
+	}
 
 	autoClose := ptyAutoClose && !c.cType.IsCriSandbox()
 	var timer *time.Timer
 	if autoClose {
 		timer = time.NewTimer(ptyTimeout)
 		defer timer.Stop()
+		log.Debugf("[TIMEOUT] Auto-close enabled: id=%s timeout=%v", c.id, ptyTimeout)
+	} else {
+		log.Debugf("[TIMEOUT] Auto-close disabled: id=%s", c.id)
 	}
 
 	if autoClose && timer != nil {
