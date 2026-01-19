@@ -406,6 +406,8 @@ static int init_mica_client(struct mica_client *client, struct create_msg msg)
 		client->ped = JAILHOUSE;
 	else if (strcmp(msg.ped, "xen") == 0)
 		client->ped = XEN;
+	else if (strcmp(msg.ped, "hetero") == 0)
+		client->ped = HETERO;
 	else
 		client->ped = BARE_METAL;
 
