@@ -37,22 +37,52 @@
 #define CPU_ON_FUNCID		0xC4000003
 #define AFFINITY_INFO_FUNCID	0xC4000004
 
+/* MCS KM ioctl command */
 #define MAGIC_NUMBER		'A'
 #define IOC_SENDIPI		_IOW(MAGIC_NUMBER, 0, int)
-#define IOC_CPUON		_IOW(MAGIC_NUMBER, 1, int)
+#define IOC_XPUON		_IOW(MAGIC_NUMBER, 1, int)
 #define IOC_AFFINITY_INFO	_IOW(MAGIC_NUMBER, 2, int)
 #define IOC_QUERY_MEM		_IOW(MAGIC_NUMBER, 3, int)
 #define IOC_GET_COPY_MSG_MEM    _IOWR(MAGIC_NUMBER, 4, struct core_msg_mem_info)
-#define IOC_MAXNR		4
+#define IOC_SET_PED_TYPE		_IOW(MAGIC_NUMBER, 5, int)
+#define IOC_MAXNR		5
 #define IPI_MCS			8
 #define RPROC_MEM_MAX		4
 
+/* SHM size */
 #define INSTANCE_SIZE  0x2400000       /*实例大小36M*/
 #define OPENAMP_SHM_SIZE  0x1000000
 #define OPENAMP_SHM_COPY_SIZE 0x100000
 
+/* RISCV interrupt */
+#define IPC_INT_SET          (0x00)
+#define IPC_INT_CLEAR        (0x04)
+#define IPC_INT_MSTS         (0x08)
+#define IPC_INT_MASK         (0x0C)
+#define IPC_INT_RSTS         (0x10)
+
+#define IPC_INT_A55MP_NUM      0x0
+#define IPC_INT_RISCV_NUM      0x6
+
+#define RISCV_REG_SIZE 0x100
+
+static void __iomem *riscv_int_base;
+static int riscv_int_irq;
+
+/* Other setups */
 static struct class *mcs_class;
 static int mcs_major;
+
+enum mcs_km_pedestal_type {
+	MCS_KM_PED_BAREMETAL = 0,
+	MCS_KM_PED_RISCV = 1,
+	MCS_KM_PED_INVALID = 2,
+};
+
+/* struct mcs_file_private_data - private data for mcs device file */
+struct mcs_file_private_data {
+	enum mcs_km_pedestal_type ped_type;
+};
 
 static int __percpu *mcs_evt;
 
@@ -80,19 +110,26 @@ struct mcs_rproc_mem {
 	u64 phy_addr;
 	u64 size;
 };
-static struct mcs_rproc_mem mem[RPROC_MEM_MAX];
+static struct mcs_rproc_mem baremetal_mem[RPROC_MEM_MAX];
+static struct mcs_rproc_mem riscv_mem[RPROC_MEM_MAX];
+
+static bool has_baremetal_irq = false;
+static bool has_riscv_irq = false;
 
 static unsigned long rmem_base;
 module_param(rmem_base, ulong, 0400);
-MODULE_PARM_DESC(rmem_base, "The base address of the reserved mem");
+MODULE_PARM_DESC(rmem_base, "The base address of baremetal reserved mem");
 
 static unsigned long rmem_size;
 module_param(rmem_size, ulong, 0400);
-MODULE_PARM_DESC(rmem_size, "The size of the reserved mem");
+MODULE_PARM_DESC(rmem_size, "The size of baremetal reserved mem");
 
-static DECLARE_WAIT_QUEUE_HEAD(mcs_wait_queue);
-static atomic_t irq_ack;
+static DECLARE_WAIT_QUEUE_HEAD(mcs_baremetal_wait_queue);
+static DECLARE_WAIT_QUEUE_HEAD(mcs_riscv_wait_queue);
+static atomic_t baremetal_irq_ack;
+static atomic_t riscv_irq_ack;
 
+static void release_reserved_mem(void);
 /**
  * make hvc/smc call
  * @return:
@@ -168,8 +205,8 @@ static u64 get_cpu_mpidr(u32 cpu)
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
 	pr_info("received ipi from client os\n");
-	atomic_set(&irq_ack, 1);
-	wake_up_interruptible(&mcs_wait_queue);
+	atomic_set(&baremetal_irq_ack, 1);
+	wake_up_interruptible(&mcs_baremetal_wait_queue);
 	return IRQ_HANDLED;
 }
 
@@ -185,12 +222,22 @@ static void disable_mcs_ipi(void *data)
 
 static void remove_mcs_ipi(void)
 {
-	on_each_cpu(disable_mcs_ipi, NULL, 1);
-	free_percpu_irq(IPI_MCS, mcs_evt);
-	free_percpu(mcs_evt);
+	if (has_baremetal_irq) {
+		on_each_cpu(disable_mcs_ipi, NULL, 1);
+		free_percpu_irq(IPI_MCS, mcs_evt);
+		free_percpu(mcs_evt);
+	}
+
+	if (has_riscv_irq) {
+		free_irq(riscv_int_irq, NULL);
+		/* clear irq */
+		writel(IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_CLEAR);
+		/* unmask irq */
+		writel(0x80000000 + IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_MASK);
+	}
 }
 
-static int init_mcs_ipi(void)
+static int init_baremetal_irq(void)
 {
 	int err;
 	struct irq_desc *desc;
@@ -216,6 +263,99 @@ static int init_mcs_ipi(void)
 	}
 
 	on_each_cpu(enable_mcs_ipi, NULL, 1);
+
+	return 0;
+}
+
+static irqreturn_t handle_riscv_irq(int irq, void *data)
+{
+	pr_info("received ipi from riscv\n");
+
+	/* mask irq */
+	writel(IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_MASK);
+
+	/* clear irq */
+	writel(IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_CLEAR);
+
+	atomic_set(&riscv_irq_ack, 1);
+	wake_up_interruptible(&mcs_riscv_wait_queue);
+
+	/* unmask irq */
+	writel(0x80000000 + IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_MASK);
+
+	return IRQ_HANDLED;
+}
+
+static int init_riscv_irq(void)
+{
+	int ret = 0;
+	struct device_node *np = NULL;
+	struct resource res;
+
+	np = of_find_compatible_node(NULL, NULL, "oe,mcs_riscv_remoteproc");
+	if (!np) {
+		pr_err("Failed to find dts node: oe,mcs_riscv_remoteproc\n");
+		return -ENODEV;
+	}
+
+	if (of_address_to_resource(np, 0, &res)) {
+		pr_err("Failed to get reg resource from dts\n");
+		of_node_put(np);
+		return -ENODEV;
+	}
+
+	/* fetch riscv interrupt base addr from dts */
+	riscv_int_base = ioremap(res.start, resource_size(&res));
+	if (!riscv_int_base) {
+		pr_err("failed to map ipc_int base\n");
+		of_node_put(np);
+		return -ENODEV;
+	}
+
+	/* fetch riscv interrupt number from dts */
+	riscv_int_irq = irq_of_parse_and_map(np, 0);
+	of_node_put(np);
+
+	if (!riscv_int_irq) {
+		pr_err("Failed to map interrupt from device tree\n");
+		return -ENXIO;
+	}
+
+	/* clear irq */
+	writel(IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_CLEAR);
+	/* unmask irq */
+	writel(0x80000000 + IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_MASK);
+	ret = request_irq(riscv_int_irq, handle_riscv_irq, 0, "MCS RISCV IRQ", NULL);
+	if (ret) {
+		pr_err(KERN_ERR "Failed to request irq %d, error: %d\n", riscv_int_irq, ret);
+		return ret;
+	}
+
+	pr_info("MCS RISCV interrupt registered successfully. irq: %d\n", riscv_int_irq);
+
+	return 0;
+}
+
+static int init_mcs_ipi(void)
+{
+	int baremetal_ret, riscv_ret;
+
+	baremetal_ret = init_baremetal_irq();
+	if (baremetal_ret == 0) {
+		has_baremetal_irq = true;
+	}
+
+	riscv_ret = init_riscv_irq();
+	if (riscv_ret == 0) {
+		has_riscv_irq = true;
+	}
+
+	/* at least one mem region has to exist */
+	if (!has_baremetal_irq && !has_riscv_irq) {
+		pr_err("At least one irq num (baremetal or riscv) must exist\n");
+		return -ENODEV;
+	}
+
 	return 0;
 }
 
@@ -224,23 +364,79 @@ static void send_clientos_ipi(const struct cpumask *target)
 	ipi_send_mask(IPI_MCS, target);
 }
 
+static void send_riscv_interrupt(void)
+{
+	writel(IPC_INT_RISCV_NUM, riscv_int_base + IPC_INT_SET);
+}
+
 static unsigned int mcs_poll(struct file *file, poll_table *wait)
 {
 	unsigned int mask = 0;
+	struct mcs_file_private_data *priv = file->private_data;
 
-	poll_wait(file, &mcs_wait_queue, wait);
-	if (atomic_cmpxchg(&irq_ack, 1, 0) == 1)
-		mask |= POLLIN | POLLRDNORM;
+	switch (priv->ped_type) {
+	case MCS_KM_PED_RISCV:
+		poll_wait(file, &mcs_riscv_wait_queue, wait);
+		if (atomic_cmpxchg(&riscv_irq_ack, 1, 0) == 1)
+			mask |= POLLIN | POLLRDNORM;
+		break;
+	case MCS_KM_PED_BAREMETAL:
+	default:
+		poll_wait(file, &mcs_baremetal_wait_queue, wait);
+		if (atomic_cmpxchg(&baremetal_irq_ack, 1, 0) == 1)
+			mask |= POLLIN | POLLRDNORM;
+		break;
+	}
 
 	return mask;
+}
+
+static int boot_riscv(u64 boot_addr)
+{
+	int ret = -1;
+	int index;
+	unsigned int phy_addr[4] = {0x110D2004, 0x11024000, 0x11016400, 0x110D2000};
+	void __iomem *v_addr[4] = {NULL, NULL, NULL, NULL};
+
+	pr_info("Booting clientos on RISCV at 0x%llx ...\n", boot_addr);
+
+	for (index = 0; index < 4; index++) {
+		v_addr[index] = ioremap(phy_addr[index], RISCV_REG_SIZE);
+		if (!v_addr[index]) {
+			pr_err("ioremap failed for address 0x%x\n", phy_addr[index]);
+			goto iounmap_out;
+		}
+	}
+
+	writel(boot_addr, v_addr[0]); /* set start addr */
+	writel(0x10, v_addr[1]);      /* jtag to mcu */
+	writel(0x1, v_addr[3]);       /* core wait */
+	writel(0x3, v_addr[2]);       /* rst */
+	writel(0x0, v_addr[3]);       /* unwait */
+	writel(0x4030, v_addr[2]);    /* unrst */
+
+	ret = 0;
+
+iounmap_out:
+	for (index = 0; index < 4; index++) {
+		if (v_addr[index]) {
+			iounmap(v_addr[index]);
+			v_addr[index] = NULL;
+		}
+	}
+
+	return ret;
 }
 
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	int ret = 0;
 	u64 mpidr;
+	int ped_type;
+	struct mcs_file_private_data *priv = f->private_data;
 	struct cpu_info info;
 	struct core_msg_mem_info copy_mem_info;
+	unsigned long copy_mem_offset;
 
 	if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
 		return -EINVAL;
@@ -248,6 +444,9 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		return -EINVAL;
 
 	switch (cmd) {
+	case IOC_SET_PED_TYPE:
+		ret = copy_from_user(&ped_type, (int __user *)arg, sizeof(int));
+		break;
 	case IOC_GET_COPY_MSG_MEM:
 		ret = copy_from_user(&copy_mem_info, (struct core_msg_mem_info __user *)arg, sizeof(copy_mem_info));
 		break;
@@ -261,23 +460,52 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		return -EFAULT;
 
 	switch (cmd) {
-	case IOC_SENDIPI:
-		pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
-		send_clientos_ipi(cpumask_of(info.cpu));
-		break;
-
-	case IOC_CPUON:
-		mpidr = get_cpu_mpidr(info.cpu);
-		if (mpidr == INVALID_HWID) {
-			pr_err("boot clientos failed, invalid MPIDR\n");
+	case IOC_SET_PED_TYPE:
+		if (ped_type >= MCS_KM_PED_INVALID || ped_type < MCS_KM_PED_BAREMETAL) {
+			pr_err("invalid pedestal type %d\n", ped_type);
 			return -EINVAL;
 		}
-		pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, mpidr, info.boot_addr);
+		priv->ped_type = ped_type;
+		break;
+	case IOC_SENDIPI:
+		switch (priv->ped_type) {
+		case MCS_KM_PED_RISCV:
+			pr_info("received ioctl cmd to send riscv interrupt to mcu\n");
+			send_riscv_interrupt();
+			break;
+		case MCS_KM_PED_BAREMETAL:
+		default:
+			pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
+			send_clientos_ipi(cpumask_of(info.cpu));
+			break;
+		}
+		break;
 
-		ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
-		if (ret) {
-			pr_err("boot clientos failed(%d)\n", ret);
-			return -EINVAL;
+	case IOC_XPUON:
+		switch (priv->ped_type) {
+		case MCS_KM_PED_RISCV:
+			pr_info("received ioctl cmd to boot riscv clientos\n");
+			ret = boot_riscv(info.boot_addr);
+			if (ret) {
+				pr_err("boot riscv failed(%d)\n", ret);
+				return -EINVAL;
+			}
+			break;
+		case MCS_KM_PED_BAREMETAL:
+		default:
+			mpidr = get_cpu_mpidr(info.cpu);
+			if (mpidr == INVALID_HWID) {
+				pr_err("boot clientos failed, invalid MPIDR\n");
+				return -EINVAL;
+			}
+			pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, mpidr, info.boot_addr);
+
+			ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
+			if (ret) {
+				pr_err("boot clientos failed(%d)\n", ret);
+				return -EINVAL;
+			}
+			break;
 		}
 		break;
 
@@ -297,19 +525,51 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 
 	case IOC_QUERY_MEM:
-		if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
+	switch (priv->ped_type) {
+	case MCS_KM_PED_RISCV:
+		if (riscv_mem[0].phy_addr == 0) {
+			pr_err("No riscv memory region available\n");
+			return -ENODEV;
+		}
+		if (copy_to_user((void __user *)arg, &riscv_mem[0], sizeof(riscv_mem[0])))
 			return -EFAULT;
 		break;
+	case MCS_KM_PED_BAREMETAL:
+	default:
+		if (baremetal_mem[0].phy_addr == 0) {
+			pr_err("No baremetal memory region available\n");
+			return -ENODEV;
+		}
+		if (copy_to_user((void __user *)arg, &baremetal_mem[0], sizeof(baremetal_mem[0])))
+			return -EFAULT;
+		break;
+	}
+	break;
 
 	case IOC_GET_COPY_MSG_MEM:
-	    if (copy_mem_info.instance_id > RPROC_MEM_MAX) {
-                        pr_err("GET_COPY_MSG_MEM failed: The required instance_id max to %d, your instance_id:%d\n", RPROC_MEM_MAX, copy_mem_info.instance_id);
-                        return -EINVAL;
-        }
-		copy_mem_info.phy_addr = mem[0].phy_addr + copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 3;  /* 使用2M。 1M 用来发送， 1M用来接收 尾部1M gap */
-	    if (copy_mem_info.phy_addr  > (mem[0].phy_addr + mem[0].size)) {
-			pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
-			return -EINVAL;
+		if (copy_mem_info.instance_id > RPROC_MEM_MAX) {
+						pr_err("GET_COPY_MSG_MEM failed: The required instance_id max to %d, your instance_id:%d\n", RPROC_MEM_MAX, copy_mem_info.instance_id);
+						return -EINVAL;
+		}
+		copy_mem_offset = copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 3;  /* 使用2M。 1M 用来发送， 1M用来接收 尾部1M gap */
+		switch (priv->ped_type) {
+		case MCS_KM_PED_RISCV:
+			copy_mem_info.phy_addr = riscv_mem[0].phy_addr + copy_mem_offset;
+			pr_info("GET_COPY_MSG_MEM riscv_mem phy_addr: 0x%lx\n", copy_mem_info.phy_addr);
+			if (copy_mem_info.phy_addr  > (riscv_mem[0].phy_addr + riscv_mem[0].size)) {
+				pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
+				return -EINVAL;
+			}
+			break;
+		case MCS_KM_PED_BAREMETAL:
+		default:
+			copy_mem_info.phy_addr = baremetal_mem[0].phy_addr + copy_mem_offset;
+			pr_info("GET_COPY_MSG_MEM baremetal_mem phy_addr: 0x%lx\n", copy_mem_info.phy_addr);
+			if (copy_mem_info.phy_addr  > (baremetal_mem[0].phy_addr + baremetal_mem[0].size)) {
+				pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
+				return -EINVAL;
+			}
+			break;
 		}
 		copy_mem_info.size = OPENAMP_SHM_COPY_SIZE * 2;  /* 使用2M。1M 用来发送， 1M用来接收 */
 		if (copy_to_user((void __user *)arg, &copy_mem_info, sizeof(copy_mem_info)))
@@ -342,6 +602,7 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	int found = 0;
 	size_t size = vma->vm_end - vma->vm_start;
 	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
+	struct mcs_file_private_data *priv = file->private_data;
 
 	/* Does it even fit in phys_addr_t? */
 	if (offset >> PAGE_SHIFT != vma->vm_pgoff)
@@ -351,15 +612,28 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	if (offset + (phys_addr_t)size - 1 < offset)
 		return -EINVAL;
 
-	for (i = 0; (i < RPROC_MEM_MAX) && (mem[i].phy_addr != 0); i++) {
-		if (offset >= mem[i].phy_addr && size <= mem[i].size) {
-			found = 1;
-			break;
+	switch (priv->ped_type) {
+	case MCS_KM_PED_RISCV:
+		for (i = 0; (i < RPROC_MEM_MAX) && (riscv_mem[i].phy_addr != 0); i++) {
+			if (offset >= riscv_mem[i].phy_addr && offset + size <= riscv_mem[i].phy_addr + riscv_mem[i].size) {
+				found = 1;
+				break;
+			}
 		}
+		break;
+	case MCS_KM_PED_BAREMETAL:
+	default:
+		for (i = 0; (i < RPROC_MEM_MAX) && (baremetal_mem[i].phy_addr != 0); i++) {
+			if (offset >= baremetal_mem[i].phy_addr && offset + size <= baremetal_mem[i].phy_addr + baremetal_mem[i].size) {
+				found = 1;
+				break;
+			}
+		}
+		break;
 	}
 
 	if (found == 0) {
-		pr_err("mmap failed: mmap memory is not in mcs reserved memory\n");
+		pr_err("mmap failed: mmap memory is not in mcs reserved memory for ped_type %d\n", priv->ped_type);
 		return -EINVAL;
 	}
 
@@ -382,8 +656,21 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 
 static int mcs_open(struct inode *inode, struct file *filp)
 {
+	struct mcs_file_private_data *file_priv;
+
 	if (!capable(CAP_SYS_RAWIO))
 		return -EPERM;
+
+	file_priv = kmalloc(sizeof(struct mcs_file_private_data), GFP_KERNEL);
+	if (!file_priv) {
+		pr_err("Failed to allocate private data\n");
+		return -ENOMEM;
+	}
+
+	/* default to baremetal, to be compatible with old pedestal */
+	file_priv->ped_type = MCS_KM_PED_BAREMETAL;
+	filp->private_data = file_priv;
+
 	return 0;
 }
 
@@ -435,29 +722,33 @@ static int get_psci_method(void)
 	return 0;
 }
 
-static int init_reserved_mem(void)
+static int init_ped_rsv_mem(const char *compatible_node, struct mcs_rproc_mem *mem,
+						const char *mem_region_name, bool support_cmdline)
 {
 	int n = 0;
 	int i, count, ret;
 	struct device_node *np;
 
-	if (rmem_base != 0 && rmem_size != 0) {
-		pr_info("assign memory region for mcs: 0x%lx - 0x%lx (%ld MB)\n",
-			rmem_base, rmem_base + rmem_size - 1, rmem_size >> 20);
+	if (support_cmdline && rmem_base != 0 && rmem_size != 0) {
+		pr_info("assign memory region for %s mcs: 0x%lx - 0x%lx (%ld MB)\n",
+				mem_region_name, rmem_base, rmem_base + rmem_size - 1, rmem_size >> 20);
 
 		mem[0].phy_addr = rmem_base;
 		mem[0].size = rmem_size;
 		return 0;
 	}
 
-	np = of_find_compatible_node(NULL, NULL, "oe,mcs_remoteproc");
-	if (np == NULL)
+	np = of_find_compatible_node(NULL, NULL, compatible_node);
+	if (np == NULL) {
+		pr_info("%s node not found in DTS\n", compatible_node);
 		return -ENODEV;
+	}
 
 	count = of_count_phandle_with_args(np, "memory-region", NULL);
 	if (count <= 0) {
-		pr_err("reserved mem is required for MCS\n");
-		return -ENODEV;
+		pr_info("reserved mem is required for %s\n", mem_region_name);
+		ret = -ENODEV;
+		goto out;
 	}
 
 	for (i = 0; i < count; i++) {
@@ -467,21 +758,59 @@ static int init_reserved_mem(void)
 		node = of_parse_phandle(np, "memory-region", i);
 		ret = of_address_to_resource(node, 0, &res);
 		if (ret) {
-			pr_err("unable to resolve memory region\n");
-			return ret;
+			pr_err("unable to resolve %s memory region\n", mem_region_name);
+			goto out;
 		}
 
 		if (n >= RPROC_MEM_MAX)
 			break;
 
-		if (!request_mem_region(res.start, resource_size(&res), "mcs_mem")) {
-			pr_err("Can not request mcs_mem, 0x%llx-0x%llx\n", res.start, res.end);
-			return -EINVAL;
+		if (!request_mem_region(res.start, resource_size(&res), mem_region_name)) {
+			pr_err("Can not request %s, 0x%llx-0x%llx\n", mem_region_name, res.start, res.end);
+			ret = -EINVAL;
+			goto out;
 		}
 
 		mem[n].phy_addr = res.start;
 		mem[n].size = resource_size(&res);
 		n++;
+	}
+
+out:
+	of_node_put(np);
+	return ret;
+}
+
+static int init_baremetal_rsv_mem(void)
+{
+	return init_ped_rsv_mem("oe,mcs_remoteproc", baremetal_mem, "mcs_baremetal_mem", true);
+}
+
+static int init_riscv_rsv_mem(void)
+{
+	return init_ped_rsv_mem("oe,mcs_riscv_remoteproc", riscv_mem, "mcs_riscv_mem", false);
+}
+
+static int init_reserved_mem(void)
+{
+	int baremetal_ret, riscv_ret;
+	bool has_baremetal = false;
+	bool has_riscv = false;
+
+	baremetal_ret = init_baremetal_rsv_mem();
+	if (baremetal_ret == 0) {
+		has_baremetal = true;
+	}
+
+	riscv_ret = init_riscv_rsv_mem();
+	if (riscv_ret == 0) {
+		has_riscv = true;
+	}
+
+	/* at least one mem region has to exist */
+	if (!has_baremetal && !has_riscv) {
+		pr_err("At least one memory region type (baremetal or riscv) must exist\n");
+		return -ENODEV;
 	}
 
 	return 0;
@@ -495,11 +824,18 @@ static void release_reserved_mem(void)
 	 * When configuring the rmem, memory resources are requested
 	 * using memmap, so there is no need to free it.
 	 */
-	if (rmem_base != 0 && rmem_size != 0)
-		return;
+	if (!(rmem_base != 0 && rmem_size != 0)) {
+		for (i = 0; (i < RPROC_MEM_MAX) && (baremetal_mem[i].phy_addr != 0); i++) {
+			release_mem_region(baremetal_mem[i].phy_addr, baremetal_mem[i].size);
+			baremetal_mem[i].phy_addr = 0;
+			baremetal_mem[i].size = 0;
+		}
+	}
 
-	for (i = 0; (i < RPROC_MEM_MAX) && (mem[i].phy_addr != 0); i++) {
-		release_mem_region(mem[i].phy_addr, mem[i].size);
+	for (i = 0; (i < RPROC_MEM_MAX) && (riscv_mem[i].phy_addr != 0); i++) {
+		release_mem_region(riscv_mem[i].phy_addr, riscv_mem[i].size);
+		riscv_mem[i].phy_addr = 0;
+		riscv_mem[i].size = 0;
 	}
 }
 

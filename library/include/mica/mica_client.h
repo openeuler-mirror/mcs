@@ -33,6 +33,13 @@ enum pedestal_type {
 	BARE_METAL = 0,
 	JAILHOUSE = 1,
 	XEN = 2,
+	HETERO = 3,
+};
+
+enum mcs_km_pedestal_type {
+	MCS_KM_PED_BAREMETAL = 0,
+	MCS_KM_PED_RISCV = 1,
+	MCS_KM_PED_INVALID = 2,
 };
 
 extern struct metal_list g_client_list;
