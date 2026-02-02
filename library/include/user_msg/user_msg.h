@@ -41,6 +41,14 @@ extern process_shared_data_t *init_process_shared_memory(int instance_id);
 extern int create_sem(int instance_id, sem_t **sem_user_to_micad, sem_t **sem_micad_to_user);
 
 /**
+ * Callback type for UMT receive: invoked when data arrives (data valid only during call).
+ * @param data  Received data (do not use after callback returns)
+ * @param data_len  Received length
+ * @param priv  Same as passed to umt_register_rcv_cb (opaque pointer, e.g. application context)
+ */
+ typedef void (*umt_rcv_cb_t)(const void *data, int data_len, void *priv);
+
+/**
  * @brief Create UMT communication context
  *
  * Allocates and initializes resources.
@@ -81,8 +89,29 @@ extern int send_data_with_umt_context(umt_context_t *ctx, int offset, void *data
  * @param timeout_ms Timeout in ms; 0 = wait forever
  * @return 0 on success, -1 on failure (including timeout)
  * @note Lock released during wait, re-acquired after
+ * @note Do not use the same context for both blocking receive and callback; use one mode per context.
  */
 extern int receive_data_with_umt_context(umt_context_t *ctx, void *rcv_data, int *rcv_data_len, int timeout_ms);
+
+/**
+ * @brief Register receive callback (library runs an internal thread that waits for data and calls callback)
+ *
+ * One callback per context. Callback and blocking receive_data_with_umt_context must not be used on the same context.
+ *
+ * @param ctx Context handle
+ * @param callback  Called with (data, data_len, priv); data is valid only during the call
+ * @param priv  Opaque pointer passed to callback (e.g. application context)
+ * @return 0 on success, -1 on failure (e.g. already registered)
+ */
+extern int umt_register_rcv_cb(umt_context_t *ctx, umt_rcv_cb_t callback, void *priv);
+
+/**
+ * @brief Unregister receive callback and stop the internal receive thread
+ *
+ * @param ctx Context handle
+ * @return 0 on success, -1 if no callback was registered
+ */
+extern int umt_unregister_rcv_cb(umt_context_t *ctx);
 
 /**
  * @brief One-shot send to RTOS (creates/destroys context internally; offset 0)
