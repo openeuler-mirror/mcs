@@ -77,6 +77,7 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
 	struct rpmsg_umt_service *umt_svc;
 	char message[] = "first message from umt_service!";
 	enum mcs_km_pedestal_type mcs_ped;
+	pthread_mutexattr_t attr;
 
 	umt_svc = malloc(sizeof(struct rpmsg_umt_service));
 	if (!umt_svc)
@@ -113,7 +114,13 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
 	umt_svc->process_shared_memory = init_process_shared_memory(0);
 	if (umt_svc->process_shared_memory == NULL)
 		goto free_ept;
-	umt_svc->process_shared_memory->lock = 0;
+
+	/* Initialize shared memory pthread mutex */
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+	pthread_mutex_init(&umt_svc->process_shared_memory->lock, &attr);
+	pthread_mutexattr_destroy(&attr);
+
 	umt_svc->process_shared_memory->instance_id = 0; /* 当前不支持多实例，这里先赋值为0，等支持以后修改成具体实例号 */
 	/* 创建于用户进程通信的信号量 */
 	ret = create_sem(0, &umt_svc->sem_user_to_micad, &umt_svc->sem_micad_to_user);

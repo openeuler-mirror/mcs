@@ -101,7 +101,7 @@ process_shared_data_t *init_process_shared_memory(int instance_id)
     sprintf(tmp_name, SHM_NAME, instance_id);
     shm_fd = shm_open(tmp_name, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) {
-	syslog(LOG_ERR,"shm_open open failed");
+        syslog(LOG_ERR,"shm_open open failed");
         return NULL;
     }
 

@@ -32,20 +32,18 @@ struct umt_context {
 };
 
 /* ============================================================================
- * Lock helpers (spinlock via test-and-set)
+ * Lock helpers
  * ============================================================================ */
 static void umt_context_lock(umt_context_t *ctx)
 {
-    while (__sync_lock_test_and_set(&ctx->process_shared_memory->lock, 1)) {
-        /* spin until acquired */
-    }
+    pthread_mutex_lock(&ctx->process_shared_memory->lock);
     ctx->locked = 1;
 }
 
 static void umt_context_unlock(umt_context_t *ctx)
 {
     if (ctx->locked) {
-        __sync_lock_release(&ctx->process_shared_memory->lock);
+        pthread_mutex_unlock(&ctx->process_shared_memory->lock);
         ctx->locked = 0;
     }
 }
@@ -286,7 +284,7 @@ void umt_context_destroy(umt_context_t *ctx)
         _stop_rcv_callback(ctx);
 
     if (ctx->locked && ctx->process_shared_memory)
-        __sync_lock_release(&ctx->process_shared_memory->lock);
+        pthread_mutex_unlock(&ctx->process_shared_memory->lock);
     if (ctx->sem_user_to_micad)
         sem_close(ctx->sem_user_to_micad);
     if (ctx->sem_micad_to_user)

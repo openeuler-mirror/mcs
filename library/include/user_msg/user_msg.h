@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <semaphore.h>
+#include <pthread.h>
 #include <mica/mica_client.h>
 
 #define OPENAMP_SHM_SIZE  0x1000000    /* 16M */
@@ -18,7 +19,7 @@ typedef struct {
     int instance_id; /* 当前不支持多实例，使用时赋值为0；支持多实例以后修改成具体实例号 */
     unsigned long rcv_phy_addr;
     int rcv_data_len;
-    int lock;
+    pthread_mutex_t lock;
 } process_shared_data_t;
 
 struct core_msg_mem_info {
