@@ -10,7 +10,7 @@ target_include_directories(micad PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(micad ${MICA_LIB} ${SHARED_LINK_LIBS})
+target_link_libraries(micad ${MICA_STATIC_LIB} ${SHARED_LINK_LIBS})
 
 install(TARGETS micad
 	RUNTIME DESTINATION bin

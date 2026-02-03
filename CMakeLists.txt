@@ -31,7 +31,8 @@ if(DEFINED MULTI_WORKERS)
 endif()
 
 ## build MICA library
-set(MICA_LIB mica)
+set(MICA_STATIC_LIB mica_static)
+set(MICA_SHARED_LIB mica_shared)
 add_subdirectory(${CMAKE_SOURCE_DIR}/library)
 
 ## build MICA client
