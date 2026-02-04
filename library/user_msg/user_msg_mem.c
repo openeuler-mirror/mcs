@@ -1,5 +1,3 @@
-#include <user_msg/user_msg.h>
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,25 +8,40 @@
 #include <sys/ioctl.h>
 #include <linux/ioctl.h>
 #include <syslog.h>
+#include <user_msg/user_msg.h>
 
 #define MCS_DEVICE_NAME    "/dev/mcs"
 
 #define IOC_GET_COPY_MSG_MEM  _IOWR('A', 4, struct core_msg_mem_info)
+#define IOC_SET_PED_TYPE	  _IOW('A', 5, int)
 
 
-int init_core_shared_memory(struct core_msg_mem_info *info)
+int init_core_shared_memory(struct core_msg_mem_info *info, enum mcs_km_pedestal_type ped_type)
 {
 	int ret;
     int mcs_fd;
+    int ped = (int)ped_type;
 
     unsigned long lpa, aligned_addr;
     size_t pagesize, aligned_size, offset;
+
+	if (ped_type < MCS_KM_PED_BAREMETAL || ped_type >= MCS_KM_PED_INVALID) {
+		syslog(LOG_ERR, "invalid pedestal type %d\n", ped_type);
+		return -1;
+	}
 
 	mcs_fd = open(MCS_DEVICE_NAME, O_RDWR);
 	if (mcs_fd < 0) {
 		syslog(LOG_ERR, "open %s device failed, err %d\n", MCS_DEVICE_NAME, mcs_fd);
 		return -1;
 	}
+
+    ret = ioctl(mcs_fd, IOC_SET_PED_TYPE, &ped);
+	if (ret) {
+		syslog(LOG_ERR, "IOC_SET_PED_TYPE failed, err %d\n", ret);
+		goto err;
+	}
+
     ret = ioctl(mcs_fd, IOC_GET_COPY_MSG_MEM, info);
 	if (ret < 0) {
 		syslog(LOG_ERR, "unable to get shared memory information from mcs device, err: %d\n", ret);
@@ -86,7 +99,7 @@ process_shared_data_t *init_process_shared_memory(int instance_id)
     sprintf(tmp_name, SHM_NAME, instance_id);
     shm_fd = shm_open(tmp_name, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) {
-	syslog(LOG_ERR,"shm_open open failed");
+        syslog(LOG_ERR,"shm_open open failed");
         return NULL;
     }
 

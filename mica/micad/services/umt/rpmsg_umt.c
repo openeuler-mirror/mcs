@@ -38,9 +38,10 @@ static void rpmsg_umt_unbind(struct rpmsg_endpoint *ept)
 int rpmsg_rx_umt_callback(struct rpmsg_endpoint *ept, void *data, size_t len, uint32_t src, void *priv)
 {
 	struct rpmsg_umt_service *umt_svc = priv;
+	umt_send_msg_t *msg = (umt_send_msg_t *)data;
 
-
-	umt_svc->process_shared_memory->rcv_data_len = *(int*)data;
+	umt_svc->process_shared_memory->rcv_phy_addr = msg->phy_addr;
+	umt_svc->process_shared_memory->rcv_data_len = msg->data_len;
 	sem_post(umt_svc->sem_micad_to_user);
 	return RPMSG_SUCCESS;
 
@@ -75,7 +76,8 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
 	struct mica_client *client;
 	struct rpmsg_umt_service *umt_svc;
 	char message[] = "first message from umt_service!";
-	umt_send_msg_t msg = {0};
+	enum mcs_km_pedestal_type mcs_ped;
+	pthread_mutexattr_t attr;
 
 	umt_svc = malloc(sizeof(struct rpmsg_umt_service));
 	if (!umt_svc)
@@ -100,15 +102,25 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
 	sem_init(&umt_svc->sem, 0, 0);
     pthread_mutex_init(&umt_svc->lock, NULL);
 	metal_list_add_tail(&g_umt_list, &umt_svc->node);
-    msg.data_len = sizeof(message);
-	msg.phy_addr = 0x0;
-	rpmsg_send(&umt_svc->ept, &msg, sizeof(msg));
+
+	/* Send data using core_msg_mem_info->phy_addr so client OS can init g_umt_send_data_addr.
+	 * Map pedestal_type to mcs_km_pedestal_type: HETERO -> RISCV, else -> BAREMETAL */
+	mcs_ped = (client->ped == HETERO) ? MCS_KM_PED_RISCV : MCS_KM_PED_BAREMETAL;
+	ret = send_data_to_rtos(message, sizeof(message), 0, mcs_ped);
+	if (ret)
+		goto free_ept;
 
 	/* 初始化共享内存 */
 	umt_svc->process_shared_memory = init_process_shared_memory(0);
 	if (umt_svc->process_shared_memory == NULL)
 		goto free_ept;
-	umt_svc->process_shared_memory->lock = 0;
+
+	/* Initialize shared memory pthread mutex */
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+	pthread_mutex_init(&umt_svc->process_shared_memory->lock, &attr);
+	pthread_mutexattr_destroy(&attr);
+
 	umt_svc->process_shared_memory->instance_id = 0; /* 当前不支持多实例，这里先赋值为0，等支持以后修改成具体实例号 */
 	/* 创建于用户进程通信的信号量 */
 	ret = create_sem(0, &umt_svc->sem_user_to_micad, &umt_svc->sem_micad_to_user);

@@ -4,7 +4,7 @@
 #include <time.h>
 #include <user_msg/user_msg.h>
 
-#define STR_SIZE 1024*1024
+#define STR_SIZE 1024
 #define INSTANCE_NUM 1
 
 int main()
@@ -23,7 +23,7 @@ int main()
         return -1;
     }
 
-    rcvbuf = (char*)malloc(STR_SIZE + 1); 
+    rcvbuf = (char*)malloc(STR_SIZE + 1);
     if (rcvbuf == NULL) {
         printf("rcvbuf malloc failed \n");
         free(sendbuf);
@@ -32,12 +32,12 @@ int main()
 
     for (i = 0; i < INSTANCE_NUM; i++) {
         memset(sendbuf, 0, STR_SIZE+1);
-	    memset(rcvbuf, 0, STR_SIZE+1);
+        memset(rcvbuf, 0, STR_SIZE+1);
         for (j = 0; j < STR_SIZE; j++) {
             sendbuf[j] = 'A' + rand() % 26;
         }
 
-        printf("sendbuf %s\n", sendbuf + STR_SIZE - 10);
+        printf("sendbuf %s total_len %ld\n", sendbuf + STR_SIZE - 10, strlen(sendbuf));
 
         if (clock_gettime(CLOCK_MONOTONIC, &start) == -1) {
             printf("clock_gettime");
@@ -52,7 +52,7 @@ int main()
             printf("clock_gettime");
             return 0;
         }
-        printf("rcvbuf %s rcv_data_len %d\n", rcvbuf, rcv_data_len);
+        printf("rcvbuf %s total_len %d\n", rcvbuf + rcv_data_len - 10, rcv_data_len);
 
         long seconds = end.tv_sec - start.tv_sec;
         long nanoseconds = end.tv_nsec - start.tv_nsec;
@@ -67,4 +67,5 @@ int main()
     if (rcvbuf)
         free(rcvbuf);
 
+    return 0;
 }
