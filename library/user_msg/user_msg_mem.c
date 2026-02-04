@@ -1,5 +1,3 @@
-#include <user_msg/user_msg.h>
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +8,7 @@
 #include <sys/ioctl.h>
 #include <linux/ioctl.h>
 #include <syslog.h>
-#include <mica/mica_client.h>
+#include <user_msg/user_msg.h>
 
 #define MCS_DEVICE_NAME    "/dev/mcs"
 
