@@ -13,7 +13,7 @@ import (
 
 const (
 	// DefaultConfigPath is the default path for micrun configuration file
-	DefaultConfigPath = "/etc/micrun/config.json"
+	DefaultConfigPath = "/etc/mica/micrun/config.json"
 
 	// DefaultLogFile is the default log file path for debug builds
 	DefaultLogFile = "/var/log/mica/mica-runtime.log"

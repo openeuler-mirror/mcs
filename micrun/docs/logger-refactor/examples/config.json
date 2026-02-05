@@ -1,8 +1,0 @@
-{
-  "log": {
-    "level": "info",
-    "file": "/var/log/mica/mica-runtime.log",
-    "color": false,
-    "caller": true
-  }
-}

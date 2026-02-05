@@ -322,7 +322,7 @@ ctr image ls | grep mica
 ctr container create \
   --runtime io.containerd.mica.v2 \
   -t \
-  --annotation org.openeuler.micrun.auto_disconnect=true \
+  --annotation org.openeuler.micrun.container.auto_close=true \
   <image_name>:<tag> \
   <container_name>
 
@@ -341,98 +341,290 @@ ctr container delete <container_name>
 | 选项 | 说明 |
 |------|------|
 | `--runtime` | 指定使用的容器运行时，MicRun 使用`io.containerd.mica.v2` |
-| `-t` | 分配伪终端（`TTY`），支持交互式操作和`Ctrl-C`等控制字符 |
+| `-t` | 分配伪终端（`TTY`），支持交互式操作 |
 | `--annotation` | 传递给 MicRun 的配置注解，格式为`key=value` |
+
+**常用注解**：
+| 注解 | 说明 | 示例 |
+|------|------|------|
+| `org.openeuler.micrun.container.auto_close` | 是否在 IO 关闭时自动停止容器 | `true`/`false` |
+| `org.openeuler.micrun.container.auto_close_timeout` | 自动关闭超时时间（持续时间字符串或秒） | `30s`（默认30秒） |
+
+> **说明**：`auto_close` 默认为 `true`，当用户断开连接（如关闭终端）或超时后，容器会自动停止。如果希望容器保持运行以支持多次 attach，可以设置 `auto_close=false` 或使用较长的超时时间（>60秒）。
 
 ### 5.3 使用`nerdctl`运行容器（推荐用于生产）
 
+`nerdctl`是 Docker 兼容的 CLI 工具，与 `ctr` 相比提供更友好的用户体验。
+
+#### 5.3.1 运行容器
+
 ```bash
-# 运行容器
+# 后台运行容器
 nerdctl run -d \
   --runtime io.containerd.mica.v2 \
-  -l org.openeuler.micrun.auto_disconnect=true \
+  --network host \
+  --name <container_name> \
   <image_name>:<tag>
 
-# 更新容器资源限制
-nerdctl update --memory 1024m <container_id>
+# 创建但不启动容器
+nerdctl create \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 启动已创建的容器
+nerdctl start <container_name>
 ```
 
-**选项说明**：
-| 选项 | 说明 |
-|------|------|
-| `-d` | 后台运行容器 |
-| `--runtime` | 指定容器运行时 |
-| `-l` | 添加注解（`Annotation`），注意：`nerdctl`中`-l`对应注解，而非`Docker`中的`Label` |
-| `--memory` | 设置内存限制 |
+**重要说明**：
+- `--network host`：对于 RTOS 容器，通常需要使用 host 网络模式，因为嵌入式环境可能没有配置 CNI 网络插件
+- 如果系统配置了 CNI 网络插件，可以省略 `--network host` 或使用其他网络模式
+
+#### 5.3.2 管理容器
+
+```bash
+# 查看运行中的容器
+nerdctl ps
+
+# 查看所有容器（包括已停止的）
+nerdctl ps -a
+
+# 停止容器
+nerdctl stop <container_name>
+
+# 强制停止容器
+nerdctl stop -t 0 <container_name>
+
+# 重启容器
+nerdctl restart <container_name>
+
+# 删除已停止的容器
+nerdctl rm <container_name>
+
+# 强制删除运行中的容器
+nerdctl rm -f <container_name>
+
+# 删除所有已停止的容器
+nerdctl container prune -f
+```
+
+#### 5.3.3 查看容器信息
+
+```bash
+# 查看容器详细信息
+nerdctl inspect <container_name>
+
+# 查看容器状态
+nerdctl inspect <container_name> --format '{{.State.Status}}'
+
+# 查看容器 PID
+nerdctl inspect <container_name> --format '{{.State.Pid}}'
+
+# 查看容器日志
+nerdctl logs <container_name>
+
+# 实时跟踪日志
+nerdctl logs -f <container_name>
+```
+
+#### 5.3.4 使用注解配置容器
+
+`nerdctl` 使用 `-l`（label）参数来传递 MicRun 的注解配置：
+
+```bash
+# 设置 auto_close 为 false，容器不会自动停止
+nerdctl run -d \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  -l org.openeuler.micrun.container.auto_close=false \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 设置自动断开超时时间（秒）
+nerdctl run -d \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  -l org.openeuler.micrun.container.auto_close_timeout=120s \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 组合多个注解
+nerdctl run -d \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  -l org.openeuler.micrun.container.auto_close=false \
+  -l org.openeuler.micrun.container.auto_close_timeout=300s \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 查看容器的注解配置
+nerdctl inspect <container_name> --format '{{json .Config.Labels}}' | grep micrun
+```
+
+#### 5.3.5 交互式 TTY 模式
+
+```bash
+# 创建交互式 TTY 容器（前台运行）
+# 注意：这种方式需要在一个交互式终端中运行
+nerdctl run -it --rm \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  <image_name>:<tag>
+
+# 创建 TTY 容器（后台运行）
+# 注意：使用 -d 和 -t 组合时，容器会立即返回但保持运行
+nerdctl run -d -t \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  --name <container_name> \
+  <image_name>:<tag>
+```
+
+**退出容器**：
+- 在 TTY 中输入 `exit` 命令并回车，容器会停止（推荐方式）
+- 使用 `Ctrl+P` 然后 `Ctrl+Q` 可以**临时退出**容器（容器继续运行，仅 TTY 模式）
+- 外部终止：使用 `ctr task kill -s SIGTERM <容器名>` 或 `SIGKILL`
+
+**Detach 和 Attach 功能说明**：
+- `Ctrl+P, Ctrl+Q` 序列可以让你临时退出容器 shell，容器在后台继续运行
+- 这是类似 Docker 的行为，方便你从交互式会话中临时脱离
+- 退出后容器继续运行，可以使用 `nerdctl attach <容器名>` 重新连接
+
+**使用示例**：
+```bash
+# 启动交互式容器
+nerdctl run -it --rm --runtime io.containerd.mica.v2 <image>
+
+# 在容器中工作...
+# 按 Ctrl+P，然后按 Ctrl+Q
+
+# 容器在后台继续运行
+nerdctl ps
+
+# 重新连接到容器
+nerdctl attach <容器名>
+
+# 或使用容器 ID
+nerdctl attach <container_id>
+```
+
+#### 5.3.6 与 `ctr` 命令对照
+
+| 操作 | ctr 命令 | nerdctl 命令 |
+|------|----------|--------------|
+| 创建容器 | `ctr container create` | `nerdctl create` |
+| 启动容器 | `ctr task start` | `nerdctl start` |
+| 创建+启动 | `ctr run` | `nerdctl run` |
+| 停止容器 | `ctr task kill` | `nerdctl stop` |
+| 连接容器 | `ctr task attach` | `nerdctl attach` |
+| 删除容器 | `ctr container delete` | `nerdctl rm` |
+| 查看容器 | `ctr container ls` | `nerdctl ps` |
+| 查看镜像 | `ctr image ls` | `nerdctl images` |
+| 传递注解 | `--annotation` | `-l` (label) |
+| 导入镜像 | `ctr image import` | `nerdctl load` |
+| 导出镜像 | `ctr image export` | `nerdctl save` |
+
+**命名空间说明**：
+- `ctr` 默认使用 `default` 命名空间
+- `nerdctl` 默认使用 `k8s.io` 命名空间
+- 两者创建的容器互相不可见，需要用 `ctr -n k8s.io` 来查看 nerdctl 创建的容器
 
 ---
 
 ## 步骤 6：（可选）接入`Kubernetes`集群
 
-### 6.1 注册为`RuntimeClass`
+> **详细指南**：完整的 Kubernetes 云边协同部署指南，请参考 **[Kubernetes 集成指南](k8s-integration.md)**。
 
-创建`<runtimeclass_file>.yaml`：
+本节简要介绍 Kubernetes 集成的概念。完整的部署步骤、配置示例和故障排查，请查看专门的集成文档。
 
-```yaml
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: micrun
-handler: micrun
+### 6.1 什么是云边协同
+
+**云边协同**（Cloud-Edge Collaboration）是指在云侧集中管理多个边侧节点，实现：
+- 统一的资源调度和管理
+- 应用的自动化部署和升级
+- 集中的监控和日志收集
+- 高可用和负载均衡
+
+### 6.2 MicRun 在 Kubernetes 中的角色
+
+```
+云侧（K3s Server）          边侧（K3s Agent + MicRun）
+┌──────────────┐           ┌──────────────────────────┐
+│ Kubernetes   │           │  containerd              │
+│ API Server   │◄──────────┤  ┌────────────────────┐  │
+│              │  管理接口  │  │ MicRun Runtime     │  │
+│  Scheduler   │           │  │ (Shim v2)          │  │
+│              │           │  └────────────────────┘  │
+└──────────────┘           │  ┌────────────────────┐  │
+                           │  │ RTOS Container     │  │
+                           │  │ (Zephyr/UniProton) │  │
+                           │  └────────────────────┘  │
+                           └──────────────────────────┘
 ```
 
-应用配置：
+**关键概念**：
+- **RuntimeClass**：Kubernetes 资源，声明 MicRun 为容器运行时
+- **K3s**：轻量级 Kubernetes 发行版，适合边缘场景
+- **云侧**：运行 K3s Server，提供管理 API
+- **边侧**：运行 K3s Agent + containerd + MicRun，实际运行 RTOS 容器
 
-```bash
-kubectl apply -f <runtimeclass_file>.yaml
-```
+### 6.3 快速体验
 
-**字段说明**：
-| 字段 | 说明 |
-|------|------|
-| `metadata.name` | `RuntimeClass`名称，`Pod`中引用时使用 |
-| `handler` | 运行时处理器名称，对应`containerd`配置中的运行时名称 |
+**前提条件**：
+1. 已完成步骤 1-5，MicRun 在边侧节点正常运行
+2. 有两台机器（或虚拟机）：一台作为云侧，一台作为边侧
+3. 网络互通
 
-### 6.2 配置`kubelet`
+**核心步骤**（详细步骤请参考 [Kubernetes 集成指南](k8s-integration.md)）：
 
-```bash
-# 启动`kubelet`时配置`CPU`管理策略
-kubelet --cpu-manager-policy=static
+1. **云侧部署**：安装 K3s Server
+   ```bash
+   curl -sfL https://get.k3s.io | sh -
+   ```
 
-# 可选：配置 CPU 隔离
-# isolcpus, nohz_full 等参数根据实际需求调整
-```
+2. **边侧部署**：安装 K3s Agent
+   ```bash
+   export K3S_URL="https://<cloud-ip>:6443"
+   export K3S_TOKEN="<node-token>"
+   curl -sfL https://get.k3s.io | K3S_URL=${K3S_URL} K3S_TOKEN=${K3S_TOKEN} sh -
+   ```
 
-**选项说明**：
-| 选项 | 说明 |
-|------|------|
-| `--cpu-manager-policy` | `CPU`管理策略，`static`适用于需要保证`CPU`资源的`RTOS`场景 |
+3. **注册 RuntimeClass**
+   ```bash
+   kubectl apply -f - <<EOF
+   apiVersion: node.k8s.io/v1
+   kind: RuntimeClass
+   metadata:
+     name: micrun
+   handler: micrun
+   EOF
+   ```
 
-### 6.3 运行`RTOS Pod`
+4. **部署 RTOS Pod**
+   ```bash
+   kubectl apply -f rtos-pod.yaml
+   ```
 
-创建`<pod_file>.yaml`：
+### 6.4 学习路径
 
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: <pod_name>
-spec:
-  runtimeClassName: micrun
-  containers:
-  - name: <container_name>
-    image: <image_name>:<tag>
-    resources:
-      limits:
-        cpu: "1000m"
-        memory: "512Mi"
-```
+- **新手**：建议先完成步骤 1-5，熟悉 MicRun 基本用法后再尝试 Kubernetes 集成
+- **有经验用户**：直接参考 [Kubernetes 集成指南](k8s-integration.md) 进行完整部署
+- **生产环境**：需要考虑高可用、监控、安全等，详见集成指南的高级用法章节
 
-应用配置：
+### 6.5 常见问题
 
-```bash
-kubectl apply -f <pod_file>.yaml
-```
+**Q：必须使用 K3s 吗？**
+A：不是必须的。MicRun 兼容标准 Kubernetes（1.28+），但 K3s 更轻量，适合边缘场景。
+
+**Q：可以在单节点测试吗？**
+A：可以。K3s 支持单节点模式，云侧和边侧可以在同一台机器上运行（仅用于测试）。
+
+**Q：如何监控 RTOS 容器状态？**
+A：使用 `kubectl get pods` 和 `kubectl describe pod` 查看。详细日志在边侧的 `/var/log/mica/mica-runtime.log`。
+
+**Q：Pod 无法启动怎么办？**
+A：参考 [Kubernetes 集成指南 - 故障排查](k8s-integration.md#故障排查) 章节，涵盖了常见问题和解决方法。
 
 ---
 
@@ -446,8 +638,21 @@ kubectl apply -f <pod_file>.yaml
 
 **A**：`-t`（`--tty`）为容器分配伪终端，这对于`RTOS`容器非常重要：
 - 支持交互式`shell`
-- 能够识别控制字符（如`Ctrl-C`）
 - 支持终端窗口大小调整
+- 支持通过输入 "exit" 命令退出容器
+
+### Q：如何退出 RTOS 容器？
+
+**A**：在 RTOS 交互式 shell 中输入 `exit` 命令并按回车：
+- Shim 会检测到 "exit" 命令
+- 触发容器停止（状态变为 STOPPED）
+- **重要**：Shim 继续运行，等待后续 API 调用
+
+要完全清理容器和 shim，需要显式执行：
+```bash
+ctr task delete <container_name>
+ctr container delete <container_name>
+```
 
 ### Q：镜像导入后如何查看完整名称？
 
@@ -460,7 +665,7 @@ kubectl apply -f <pod_file>.yaml
 ### Q：如何调试容器启动问题？
 
 **A**：
-1. 查看 MicRun 日志：`tail -f /tmp/micrun/runtime.log`
+1. 查看 MicRun 日志：`tail -f /var/log/mica/mica-runtime.log`
 2. 查看`containerd`日志：`journalctl -u containerd -f`
 3. 使用`ctr task metrics <container_id>`查看容器状态
 

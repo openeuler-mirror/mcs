@@ -289,7 +289,7 @@ func MountDirs(mounts []*cdtypes.Mount, dest string) error {
 
 }
 func backup(srcDir string) error {
-	backupDir := "/tmp/backupbundle"
+	backupDir := filepath.Join(defs.MicrunStateDir, defs.BackupDirName)
 
 	// Test source directory access first
 	if stat, err := os.Stat(srcDir); err != nil {

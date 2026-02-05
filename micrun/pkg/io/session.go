@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 
+	"micrun/definitions"
 	log "micrun/logger"
 
 	"github.com/containerd/fifo"
@@ -81,7 +82,7 @@ func IsValidFIFOPath(path string) bool {
 // Format: /run/containerd/io.containerd.runtime.v2.task/<namespace>/<container-id>/<stream>
 // where stream is "stdin", "stdout", or "stderr".
 func GenerateStandardFIFOPath(namespace, containerID, stream string) string {
-	return filepath.Join("/run/containerd/io.containerd.runtime.v2.task", namespace, containerID, stream)
+	return filepath.Join(defs.ContainerdTaskDir, namespace, containerID, stream)
 }
 
 // Start creates FIFOs, opens them, and starts the copier.

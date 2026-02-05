@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"micrun/definitions"
 	micrunio "micrun/pkg/io"
 
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
@@ -146,7 +147,7 @@ func convertOrGenerateFIFOPath(path, namespace, containerID, streamType string) 
 // This is a wrapper around micrunio.GenerateStandardFIFOPath for use in shim package.
 // Deprecated: Use micrunio.GenerateStandardFIFOPath directly.
 func GenerateStandardFIFOPath(namespace, containerID, stream string) string {
-	return filepath.Join("/run/containerd/io.containerd.runtime.v2.task", namespace, containerID, stream)
+	return filepath.Join(defs.ContainerdTaskDir, namespace, containerID, stream)
 }
 
 // IsValidFIFOPath checks if a path is a valid FIFO path (not a URL or empty string).

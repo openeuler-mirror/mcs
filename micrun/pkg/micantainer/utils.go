@@ -13,6 +13,7 @@ import (
 	"micrun/pkg/utils"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -353,7 +354,7 @@ func loadSandbox(ctx context.Context, id string) (sandbox *Sandbox, err error) {
 	if shouldCleanup {
 		// Clean up stale state files
 		log.Warnf("Cleaning up stale sandbox state for %s", id)
-		sandboxDir := defs.SandboxDataDir + "/" + id
+		sandboxDir := filepath.Join(defs.SandboxDataDir, id)
 		if removeErr := os.RemoveAll(sandboxDir); removeErr != nil {
 			log.Errorf("Failed to remove stale sandbox directory %s: %v", sandboxDir, removeErr)
 		}
