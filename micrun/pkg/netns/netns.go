@@ -210,9 +210,13 @@ func terminateByPID(pid int) error {
 
 	const retryWindow = 500 * time.Millisecond
 	deadline := time.Now().Add(2 * time.Second)
+	procPath := fmt.Sprintf("/proc/%d", pid)
+
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			return nil
+		// Use /proc check instead of Kill(pid, 0).
+		// This is lighter than signal handling and doesn't require permissions.
+		if _, err := os.Stat(procPath); os.IsNotExist(err) {
+			return nil // Process exited
 		}
 		time.Sleep(retryWindow)
 	}

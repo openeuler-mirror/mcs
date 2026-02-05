@@ -14,7 +14,10 @@ import (
 )
 
 const (
-	timeout    = 10 * time.Second
+	// Default timeout for TTY wait.
+	// Set to 30s to accommodate micad startup time (typically 5-6s, but can be longer under load).
+	// This is independent of the RPC context deadline - TTY wait must succeed regardless.
+	timeout    = 30 * time.Second
 	retryDelay = 50 * time.Millisecond
 )
 
@@ -69,50 +72,64 @@ func openTTYOnce(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = unix.SetNonblock(fd, false)
+	// Keep TTY in non-blocking mode for the IO copier
+	// The new copier handles EAGAIN properly with retry logic
 	return os.NewFile(uintptr(fd), path), nil
 }
 
 // drainTTY reads and discards any data already present in the TTY buffer.
 // This prevents stale data from being read when we first attach to the TTY.
+// Uses a limited number of reads to avoid indefinite blocking when RTOS is continuously sending data.
 func drainTTY(file *os.File) {
+	log.Debugf("[TTY] drainTTY called")
 	const drainBufSize = 1024
+	const maxDrainReads = 5 // Limit number of drain reads to avoid indefinite loop
 	buf := make([]byte, drainBufSize)
 	drained := 0
+	readCount := 0
+	fd := uintptr(file.Fd())
 
-	// Set a brief timeout for draining
-	// We use NONBLOCK mode temporarily to avoid blocking
-	oldFlags, err := unix.FcntlInt(uintptr(file.Fd()), unix.F_GETFL, 0)
+	// Check current flags
+	oldFlags, err := unix.FcntlInt(fd, unix.F_GETFL, 0)
 	if err != nil {
+		log.Warnf("[TTY] Failed to get flags: %v", err)
 		return
 	}
 
 	// Set non-blocking
-	_, _ = unix.FcntlInt(uintptr(file.Fd()), unix.F_SETFL, oldFlags|unix.O_NONBLOCK)
+	_, err = unix.FcntlInt(fd, unix.F_SETFL, oldFlags|unix.O_NONBLOCK)
+	if err != nil {
+		log.Warnf("[TTY] Failed to set non-blocking: %v", err)
+		return
+	}
 	defer func() {
 		// Restore original flags
-		_, _ = unix.FcntlInt(uintptr(file.Fd()), unix.F_SETFL, oldFlags)
+		_, _ = unix.FcntlInt(fd, unix.F_SETFL, oldFlags)
 	}()
 
-	// Read until we get EAGAIN
-	for {
-		n, err := file.Read(buf)
+	// Read until we get EAGAIN or reach max read count
+	for readCount < maxDrainReads {
+		readCount++
+		// Use unix.Read directly on file descriptor to ensure non-blocking behavior
+		n, err := unix.Read(int(fd), buf)
 		if n > 0 {
 			drained += n
-			log.Debugf("[TTY] Drained %d bytes from TTY buffer", n)
+			log.Debugf("[TTY] Drained %d bytes (read %d/%d)", n, readCount, maxDrainReads)
 			// Don't drain too much - might be legitimate data
 			if drained > 4096 {
 				log.Warnf("[TTY] Drained %d bytes, stopping to avoid dropping valid data", drained)
 				break
 			}
+			// Continue to next read (limited by maxDrainReads)
 			continue
 		}
 		if err != nil {
 			// EAGAIN means no more data (EWOULDBLOCK == EAGAIN on Linux)
-			if errors.Is(err, unix.EAGAIN) {
+			if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
 				break
 			}
 			// Other errors - stop draining
+			log.Debugf("[TTY] Drain error: %v", err)
 			break
 		}
 		// n == 0 and err == nil - EOF
@@ -120,7 +137,10 @@ func drainTTY(file *os.File) {
 	}
 
 	if drained > 0 {
-		log.Infof("[TTY] Total drained %d bytes from TTY buffer", drained)
+		log.Debugf("[TTY] Total drained %d bytes in %d reads", drained, readCount)
+	}
+	if readCount >= maxDrainReads {
+		log.Debugf("[TTY] Drain reached max read count (%d)", maxDrainReads)
 	}
 }
 
@@ -129,13 +149,15 @@ func drainTTY(file *os.File) {
 // For RPMSG TTY devices used by RTOS containers:
 // - Use RAW mode for transparent data transfer (no local processing)
 // - Disable echo (handled by terminal emulator on client side)
-// - Disable signal processing (shim handles Ctrl+C, etc.)
+// - Disable signal processing (RTOS has no POSIX signal mechanism)
 // - Disable output processing (OPOST) to prevent double line breaks
+// - Disable input processing (ICRNL, etc.) for transparent passthrough
 //
 // RTOS typically sends proper line endings (\r\n), so we don't convert them.
 // This prevents double line breaks when RTOS output already contains \r\n.
+// For non-TTY mode, the copier converts LF to CRLF, and the TTY must pass it through unchanged.
 func configureTTY(fd uintptr, path string) error {
-	log.Infof("[TTY] Configuring RPMSG TTY for raw mode: %s", path)
+	log.Debugf("[TTY] Configuring RPMSG TTY for raw mode: %s", path)
 
 	var termios unix.Termios
 	if err := unix.IoctlSetTermios(int(fd), unix.TCGETS, &termios); err != nil {
@@ -150,20 +172,23 @@ func configureTTY(fd uintptr, path string) error {
 	// Configure for RAW mode with minimal processing
 	//
 	// Input flags (c_iflag):
-	// - ICRNL: Translate CR to NL on input (Enter key -> newline)
-	// - IXON/IXANY/IXOFF: Software flow control
-	// Clear: IGNBRK, BRKINT, PARMRK, ISTRIP, INLCR, IGNCR
+	// - Disable ICRNL: Do NOT translate CR to NL on input
+	//   The copier sends CRLF for commands, and RTOS expects CRLF
+	// - Disable IXON/IXANY/IXOFF: Disable software flow control
+	// - Clear: IGNBRK, BRKINT, PARMRK, ISTRIP, INLCR, IGNCR, ICRNL, IXON, IXANY, IXOFF
+	// This ensures complete transparency for input data
 	termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK |
-		unix.ISTRIP | unix.INLCR | unix.IGNCR
-	termios.Iflag |= unix.ICRNL | unix.IXON | unix.IXANY
+		unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL |
+		unix.IXON | unix.IXANY | unix.IXOFF
+	// termios.Iflag is now 0 - complete pass through
 
 	// Output flags (c_oflag):
-	// - OPOST: Enable output processing (needed for proper terminal display)
-	// - ONLCR: Map NL to CR-NL (standard terminal behavior)
-	// Clear: OCRNL, OLCUC (these cause extra conversions)
-	// The goal is: RTOS sends \n -> TTY converts to \r\n -> terminal displays correctly
-	termios.Oflag |= unix.OPOST | unix.ONLCR
-	termios.Oflag &^= unix.OCRNL | unix.OLCUC
+	// - Disable OPOST and all output processing
+	// - RTOS already sends proper line endings (\r\n)
+	// - TTY should pass through data transparently without conversion
+	// - If RTOS sends \r\n, and TTY converts \n to \r\n, we get \r\r\n (extra blank line)
+	// - Solution: Disable all output processing for transparent passthrough
+	termios.Oflag &^= unix.OPOST | unix.ONLCR | unix.OCRNL | unix.OLCUC | unix.OCRNL
 
 	// Control flags (c_cflag):
 	// - CS8: 8-bit data
@@ -177,7 +202,7 @@ func configureTTY(fd uintptr, path string) error {
 	// - CLEAR ALL: This is the key for RAW mode
 	// - No ICANON: Non-canonical mode (no line buffering)
 	// - No ECHO*: No echo (handled by client terminal)
-	// - No ISIG: No signal processing (we handle Ctrl+C ourselves)
+	// - No ISIG: No signal processing (pass Ctrl+C as literal character to RTOS)
 	// - No IEXTEN: No implementation-defined input processing
 	termios.Lflag &^= unix.ICANON | unix.ECHO | unix.ECHOE | unix.ECHOK |
 		unix.ECHOCTL | unix.ECHOKE | unix.ECHONL | unix.ISIG | unix.IEXTEN |
@@ -208,10 +233,50 @@ func configureTTY(fd uintptr, path string) error {
 	return nil
 }
 
+// cleanupStaleSymlink removes stale TTY symlinks that point to non-existent devices.
+// This prevents ENXIO errors when trying to open TTYs from previous container runs.
+func cleanupStaleSymlink(path string) {
+	// Check if path is a symlink
+	fi, err := os.Lstat(path)
+	if err != nil {
+		// Path doesn't exist, nothing to clean up
+		return
+	}
+
+	// Only process symlinks
+	if fi.Mode()&os.ModeSymlink == 0 {
+		return
+	}
+
+	// Resolve the symlink to check if target exists
+	target, err := os.Readlink(path)
+	if err != nil {
+		log.Debugf("[TTY] Failed to read symlink %s: %v", path, err)
+		return
+	}
+
+	// Check if target file exists
+	if _, err := os.Stat(target); err != nil {
+		if os.IsNotExist(err) {
+			// Target doesn't exist, remove stale symlink
+			log.Debugf("[TTY] Removing stale symlink %s -> %s", path, target)
+			if removeErr := os.Remove(path); removeErr != nil {
+				log.Warnf("[TTY] Failed to remove stale symlink %s: %v", path, removeErr)
+			}
+		}
+	}
+}
+
 func dialTTY(ctx context.Context, containerID string) (stdin *os.File, stdout *os.File, openedPath string, err error) {
 	paths := candiateTTYs(containerID)
 	if len(paths) == 0 {
 		return nil, nil, "", fmt.Errorf("empty container id")
+	}
+
+	// Clean up any stale symlinks before attempting to open TTY
+	// This prevents ENXIO errors from previous container runs
+	for _, p := range paths {
+		cleanupStaleSymlink(p)
 	}
 
 	timeout := timeout
@@ -258,7 +323,7 @@ func dialTTY(ctx context.Context, containerID string) (stdin *os.File, stdout *o
 				return nil, nil, "", fmt.Errorf("open rpmsg tty %s (stdout): %w", p, openErr)
 			}
 
-			log.Infof("[TTY] Successfully opened RPMSG TTY: %s", p)
+			log.Infof("[TTY] Opened RPMSG TTY for %s: %s", containerID, p)
 			return in, out, p, nil
 		}
 

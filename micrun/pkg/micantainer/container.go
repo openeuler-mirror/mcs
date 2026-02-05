@@ -214,9 +214,10 @@ func (c *Container) start(ctx context.Context) error {
 
 	if err := startClient(ctx, c.sandbox, c); err != nil {
 		log.Warnf("Failed to start container: %v, stopping it", err)
-		if err := c.stop(ctx, true); err != nil {
+		if stopErr := c.stop(ctx, true); stopErr != nil {
 			log.Warn("Failed to stop the container after start failed.")
 		}
+		return err
 	}
 
 	return c.setContainerState(ctx, StateRunning)
@@ -328,7 +329,11 @@ func (c *Container) ioStream(taskID string) (io.WriteCloser, io.Reader, io.Reade
 		return noopWriteCloser{}, bytes.NewReader(nil), bytes.NewReader(nil), nil
 	}
 
-	stdin, stdout, _, err := dialTTY(c.ctx, c.id)
+	// Use a background context for TTY wait to avoid RPC deadline issues
+	// The TTY wait can take longer than the Start RPC timeout (e.g., waiting for micad to start)
+	// This is safe because the TTY wait is independent of the RPC request lifecycle
+	ttyCtx := context.Background()
+	stdin, stdout, _, err := dialTTY(ttyCtx, c.id)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1243,7 +1248,9 @@ func (c *Container) winresize(height, width uint32) error {
 		return fmt.Errorf("container not ready or running, impossible to resize the container pty")
 	}
 	log.Debugf("resizing PTY for container %s to [%dx%d]", c.id, width, height)
-	stdin, stdout, p, err := dialTTY(c.ctx, c.id)
+	// Use a background context for TTY wait to avoid RPC deadline issues
+	ttyCtx := context.Background()
+	stdin, stdout, p, err := dialTTY(ttyCtx, c.id)
 	if err != nil {
 		return err
 	}
@@ -1256,6 +1263,24 @@ func (c *Container) winresize(height, width uint32) error {
 		return fmt.Errorf("set winsize: %w", err)
 	}
 	return nil
+}
+
+// OpenTTYs opens fresh TTY handles for the container.
+// This is used during reattach to get new TTY file descriptors
+// instead of using stale closed ones from attachInfo.
+func (c *Container) OpenTTYs() (stdin, stdout *os.File, err error) {
+	if c.notOperational() {
+		return nil, nil, fmt.Errorf("container not ready or running, impossible to open TTY")
+	}
+	log.Infof("[TTY] Opening fresh TTY handles for container %s", c.id)
+	// Use a background context for TTY wait to avoid RPC deadline issues
+	ttyCtx := context.Background()
+	stdin, stdout, p, err := dialTTY(ttyCtx, c.id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open TTY for %s: %w", c.id, err)
+	}
+	log.Infof("[TTY] Opened fresh TTY handles for container %s: %s", c.id, p)
+	return stdin, stdout, nil
 }
 
 // firmware is the elf file of rtos

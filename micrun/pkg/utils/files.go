@@ -164,17 +164,45 @@ func SaveStructToJSON(file string, state any) error {
 		log.Pretty("err: %v, state: %v", err, state)
 		return fmt.Errorf("failed to serialize struct: %w", err)
 	}
-	log.Debugf("SaveStructToJSON: writing %d bytes to %s", len(structBytes), file)
-	if err := os.WriteFile(file, structBytes, defs.FileMode); err != nil {
+	log.Infof("[SaveStructToJSON] Serialized %d bytes for %s", len(structBytes), file)
+
+	// Create directory if needed
+	if err := os.MkdirAll(filepath.Dir(file), defs.DirMode); err != nil {
+		log.Errorf("SaveStructToJSON: failed to create directory for %s: %v", file, err)
+		return err
+	}
+	log.Infof("[SaveStructToJSON] Created directory for %s", filepath.Dir(file))
+
+	// Open file with write flags
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, defs.FileMode)
+	if err != nil {
+		log.Errorf("SaveStructToJSON: failed to open %s: %v", file, err)
+		return err
+	}
+	log.Infof("[SaveStructToJSON] Opened file %s", file)
+
+	// Write data
+	if _, err := f.Write(structBytes); err != nil {
+		f.Close()
 		log.Errorf("SaveStructToJSON: failed to write to %s: %v", file, err)
 		return err
 	}
-	// Verify file was written
-	if _, err := os.Stat(file); err != nil {
-		log.Errorf("SaveStructToJSON: file %s not found after write: %v", file, err)
-		return fmt.Errorf("file not found after write: %w", err)
+	log.Infof("[SaveStructToJSON] Wrote %d bytes to %s", len(structBytes), file)
+
+	// Sync to disk - ensures data is flushed to filesystem storage
+	// This is critical for state persistence before process exit
+	if err := f.Sync(); err != nil {
+		f.Close()
+		log.Errorf("SaveStructToJSON: failed to sync %s: %v", file, err)
+		return err
 	}
-	log.Debugf("SaveStructToJSON: successfully wrote %s", file)
+
+	if err := f.Close(); err != nil {
+		log.Errorf("SaveStructToJSON: failed to close %s: %v", file, err)
+		return err
+	}
+
+	log.Infof("[SaveStructToJSON] Successfully wrote and synced %s", file)
 	return nil
 }
 

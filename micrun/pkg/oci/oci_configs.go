@@ -286,7 +286,7 @@ func prepCache(id, pedconf, elfPath string) (string, string, error) {
 
 // container bundle rootfs is already mounted
 // hence we can check bundle contents for container configuration
-func ParseContainerCfg(id, bundle string, ocispec specs.Spec, ct cntr.ContainerType, detach bool, defaultFirmwarePath string, runtimeConfig *RuntimeConfig) (*cntr.ContainerConfig, error) {
+func ParseContainerCfg(id, bundle string, ocispec specs.Spec, ct cntr.ContainerType, defaultFirmwarePath string, runtimeConfig *RuntimeConfig) (*cntr.ContainerConfig, error) {
 	baseRootfs := bundleRootfs(bundle)
 
 	getAnnotation := func(key string) (string, bool) {
@@ -368,9 +368,9 @@ func ParseContainerCfg(id, bundle string, ocispec specs.Spec, ct cntr.ContainerT
 	return config, nil
 }
 
-func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID string, detach bool) (cntr.SandboxConfig, error) {
+func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID string) (cntr.SandboxConfig, error) {
 	// generate sandbox container config
-	containerConfig, err := ParseContainerCfg(sbContainerID, bundle, *ocispec, cntr.PodSandbox, detach, rc.DefaultFirmwarePath, &rc)
+	containerConfig, err := ParseContainerCfg(sbContainerID, bundle, *ocispec, cntr.PodSandbox, rc.DefaultFirmwarePath, &rc)
 	if err != nil {
 		return cntr.SandboxConfig{}, err
 	}

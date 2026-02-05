@@ -132,20 +132,15 @@ func tipSchedCore() {
 }
 
 func getMicadPid() (int, error) {
-	// Get MICA daemon state which includes PID
-	daemonState, err := libmica.DaemonState()
-
+	// Detect micad PID without attempting to start it
+	pid, err := libmica.MicadDetect()
 	if err != nil {
-		log.Warnf("Failed to get micad daemon state: %v", err)
-		return 0, err
+		return 0, fmt.Errorf("micad not running: %w", err)
 	}
-
-	// Check if daemon is actually running before returning PID
-	if daemonState.State != libmica.DaemonRunning {
-		return 0, fmt.Errorf("Micad daemon is not running (state: %s)", daemonState.State)
+	if pid == 0 {
+		return 0, fmt.Errorf("micad not running")
 	}
-
-	return daemonState.Pid, nil
+	return pid, nil
 }
 
 func cleanupContainer(ctx context.Context, sandboxID, containerID, bundle string) error {

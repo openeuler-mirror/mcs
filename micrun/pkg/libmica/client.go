@@ -399,8 +399,8 @@ func Start(id string) error {
 }
 
 // TODO: Extend mica response data, loading more information
-// TODO: completely migrate remove to stop, currently use remove instead of stop
-// we have to make sure that client os is down really
+// Stop stops the mica client (RTOS guest) by removing it from XEN
+// After stop, the sandbox state should be set to STOPPED to allow restart
 func Stop(id string) error {
 	if ClientNotExist(id) {
 		log.Infof("%s is already down, not need to stop it", id)

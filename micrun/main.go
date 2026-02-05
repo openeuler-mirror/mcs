@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 
 	log "micrun/logger"
 	"micrun/pkg/shim"
+	"micrun/version"
 
 	shimv2 "github.com/containerd/containerd/runtime/v2/shim"
 )
@@ -14,27 +17,71 @@ import (
 var ShimName string
 
 func main() {
-	if isBootstrapStart() {
-		// During bootstrap "start", containerd reads CombinedOutput from the shim
-		// for a strict JSON/address handshake. Any stderr/stdout noise corrupts
-		// the handshake and leaves the shim socket file behind. Silence console
-		// output in this phase.
-		log.SilenceOutput()
-	}
-
-	// Log shim startup for troubleshooting (before init, goes to discard)
-	log.Debug("MicRun shim starting with args:", os.Args)
-
-	if !isTaskRequest() {
-		// This shouldn't happen in normal operation
-		log.Debug("Not a task request, exiting early")
+	// Handle early commands (version/help) before starting shim
+	if handleEarlyCommand() {
+		fmt.Println("not starting shim, handled version/help request")
 		os.Exit(0)
 	}
 
-	log.Debug("Initializing shim with containerd...")
 	shimv2.Run(ShimName, shim.New, noReaper, noSubreaper, setupLogger)
-	// Avoid noisy info log after start handshake; keep at debug level.
-	log.Debug("shimv2.Run() returned normally")
+}
+
+// handleEarlyCommand handles version and help flags.
+// Returns true if an early command was handled (program should exit).
+// Note: This function manually checks arguments without using flag.Parse()
+// to avoid interfering with shim.Run()'s flag parsing (e.g., -namespace).
+func handleEarlyCommand() bool {
+	// 手动检查参数，不使用 flag.Parse() 避免干扰 shim.Run() 的 flag 解析
+	args := os.Args[1:]
+	for _, arg := range args {
+		switch arg {
+		case "-v", "-version", "--version":
+			printVersion()
+			return true
+		case "-h", "-help", "--help":
+			printHelp()
+			return true
+		}
+	}
+	return false
+}
+
+// printVersion prints micrun version information
+func printVersion() {
+	fmt.Printf("%s:\n", binaryName())
+	fmt.Println("  Version:  ", version.Version)
+	fmt.Println("  Revision: ", version.Revision)
+	fmt.Println("  Go version:", version.GoVersion)
+}
+
+// printHelp prints micrun help information
+func printHelp() {
+	fmt.Printf("Usage: %s [OPTIONS]\n\n", binaryName())
+	fmt.Println("micrun is a containerd shim v2 runtime for RTOS containers.")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  -v, --version     Show version information and exit")
+	fmt.Println("  -h, --help        Show this help message and exit")
+	fmt.Println()
+	fmt.Println("Shim v2 options (handled by containerd):")
+	fmt.Println("  -id string        Container ID")
+	fmt.Println("  -namespace string Namespace for the container")
+	fmt.Println("  -debug            Enable debug output in logs")
+	fmt.Println("  -address string   Address of containerd's main grpc socket")
+	fmt.Println("  -bundle string    Path to the bundle")
+	fmt.Println()
+	fmt.Println("For more information, see: https://github.com/openeuler/mica")
+}
+
+// binaryName returns the shim binary name
+func binaryName() string {
+	if ShimName != "" {
+		return "containerd-shim-" + ShimName
+	}
+	if len(os.Args) > 0 {
+		return filepath.Base(os.Args[0])
+	}
+	return "micrun"
 }
 
 func noReaper(c *shimv2.Config) {
@@ -53,8 +100,8 @@ func setupLogger(c *shimv2.Config) {
 	// Initialize logger with configuration
 	// Will load from /etc/micrun/config.json if available
 	if err := log.Initialize(nil); err != nil {
-		// If initialization fails, log to stderr and continue
-		log.Error("Failed to initialize logger:", err)
+		// If initialization fails, print to stderr and continue
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 	}
 
 	// Extract container ID from command-line arguments and set it for logging context
@@ -67,13 +114,6 @@ func setupLogger(c *shimv2.Config) {
 	// This ensures all logs include the namespace field
 	namespace := log.GetDefaultNamespace()
 	log.SetNamespace(namespace)
-
-	// Restore log output if we silenced it during bootstrap
-	if isBootstrapStart() {
-		if err := log.RestoreOutput(); err != nil {
-			log.Error("Failed to restore log output:", err)
-		}
-	}
 }
 
 // extractContainerID extracts the container ID from command-line arguments.
@@ -86,27 +126,4 @@ func extractContainerID() string {
 		}
 	}
 	return ""
-}
-
-func isBootstrapStart() bool {
-	for _, arg := range os.Args[1:] {
-		if arg == "start" {
-			return true
-		}
-	}
-	return false
-}
-
-func isTaskRequest() bool {
-	if len(os.Args) == 1 {
-		return false
-	}
-
-	for _, arg := range os.Args[1:] {
-		switch arg {
-		case "-v", "--version", "-h", "--help":
-			return false
-		}
-	}
-	return true
 }

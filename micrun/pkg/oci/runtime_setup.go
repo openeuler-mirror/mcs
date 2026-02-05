@@ -119,8 +119,8 @@ func (r *RuntimeConfig) ParseRuntimeFromINI(configPath string) error {
 	return nil
 }
 
-// TODO: finished
-// use "github.com/BurntSushi/toml"
+// TODO: parse micrun config from TOML format
+// Use "github.com/BurntSushi/toml"
 func (r *RuntimeConfig) ParseRuntimeFromToml(configPath string) error {
 	if _, err := os.Stat(configPath); err != nil {
 		return err

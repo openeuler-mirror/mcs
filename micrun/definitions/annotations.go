@@ -39,10 +39,22 @@ const (
 	FirmwarePathAnno = ContainerPrefix + "firmware_path"
 	// FirmwareHash is the sha-256 hash of the firmware.
 	FirmwareHash = ContainerPrefix + "firmware_hash"
-	// Some rtos may not support in-client shutdown well, so micrun add timeout autodisconnect
+
+	// AutoClose controls whether the container automatically closes after timeout.
+	// Priority: auto_close_timeout > auto_close > default
+	// If set to false, auto-close is disabled unless auto_close_timeout is set.
 	AutoClose = ContainerPrefix + "auto_close"
-	// Default to be 30 seconds, future: read this default timeout from config file
-	AutoCloseTimeout = ContainerPrefix + "auto_disconnect_timeout"
+
+	// AutoCloseTimeout specifies the duration before auto-close triggers.
+	// Has HIGHER priority than auto_close. If set, auto-close is enabled
+	// regardless of auto_close value.
+	// Format: duration string (e.g., "60s", "5m") or integer seconds (e.g., "60")
+	// Special values:
+	//   - "0" or "0s" = disabled (infinite connection, no timeout)
+	//   - negative values = invalid (error, falls back to default)
+	// Default: "30s" if not specified
+	AutoCloseTimeout = ContainerPrefix + "auto_close_timeout"
+
 	// Pedtype specifies the pedestal type.
 	Pedtype = PedPrefix + "pedestal"
 	// PedCompat specifies compatibility options: format "^versionX" (deprecated, use CompatPrefix directly)

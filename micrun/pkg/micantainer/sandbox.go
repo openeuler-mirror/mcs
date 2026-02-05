@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -32,6 +33,12 @@ type SandboxStorage struct {
 	Config  SandboxConfig `json:"config"`
 	Network NetworkConfig `json:"network"`
 	// Containers map[string]*Container `json:"containers"`
+
+	// Metadata for state validation
+	// CreatedAt is the timestamp when this state was created/updated
+	CreatedAt int64 `json:"created_at,omitempty"`
+	// ShimPID is the PID of the shim process that created/updated this state
+	ShimPID int `json:"shim_pid,omitempty"`
 }
 
 // Status is a graph of the sanbox, contains more than state
@@ -98,6 +105,11 @@ func (s *Sandbox) NetnsHolderPID() int {
 		return cfg.NetworkConfig.HolderPid
 	}
 	return 0
+}
+
+// GetState returns the current sandbox state
+func (s *Sandbox) GetState() StateString {
+	return s.state.State
 }
 
 func (s *Sandbox) Start(ctx context.Context) error {
@@ -168,8 +180,20 @@ func (s *Sandbox) Stop(ctx context.Context, force bool) error {
 		return nil
 	}
 
-	if err := s.state.Transition(s.state.State, StateStopped); err != nil {
+	// First, validate state transition is allowed
+	originalState := s.state.State
+	if err := s.state.Transition(originalState, StateStopped); err != nil {
 		return err
+	}
+
+	// Now actually change the state (Transition() only validates, doesn't modify)
+	s.state.State = StateStopped
+	log.Debugf("[STOP] State transition: %s -> STOPPED", originalState)
+
+	// CRITICAL: Save the new state to disk IMMEDIATELY
+	if err := s.StoreSandbox(ctx); err != nil {
+		log.Errorf("Failed to save sandbox state during Stop: %v", err)
+		// Continue with cleanup even if save fails
 	}
 
 	for _, c := range s.containers {
@@ -184,15 +208,7 @@ func (s *Sandbox) Stop(ctx context.Context, force bool) error {
 
 	log.Debug("stop monitor and console")
 
-	if err := s.setSandboxState(StateStopped); err != nil {
-		return err
-	}
-
 	if err := s.removeNetwork(); err != nil && !force {
-		return err
-	}
-
-	if err := s.StoreSandbox(ctx); err != nil {
 		return err
 	}
 
@@ -515,6 +531,19 @@ func (s *Sandbox) WinResize(ctx context.Context, containerID string, height, wid
 	return c.winresize(height, width)
 }
 
+func (s *Sandbox) OpenTTYs(ctx context.Context, containerID string) (stdin, stdout *os.File, err error) {
+	if s.state.State != StateRunning {
+		return nil, nil, er.SandboxDown
+	}
+
+	c, ok := s.containers[containerID]
+	if c == nil || !ok {
+		return nil, nil, er.ContainerNotFound
+	}
+
+	return c.OpenTTYs()
+}
+
 func (s *Sandbox) PauseContainer(ctx context.Context, id string) error {
 
 	c, ok := s.containers[id]
@@ -579,6 +608,18 @@ func (s *Sandbox) UpdateContainer(ctx context.Context, id string, resources spec
 }
 
 // privates:
+// SetSandboxState explicitly sets the sandbox state to the given value.
+// This is used when we need to set the state without going through the full Stop() flow.
+func (s *Sandbox) SetSandboxState(state StateString) error {
+	if state == "" {
+		return er.InvalidState
+	}
+	s.state.State = state
+	log.Debugf("SetSandboxState: sandbox %s state set to %s", s.id, state)
+	return nil
+}
+
+// setSandboxState is an alias for SetSandboxState for backward compatibility.
 func (s *Sandbox) setSandboxState(state StateString) error {
 	if state == "" {
 		return er.InvalidState
@@ -594,13 +635,16 @@ func (s *Sandbox) StoreSandbox(ctx context.Context) error {
 		log.Errorf("StoreSandbox: failed to get storage path: %v", err)
 		return err
 	}
-	log.Debugf("StoreSandbox: saving sandbox state to %s", target)
+	log.Debugf("[StoreSandbox] Saving sandbox %s (state: %s) to %s", s.id, s.state.State, target)
 
 	// Create serializable representation of sandbox
 	serializable := SandboxStorage{
 		ID:     s.id,
 		State:  s.state,
 		Config: *s.config,
+		// Metadata for state validation
+		CreatedAt: time.Now().Unix(),
+		ShimPID:   os.Getpid(),
 	}
 
 	// NOTICE: remove unnecessary runtime reflection, make codes clean and faster
@@ -622,7 +666,6 @@ func (s *Sandbox) StoreSandbox(ctx context.Context) error {
 		log.Errorf("StoreSandbox: failed to save to %s: %v", target, err)
 		return err
 	}
-	log.Debugf("StoreSandbox: successfully saved sandbox state to %s", target)
 	return nil
 }
 
@@ -664,8 +707,7 @@ func (s *Sandbox) addContainer(c *Container) error {
 	return nil
 }
 
-// TODO: not finished well
-// NOTICE: we need idempotence, and make removeNetwork()
+// TODO: ensure idempotence - removeNetwork() should handle multiple calls safely
 func (s *Sandbox) removeNetwork() error {
 	log.Infof("remove network for sandbox %s", s.id)
 	if s.config == nil {

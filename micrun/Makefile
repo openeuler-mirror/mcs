@@ -19,6 +19,10 @@ BUILD_MODE ?= vendor
 BUILD_ARCH ?= $(if $(GOARCH),$(GOARCH),$(shell go env GOARCH))
 BUILD_TYPE ?= debug
 
+# Version information
+GIT_VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0+unknown")
+GIT_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
+
 # Build mode flags
 ifeq ($(BUILD_MODE),vendor)
 	GO_BUILD_FLAGS := -mod=vendor
@@ -33,9 +37,16 @@ endif
 
 # Build type flags
 ifeq ($(BUILD_TYPE),debug)
-	BUILD_FLAGS := -tags debug -ldflags "-X 'main.ShimName=${SHIM_NAME}'"
+	BUILD_FLAGS := -tags debug -ldflags \
+		"-X 'main.ShimName=${SHIM_NAME}' \
+		 -X 'micrun/version.Version=${GIT_VERSION}' \
+		 -X 'micrun/version.Revision=${GIT_REVISION}'"
 else
-	BUILD_FLAGS := -ldflags "-s -w -X 'main.ShimName=${SHIM_NAME}'"
+	BUILD_FLAGS := -ldflags \
+		"-s -w \
+		 -X 'main.ShimName=${SHIM_NAME}' \
+		 -X 'micrun/version.Version=${GIT_VERSION}' \
+		 -X 'micrun/version.Revision=${GIT_REVISION}'"
 endif
 
 # Cross-compilation flags
