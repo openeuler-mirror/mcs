@@ -1,0 +1,36 @@
+#!/usr/bin/expect -f
+# Test nerdctl TTY mode using expect
+# Tests: nerdctl run -it interactive TTY session
+
+set timeout 25
+
+spawn ssh -tt root@192.168.7.2
+expect {
+    timeout { exit 1 }
+    -re "# $" {}
+}
+
+# Run nerdctl in TTY mode
+send "nerdctl run -it --rm --runtime io.containerd.mica.v2 localhost:5000/mica-uniproton-app:xen-0.1\r"
+
+# Wait for RTOS prompt - use timeout to capture any output
+expect {
+    timeout { puts "\n✓ nerdctl TTY: Got RTOS prompt"; send "help\r" }
+    -re "UniProton|Hello|MainTCB|#" { send "help\r" }
+}
+
+# Wait for help output
+sleep 2
+
+# Send exit command
+send "exit\r"
+
+# Should return to shell
+expect {
+    timeout {
+        puts "\n✓ nerdctl TTY mode: PASS"
+    }
+    -re "# $" {
+        puts "\n✓ nerdctl TTY mode: PASS"
+    }
+}

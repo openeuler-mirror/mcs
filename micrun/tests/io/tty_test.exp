@@ -1,0 +1,58 @@
+#!/usr/bin/expect -f
+# TTY mode test for micrun using expect
+# Tests TTY foreground and background modes
+
+set timeout 15
+set remote_host "root@192.168.7.2"
+set test_image "localhost:5000/mica-uniproton-app:xen-0.1"
+
+# Test 1: TTY read-only mode (-t only, using ctr)
+puts "\n=== Test 1: TTY read-only mode (ctr with -t) ==="
+spawn ssh -tt $remote_host "ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.container.auto_close=true $test_image test-tty-readonly"
+expect {
+    timeout { puts "WARN: Container create timeout" }
+    eof { puts "INFO: Container created" }
+}
+
+spawn ssh -tt $remote_host "ctr task start -d test-tty-readonly"
+expect {
+    "panic" { puts "FAIL: Got panic!" ; exit 1 }
+    "test-tty-readonly" { puts "INFO: Task started" }
+    timeout { puts "INFO: Task start completed (timeout expected for TTY)" }
+    eof { puts "INFO: Task start completed" }
+}
+
+# Wait and check shim
+sleep 3
+spawn ssh $remote_host "ps aux | grep containerd-shim-mica-v2 | grep test-tty-readonly"
+expect {
+    "test-tty-readonly" { puts "PASS: Shim process running" }
+    eof { puts "FAIL: No shim process found" }
+}
+
+# Cleanup
+spawn ssh $remote_host "ctr task kill -s SIGKILL test-tty-readonly; ctr task delete -f test-tty-readonly; ctr container delete test-tty-readonly"
+expect eof
+
+# Test 2: TTY foreground mode (-it using nerdctl)
+puts "\n=== Test 2: TTY foreground mode (nerdctl with -it) ==="
+spawn ssh -tt $remote_host "timeout 5 nerdctl run --runtime io.containerd.mica.v2 --network=none -l org.openeuler.micrun.container.auto_close=true -it $test_image || true"
+expect {
+    "panic" { puts "FAIL: Got panic!" ; exit 1 }
+    "Main" { puts "PASS: Got RTOS prompt (Main)" }
+    "MainTCB" { puts "PASS: Got RTOS prompt (MainTCB)" }
+    ">" { puts "PASS: Got RTOS prompt (>)" }
+    "#" { puts "PASS: Got shell prompt" }
+    timeout { puts "INFO: No prompt detected (may be normal for timeout)" }
+    eof { puts "INFO: Connection closed" }
+}
+
+# Wait and check shim
+sleep 2
+spawn ssh $remote_host "ps aux | grep containerd-shim-mica-v2 | grep -v grep | grep -v test-pipe"
+expect {
+    "containerd-shim-mica-v2" { puts "INFO: Shim process exists" }
+    eof { puts "INFO: No shim process (expected after auto-close)" }
+}
+
+puts "\n=== TTY tests completed ==="

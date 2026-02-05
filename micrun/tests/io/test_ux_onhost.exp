@@ -1,0 +1,163 @@
+#!/usr/bin/expect -f
+# UX Test - Run directly on test environment
+# This script should be copied to the test host and run there
+
+set timeout 15
+set test_image "localhost:5000/mica-uniproton-app:xen-0.1"
+
+log_user 1
+
+puts "\n=========================================="
+puts "MicRun UX Test (on-host)"
+puts "==========================================\n"
+
+# Cleanup first
+exec ctr task kill -s SIGKILL test-ux-onhost 2>/dev/null
+exec ctr task delete -f test-ux-onhost 2>/dev/null
+exec ctr container delete test-ux-onhost 2>/dev/null
+
+# Create container
+puts "Creating container..."
+spawn ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.container.auto_close=true $test_image test-ux-onhost
+expect {
+    timeout { puts "WARN: Create timeout" }
+    eof { puts "INFO: Container created" }
+}
+
+# Start and test
+puts "\nStarting container and running tests..."
+spawn ctr task start test-ux-onhost
+
+set all_output ""
+set test_count 0
+
+expect {
+    -re "MainTCB>|Main>|>|#" {
+        puts "INFO: Got prompt"
+        set all_output $expect_out(buffer)
+
+        # Test 1: Send help command
+        incr test_count
+        puts "\n--- Test $test_count: Sending 'help' command ---"
+        send "help\r"
+
+        expect {
+            -re "help" {
+                append all_output $expect_out(buffer)
+                set help_count [regexp -all {help} $expect_out(buffer)]
+                puts "INFO: After sending 'help', found $help_count occurrences"
+
+                # Wait a bit for full response
+                after 1000
+
+                # Test 2: Send empty Enter
+                incr test_count
+                puts "\n--- Test $test_count: Sending empty Enter ---"
+                send "\r"
+
+                expect {
+                    -re "MainTCB>|Main>|>|#" {
+                        append all_output $expect_out(buffer)
+                        puts "INFO: Got prompt after empty Enter"
+
+                        # Test 3: Send help again
+                        incr test_count
+                        puts "\n--- Test $test_count: Sending 'help' again ---"
+                        send "help\r"
+
+                        expect {
+                            -re "help" {
+                                append all_output $expect_out(buffer)
+                                set help_count_2 [regexp -all {help} $all_output]
+                                puts "INFO: After second 'help', total 'help' count: $help_count_2"
+
+                                # Check for duplicate output
+                                puts "\n=========================================="
+                                puts "Test Results Summary"
+                                puts "=========================================="
+                                puts "Total tests run: $test_count"
+                                puts "Total 'help' occurrences in output: $help_count_2"
+                                puts ""
+
+                                # Analyze for issues
+                                set issues_found 0
+
+                                # Check 1: Too many help keywords
+                                if {$help_count_2 > 4} {
+                                    puts "ISSUE FOUND: Excessive 'help' occurrences ($help_count_2)"
+                                    puts "  - Expected: ~4 (2 inputs + 2 responses)"
+                                    puts "  - This may indicate duplicate output problem"
+                                    incr issues_found
+                                }
+
+                                # Check 2: Look for specific patterns indicating double echo
+                                if {[regexp {helphelp} $all_output]} {
+                                    puts "ISSUE FOUND: 'helphelp' pattern detected (double echo)"
+                                    incr issues_found
+                                }
+
+                                # Check 3: Output size
+                                set output_size [string length $all_output]
+                                puts "Total output size: $output_size bytes"
+
+                                if {$issues_found == 0} {
+                                    puts "\nNo critical issues detected"
+                                } else {
+                                    puts "\nTotal issues found: $issues_found"
+
+                                    # Save detailed output for analysis
+                                    set fd [open "/tmp/ux_test_detail.log" "w"]
+                                    puts $fd "=== Complete Captured Output ==="
+                                    puts $fd $all_output
+                                    puts $fd "\n=== Analysis ==="
+                                    puts $fd "Tests run: $test_count"
+                                    puts $fd "Help occurrences: $help_count_2"
+                                    puts $fd "Output size: $output_size"
+                                    puts $fd "Issues found: $issues_found"
+                                    close $fd
+                                    puts "\nDetailed output saved to: /tmp/ux_test_detail.log"
+                                }
+
+                                send "\003"
+                                expect eof
+                            }
+                            timeout {
+                                puts "WARN: Timeout on second help"
+                                send "\003"
+                                expect eof
+                            }
+                        }
+                    }
+                    timeout {
+                        puts "WARN: Timeout after empty Enter"
+                        send "\003"
+                        expect eof
+                    }
+                }
+            }
+            timeout {
+                puts "WARN: Timeout waiting for help response"
+                send "\003"
+                expect eof
+            }
+        }
+    }
+    timeout {
+        puts "WARN: Timeout waiting for initial prompt"
+        send "\003"
+        expect eof
+    }
+    eof {
+        puts "INFO: Connection closed"
+    }
+}
+
+# Cleanup
+puts "\n--- Cleaning up ---"
+exec ctr task kill -s SIGKILL test-ux-onhost 2>/dev/null
+exec ctr task delete -f test-ux-onhost 2>/dev/null
+exec ctr container delete test-ux-onhost 2>/dev/null
+
+puts "\n=========================================="
+puts "Test Complete"
+puts "==========================================\n"

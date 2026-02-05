@@ -1,0 +1,158 @@
+#!/usr/bin/expect -f
+# UX Test 2: Command Consistency Verification
+# 验证多次输入相同命令的响应一致性
+
+set timeout 15
+set remote_host "root@192.168.7.2"
+set test_image "localhost:5000/mica-uniproton-app:xen-0.1"
+
+log_user 0
+log_file test_ux_consistency.log
+
+puts "\n=========================================="
+puts "UX Test 2: Command Consistency Verification"
+puts "==========================================\n"
+
+# Create container
+spawn ssh $remote_host "ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.container.auto_close=true $test_image test-ux-consistency"
+expect {
+    timeout { puts "WARN: Container create timeout" }
+    eof { puts "INFO: Container created" }
+}
+
+# Start TTY session
+spawn ssh -tt $remote_host "timeout 10 ctr task start test-ux-consistency"
+
+set output_a ""
+set output_b ""
+set output_c ""
+
+expect {
+    # 等待提示符
+    -re "MainTCB>|Main>|>|#" {
+        puts "INFO: Got prompt, Test 1 - First 'help' command"
+
+        # 第一次 help 命令
+        send "help\r"
+
+        expect {
+            -re "MainTCB>|Main>|>|#" {
+                set output_a $expect_out(buffer)
+                puts "INFO: Got response A, Test 2 - Empty Enter command"
+
+                # 空回车命令
+                send "\r"
+
+                expect {
+                    -re "MainTCB>|Main>|>|#" {
+                        set output_b $expect_out(buffer)
+                        puts "INFO: Got response B, Test 3 - Second 'help' command"
+
+                        # 第二次 help 命令
+                        send "help\r"
+
+                        expect {
+                            -re "MainTCB>|Main>|>|#" {
+                                set output_c $expect_out(buffer)
+                                puts "INFO: Got response C, analyzing..."
+
+                                send "exit\r"  # Use exit command instead of Ctrl-C
+                                expect eof
+
+                                # 分析结果
+                                puts "\n=========================================="
+                                puts "Test Results:"
+                                puts "=========================================="
+                                puts "Output A length: [string length $output_a] bytes"
+                                puts "Output B length: [string length $output_b] bytes"
+                                puts "Output C length: [string length $output_c] bytes"
+                                puts ""
+
+                                # 检查空命令输出
+                                set help_in_b [regexp -all {help} $output_b]
+                                puts "Empty command test:"
+                                if {$help_in_b == 0} {
+                                    puts "  PASS: Empty command shows no 'help' content"
+                                } else {
+                                    puts "  FAIL: Empty command contains 'help' ($help_in_b times)"
+                                }
+
+                                # 检查一致性
+                                puts "\nConsistency test:"
+                                if {$output_a == $output_c} {
+                                    puts "  PASS: Output A and C are identical"
+                                } else {
+                                    puts "  WARN: Output A and C differ"
+
+                                    # 保存详细输出用于分析
+                                    set fd [open "test_ux_consistency_detail.log" "w"]
+                                    puts $fd "=== Output A (first help) ==="
+                                    puts $fd $output_a
+                                    puts $fd "\n=== Output B (empty enter) ==="
+                                    puts $fd $output_b
+                                    puts $fd "\n=== Output C (second help) ==="
+                                    puts $fd $output_c
+                                    puts $fd "\n=== Comparison ==="
+                                    puts $fd "A length: [string length $output_a]"
+                                    puts $fd "C length: [string length $output_c]"
+                                    puts $fd "A equals C: [string equal $output_a $output_c]"
+                                    close $fd
+                                    puts "  - Detailed output saved to test_ux_consistency_detail.log"
+                                }
+
+                                # 检查每个输出中 help 的数量
+                                set help_a [regexp -all {help} $output_a]
+                                set help_c [regexp -all {help} $output_c]
+                                puts "\nKeyword counts:"
+                                puts "  'help' in A: $help_a"
+                                puts "  'help' in C: $help_c"
+
+                                # 检查提示符数量
+                                set prompt_a [regexp -all -re {MainTCB>|Main>|>|#} $output_a]
+                                set prompt_b [regexp -all -re {MainTCB>|Main>|>|#} $output_b]
+                                set prompt_c [regexp -all -re {MainTCB>|Main>|>|#} $output_c]
+                                puts "\nPrompt counts:"
+                                puts "  Prompts in A: $prompt_a"
+                                puts "  Prompts in B: $prompt_b"
+                                puts "  Prompts in C: $prompt_c"
+                            }
+                            timeout {
+                                puts "WARN: Timeout on second help"
+                                send "exit\r"
+                                expect eof
+                            }
+                        }
+                    }
+                    timeout {
+                        puts "WARN: Timeout on empty enter"
+                        send "exit\r"
+                        expect eof
+                    }
+                }
+            }
+            timeout {
+                puts "WARN: Timeout on first help"
+                send "exit\r"
+                expect eof
+            }
+        }
+    }
+    timeout {
+        puts "WARN: Timeout waiting for initial prompt"
+        send "\003"
+        expect eof
+    }
+    eof {
+        puts "INFO: Connection closed"
+    }
+}
+
+# Cleanup
+puts "\n--- Cleaning up ---"
+spawn ssh $remote_host "ctr task kill -s SIGKILL test-ux-consistency 2>/dev/null; ctr task delete -f test-ux-consistency 2>/dev/null; ctr container delete test-ux-consistency 2>/dev/null"
+expect eof
+
+puts "\n=========================================="
+puts "Test 2 Complete"
+puts "==========================================\n"
+

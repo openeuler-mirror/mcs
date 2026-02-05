@@ -1,0 +1,161 @@
+#!/usr/bin/expect
+# Comprehensive test script for extra newline fix verification
+# Run this ON the remote host (192.168.7.7)
+# Usage: expect test_newline_comprehensive.exp
+
+set timeout 60
+
+puts "\n=========================================="
+puts "Comprehensive Newline Fix Test"
+puts "=========================================="
+
+# Cleanup
+puts "\n--- Cleanup ---"
+spawn sh -c "ctr task ls -q | grep test-nl && ctr task kill -s 9 test-nl 2>/dev/null; ctr task delete test-nl 2>/dev/null; ctr container delete test-nl 2>/dev/null; true"
+expect {
+    -re "#" { }
+    timeout { }
+}
+
+# Create container
+puts "\n--- Create container ---"
+spawn ctr container create --runtime io.containerd.mica.v2 -t localhost:5000/mica-uniproton-app:xen-0.1 test-nl
+expect {
+    "test-nl" { puts "Created OK" }
+    timeout { puts "FAIL: Create timeout"; exit 1 }
+}
+
+# Start container with longer initial wait
+puts "\n--- Start container (waiting up to 50s for RTOS to boot) ---"
+spawn ctr task start test-nl
+
+# Wait for Hello message with long timeout
+set timeout 50
+expect {
+    "Hello" {
+        puts "\n+++ OK: Got Hello message"
+    }
+    timeout {
+        puts "\n+++ WARN: Timeout waiting for Hello, continuing anyway..."
+    }
+}
+
+# Wait for prompt with flexible pattern
+set timeout 20
+expect {
+    -re "UniProton|openEuler|#" {
+        puts "+++ OK: Got first prompt"
+    }
+    timeout {
+        puts "\n+++ WARN: Timeout waiting for prompt, continuing..."
+    }
+}
+
+# Test 1: Press Enter - should show ONE prompt (no extra blank line)
+puts "\n========== TEST 1: Press Enter =========="
+puts "Expected: ONE prompt (no extra blank line)"
+send "\r"
+
+# Wait for response
+set timeout 10
+expect {
+    -re "UniProton|openEuler" {
+        puts ">>> PASS: Got prompt after Enter"
+    }
+    timeout {
+        puts ">>> TIMEOUT (may be normal if no stdin)"
+    }
+}
+
+# Test 2: Another Enter
+puts "\n========== TEST 2: Another Enter =========="
+send "\r"
+
+set timeout 10
+expect {
+    -re "UniProton|openEuler" {
+        puts ">>> PASS: Got prompt after 2nd Enter"
+    }
+    timeout {
+        puts ">>> TIMEOUT"
+    }
+}
+
+# Test 3: help command
+puts "\n========== TEST 3: Send 'help' =========="
+puts "Expected: help output with minimal blank lines"
+send "help\r"
+
+set timeout 15
+expect {
+    "support shell" {
+        puts ">>> PASS: Got help output start"
+    }
+    timeout {
+        puts ">>> FAIL: Timeout waiting for help";
+        # Don't exit, continue with cleanup
+    }
+}
+
+# Wait for prompt
+set timeout 10
+expect {
+    -re "UniProton|openEuler" {
+        puts ">>> PASS: Got prompt after help"
+    }
+    timeout {
+        puts ">>> TIMEOUT waiting for prompt after help"
+    }
+}
+
+# Test 4: Another Enter to verify pattern
+puts "\n========== TEST 4: Final Enter =========="
+send "\r"
+
+set timeout 10
+expect {
+    -re "UniProton|openEuler" {
+        puts ">>> PASS: Got prompt after final Enter"
+    }
+    timeout {
+        puts ">>> TIMEOUT"
+    }
+}
+
+# Cleanup
+puts "\n========== Cleanup =========="
+puts "Sending Ctrl+Q Ctrl+Q to detach..."
+send "\x11"
+sleep 0.2
+send "\x11"
+
+set timeout 5
+expect {
+    -re "#" {
+        puts "Detached OK"
+    }
+    timeout {
+        puts "Timeout waiting for detach prompt (may already be detached)"
+    }
+}
+
+spawn sh -c "ctr task kill -s 9 test-nl 2>/dev/null; ctr task delete test-nl 2>/dev/null; ctr container delete test-nl"
+expect {
+    -re "#" { }
+    timeout { }
+}
+
+puts "\n=========================================="
+puts "TEST SUMMARY"
+puts "=========================================="
+puts "All critical tests completed."
+puts ""
+puts "Verification checklist:"
+puts "1. After 'Hello, UniProton!' - check blank lines (should be 1-2, not 3+)"
+puts "2. Each Enter key - should show ONE prompt (not prompt + blank line)"
+puts "3. Help output - should have minimal blank lines between items"
+puts ""
+puts "If you still see excessive blank lines, the fix may need adjustment."
+puts "==========================================\n"
+
+exit 0

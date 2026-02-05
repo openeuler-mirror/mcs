@@ -1,0 +1,64 @@
+#!/usr/bin/expect
+# Test script using script command to create pseudo-terminal
+# Run this ON the remote host (192.168.7.2)
+
+set timeout 60
+
+puts "\n=========================================="
+puts "Newline Fix Test (with script pseudo-tty)"
+puts "=========================================="
+
+# Cleanup
+puts "\n--- Cleanup ---"
+spawn sh -c "ctr task ls -q | grep test-nl && ctr task kill -s 9 test-nl 2>/dev/null; ctr task delete test-nl 2>/dev/null; ctr container delete test-nl 2>/dev/null; true"
+expect {
+    -re "#" { }
+    timeout { }
+}
+
+# Create
+puts "\n--- Create ---"
+spawn ctr container create --runtime io.containerd.mica.v2 -t localhost:5000/mica-uniproton-app:xen-0.1 test-nl
+expect "test-nl"
+
+# Start with script (creates pseudo-terminal)
+puts "\n--- Start (using script for pseudo-tty) ---"
+spawn sh -c "echo ''; echo 'help'; echo '' | timeout 45 ctr task start test-nl 2>&1 || true"
+
+# Wait for output with longer timeout
+set timeout 55
+expect {
+    "Hello" {
+        puts "\n+++ OK: Got Hello message"
+    }
+    timeout {
+        puts "\n+++ WARN: No Hello message (RTOS may still be booting)"
+    }
+}
+
+# Check if we got any prompt-like output
+set timeout 5
+expect {
+    -re "UniProton|support shell|help" {
+        puts "\n+++ OK: Got output"
+    }
+    timeout {
+        puts "\n+++ No output detected"
+    }
+}
+
+puts "\n=========================================="
+puts "Test complete - check output above for:"
+puts "1. Excessive blank lines after 'Hello'"
+puts "2. Multiple prompts after Enter"
+puts "3. Excessive blank lines in help output"
+puts "==========================================\n"
+
+# Cleanup
+spawn sh -c "ctr task kill -s 9 test-nl 2>/dev/null; ctr task delete test-nl 2>/dev/null; ctr container delete test-nl"
+expect {
+    -re "#" { }
+    timeout { }
+}
+
+exit 0

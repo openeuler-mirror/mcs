@@ -82,7 +82,7 @@ test_2_interactive_terminal() {
     log_info "  2. Look for 'UniProton #' prompt"
     log_info "  3. Press Enter a few more times to verify repeated prompts"
     log_info "  4. Type 'help' command to check output"
-    log_info "  5. Press Ctrl+C to exit"
+    log_info "  5. Type 'exit' to exit"
 
     read -p "Press Enter to start the container in interactive mode..."
 
@@ -124,7 +124,7 @@ test_4_attach() {
     log_info "Expected: Should attach to running container terminal"
 
     read -p "Press Enter to attach to the container..."
-    log_info "Attaching... (Press Ctrl+D to detach)"
+    log_info "Attaching... (Type 'exit' to stop container, or Ctrl+C to disconnect)"
 
     timeout 30 ctr task attach ${CONTAINER_NAME} || true
 

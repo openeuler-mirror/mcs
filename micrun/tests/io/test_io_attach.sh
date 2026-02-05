@@ -150,7 +150,7 @@ test_5_attach_manual() {
     log_info "  1. Run: ctr task attach ${CONTAINER_NAME}"
     log_info "  2. Press Enter - should see 'openEuler UniProton #' prompt"
     log_info "  3. Type 'help' - should see command list"
-    log_info "  4. Press Ctrl+C or wait for timeout"
+    log_info "  4. Type 'exit' or wait for timeout"
 
     read -p "Did the manual attach test work? (y/n): " answer
     if [ "$answer" = "y" ]; then

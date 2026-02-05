@@ -1,0 +1,61 @@
+#!/usr/bin/expect -f
+# TTY Echo Test - Single shot test
+set timeout 30
+
+puts "\n=========================================="
+puts "MicRun TTY Echo Test"
+puts "==========================================\n"
+
+# Connect to test host
+spawn ssh -tt root@192.168.7.2
+expect -re "#|\\$"
+
+# Clean log
+send "rm -f /var/log/mica/mica-runtime.log\r"
+expect -re "#|\\$"
+
+# Clean up old container
+send "nerdctl rm -f test-echo-final 2>/dev/null || true\r"
+expect -re "#|\\$"
+
+# Start container in foreground mode (blocking)
+puts "\n>>> Starting container (will wait for prompt)..."
+send "nerdctl run -it --runtime io.containerd.mica.v2 --network=none -l org.openeuler.micrun.container.auto_close=false --name test-echo-final localhost:5000/mica-uniproton-app:xen-0.1\r"
+
+# Wait for RTOS prompt with longer timeout
+expect {
+    -re "openEuler|MainTCB>|Main>|>#" {
+        puts "\n!!! GOT PROMPT - Container is ready !!!"
+    }
+    timeout {
+        puts "\n!!! TIMEOUT - No prompt, but continuing anyway !!!"
+    }
+}
+
+# Now test the echo behavior
+puts "\n>>> TEST: Type 'help' and observe echo behavior"
+puts "    (Should see 'help' ONCE, not TWICE)\n"
+send "help"
+send "\r"
+after 3000
+
+# Send another command
+puts "\n>>> TEST: Type 'uname' and observe echo behavior\n"
+send "uname"
+send "\r"
+after 2000
+
+# Exit
+puts "\n>>> Exiting..."
+send "\004"
+
+expect -re "#|\\$" {
+    send "nerdctl rm -f test-echo-final 2>/dev/null\r"
+    expect -re "#|\\$"
+    send "exit\r"
+}
+
+puts "\n=========================================="
+puts "Test Complete - Please observe output above"
+puts "==========================================\n"
+expect eof
