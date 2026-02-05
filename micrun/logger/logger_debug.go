@@ -39,6 +39,11 @@ func setupOutputImpl(cfg *Config) error {
 	// Use containerd formatter for the main output
 	Log.SetFormatter(&containerdFormatter{})
 
+	// Clear existing hooks before adding new ones to prevent duplicates
+	// This is necessary because setupOutputImpl() may be called multiple times
+	// (e.g., from Initialize() and RestoreOutput())
+	Log.ReplaceHooks(make(logrus.LevelHooks))
+
 	// Add hooks
 	Log.AddHook(&contextHook{})
 	Log.AddHook(&fileHook{
@@ -438,4 +443,11 @@ func colorize(level logrus.Level, msg string) string {
 	}
 
 	return colorCode + msg + colorReset
+}
+
+// tracefImpl implements Tracef for debug builds.
+// Outputs to both containerd log fifo AND log file with "[TRACE]" prefix.
+// The prefix makes trace logs easily identifiable in the log file.
+func tracefImpl(format string, args ...any) {
+	Log.Debugf("[TRACE] "+format, args...)
 }

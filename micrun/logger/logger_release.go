@@ -153,3 +153,18 @@ func needsQuoting(s string) bool {
 	}
 	return false
 }
+
+// tracefImpl implements Tracef for release builds.
+// This is a NO-OP function in release builds.
+//
+// The Go compiler optimizes away all calls to this function, resulting in:
+//   - Zero runtime overhead
+//   - No string formatting executed
+//   - No memory allocation for format strings or arguments
+//
+// This means all Tracef() calls effectively disappear from release binaries,
+// reducing log noise without losing any debugging information in debug builds.
+func tracefImpl(format string, args ...any) {
+	// No-op: compiler optimizes away all calls to this function
+	// No code here ensures the function body is empty
+}

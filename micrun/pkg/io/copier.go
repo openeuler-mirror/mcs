@@ -309,7 +309,7 @@ func (c *Copier) initEpoll(ttyFd int) error {
 		}
 	}
 
-	log.Debugf("[IO] epoll initialized: fd=%d, ttyFd=%d, cancelPipeR=%d", epfd, ttyFd, c.cancelPipeR)
+	log.Tracef("[IO] epoll initialized: fd=%d, ttyFd=%d, cancelPipeR=%d", epfd, ttyFd, c.cancelPipeR)
 	return nil
 }
 
@@ -337,7 +337,7 @@ func (c *Copier) waitForData(ttyFd int) bool {
 		// Check if context is already canceled BEFORE epoll_wait
 		select {
 		case <-c.ctx.Done():
-			log.Debugf("[IO] waitForData: context canceled before epoll_wait")
+			log.Tracef("[IO] waitForData: context canceled before epoll_wait")
 			return false
 		default:
 		}
@@ -361,7 +361,7 @@ func (c *Copier) waitForData(ttyFd int) bool {
 		// Check if context was canceled while waiting
 		select {
 		case <-c.ctx.Done():
-			log.Debugf("[IO] waitForData: context canceled after epoll_wait")
+			log.Tracef("[IO] waitForData: context canceled after epoll_wait")
 			return false
 		default:
 		}
@@ -435,7 +435,7 @@ func (c *Copier) initStdinEpoll(stdinFd int) error {
 		}
 	}
 
-	log.Debugf("[IO] stdin epoll initialized: fd=%d, stdinFd=%d, cancelPipeR=%d", epfd, stdinFd, c.cancelPipeR)
+	log.Tracef("[IO] stdin epoll initialized: fd=%d, stdinFd=%d, cancelPipeR=%d", epfd, stdinFd, c.cancelPipeR)
 	return nil
 }
 
@@ -481,7 +481,7 @@ func (c *Copier) waitForStdinOrCancel(stdinFd int) bool {
 		// Check if context is already canceled BEFORE epoll_wait
 		select {
 		case <-c.ctx.Done():
-			log.Debugf("[IO] waitForStdinOrCancel: context canceled before epoll_wait")
+			log.Tracef("[IO] waitForStdinOrCancel: context canceled before epoll_wait")
 			return false
 		default:
 		}
@@ -519,7 +519,7 @@ func (c *Copier) waitForStdinOrCancel(stdinFd int) bool {
 		// Check if context was canceled while waiting
 		select {
 		case <-c.ctx.Done():
-			log.Debugf("[IO] waitForStdinOrCancel: context canceled after epoll_wait")
+			log.Tracef("[IO] waitForStdinOrCancel: context canceled after epoll_wait")
 			return false
 		default:
 		}
@@ -557,16 +557,16 @@ func isExitCommand(line []byte) bool {
 	// Trim leading and trailing whitespace
 	trimmed := trimSpace(line)
 	// Debug logging
-	log.Debugf("[IO] isExitCommand: input=%q (%d bytes), trimmed=%q (%d bytes)",
+	log.Tracef("[IO] isExitCommand: input=%q (%d bytes), trimmed=%q (%d bytes)",
 		string(line), len(line), string(trimmed), len(trimmed))
 	// Check case-insensitively for "exit"
 	if len(trimmed) == 4 {
 		c := string(trimmed)
 		result := c == "exit" || c == "EXIT" || c == "Exit"
-		log.Debugf("[IO] isExitCommand: len=4, string=%q, result=%v", c, result)
+		log.Tracef("[IO] isExitCommand: len=4, string=%q, result=%v", c, result)
 		return result
 	}
-	log.Debugf("[IO] isExitCommand: len=%d, returning false", len(trimmed))
+	log.Tracef("[IO] isExitCommand: len=%d, returning false", len(trimmed))
 	return false
 }
 
@@ -584,7 +584,7 @@ func trimSpace(b []byte) []byte {
 		end--
 	}
 	result := b[start:end]
-	log.Debugf("[IO] trimSpace: input=%q -> result=%q (start=%d, end=%d)", string(b), string(result), start, end)
+	log.Tracef("[IO] trimSpace: input=%q -> result=%q (start=%d, end=%d)", string(b), string(result), start, end)
 	return result
 }
 
@@ -605,11 +605,11 @@ func (c *Copier) Start() error {
 
 	// Start stdin → TTY copier
 	if c.config.StdinFIFO != "" && c.ttyIn != nil {
-		log.Infof("[IO] Starting stdin→TTY copier goroutine for %s", c.config.ContainerID)
+		log.Debugf("[IO] Starting stdin→TTY copier goroutine for %s", c.config.ContainerID)
 		c.wg.Add(1)
 		go c.copyStdin()
 	} else {
-		log.Infof("[IO] Skipping stdin→TTY copier: StdinFIFO=%q, ttyIn=%v", c.config.ContainerID, c.config.StdinFIFO, c.ttyIn != nil)
+		log.Debugf("[IO] Skipping stdin→TTY copier: StdinFIFO=%q, ttyIn=%v", c.config.ContainerID, c.config.StdinFIFO, c.ttyIn != nil)
 	}
 
 	// Check if ttyOut and ttyErr point to the same file descriptor
@@ -641,20 +641,20 @@ func (c *Copier) Start() error {
 		// IMPORTANT: In Non-TTY detached mode, stdout FIFO may not have readers initially
 		// We start the copier anyway, but handle write failures gracefully
 		if c.config.StdoutFIFO != "" && c.ttyOut != nil {
-			log.Infof("[IO] Starting TTY→stdout copier goroutine for %s", c.config.ContainerID)
+			log.Debugf("[IO] Starting TTY→stdout copier goroutine for %s", c.config.ContainerID)
 			c.wg.Add(1)
 			go c.copyStdout()
 		} else {
-			log.Infof("[IO] Skipping TTY→stdout copier: StdoutFIFO=%q, ttyOut=%v", c.config.ContainerID, c.config.StdoutFIFO, c.ttyOut != nil)
+			log.Debugf("[IO] Skipping TTY→stdout copier: StdoutFIFO=%q, ttyOut=%v", c.config.ContainerID, c.config.StdoutFIFO, c.ttyOut != nil)
 		}
 
 		// Start TTY → stderr copier (if applicable)
 		if c.config.StderrFIFO != "" && c.ttyErr != nil {
-			log.Infof("[IO] Starting TTY→stderr copier goroutine for %s", c.config.ContainerID)
+			log.Debugf("[IO] Starting TTY→stderr copier goroutine for %s", c.config.ContainerID)
 			c.wg.Add(1)
 			go c.copyStderr()
 		} else {
-			log.Infof("[IO] Skipping TTY→stderr copier: StderrFIFO=%q, ttyErr=%v", c.config.ContainerID, c.config.StderrFIFO, c.ttyErr != nil)
+			log.Debugf("[IO] Skipping TTY→stderr copier: StderrFIFO=%q, ttyErr=%v", c.config.ContainerID, c.config.StderrFIFO, c.ttyErr != nil)
 		}
 	}
 
@@ -665,30 +665,30 @@ func (c *Copier) Start() error {
 // Stop gracefully stops the copier.
 func (c *Copier) Stop() {
 	if c.stopped.CompareAndSwap(false, true) {
-		log.Infof("[IO] [1] Stopping copier for %s", c.config.ContainerID)
+		log.Infof("[IO] [1/12] Stopping copier for %s", c.config.ContainerID)
 
 		// Wake up any blocked Poll calls by closing cancel pipe write end
-		log.Infof("[IO] [2] About to close cancel pipe for %s", c.config.ContainerID)
+		log.Debugf("[IO] [2/12] About to close cancel pipe for %s", c.config.ContainerID)
 		if c.cancelPipeW >= 0 {
 			unix.Close(c.cancelPipeW)
 			c.cancelPipeW = -1
 		}
-		log.Infof("[IO] [3] Cancel pipe closed for %s", c.config.ContainerID)
+		log.Debugf("[IO] [3/12] Cancel pipe closed for %s", c.config.ContainerID)
 
 		// Cancel context to signal goroutines to exit
 		c.cancel()
-		log.Infof("[IO] [4] Context canceled for %s", c.config.ContainerID)
+		log.Debugf("[IO] [4/12] Context canceled for %s", c.config.ContainerID)
 
 		// Close FIFOs FIRST to unblock any FIFO writes
 		// This is critical: if attach client has stopped reading, FIFO writes will block
 		// Closing FIFOs interrupts any in-progress writes, allowing goroutines to exit
-		log.Infof("[IO] [5] Closing FIFOs for %s", c.config.ContainerID)
+		log.Debugf("[IO] [5/12] Closing FIFOs for %s", c.config.ContainerID)
 		c.closeFIFOs()
-		log.Infof("[IO] [6] FIFOs closed for %s", c.config.ContainerID)
+		log.Debugf("[IO] [6/12] FIFOs closed for %s", c.config.ContainerID)
 
 		// Close TTY readers to unblock goroutines from TTY reads
 		// This ensures copyStdout and copyStderr exit their Read() calls
-		log.Infof("[IO] [7] Closing TTY readers for %s", c.config.ContainerID)
+		log.Debugf("[IO] [7/12] Closing TTY readers for %s", c.config.ContainerID)
 		if c.ttyOut != nil {
 			if closer, ok := c.ttyOut.(io.Closer); ok {
 				closer.Close()
@@ -699,17 +699,17 @@ func (c *Copier) Stop() {
 				closer.Close()
 			}
 		}
-		log.Infof("[IO] [8] TTY readers closed for %s", c.config.ContainerID)
+		log.Debugf("[IO] [8/12] TTY readers closed for %s", c.config.ContainerID)
 
 		// Close TTY write end to stop sending data to RTOS
 		if c.ttyIn != nil {
 			c.ttyIn.Close()
 		}
-		log.Infof("[IO] [9] TTY write end closed for %s", c.config.ContainerID)
+		log.Debugf("[IO] [9/12] TTY write end closed for %s", c.config.ContainerID)
 
 		// Wait for goroutines with a timeout
 		// Note: We don't wait indefinitely because FIFO writes might be stuck in kernel
-		log.Infof("[IO] [10] Waiting for goroutines to exit for %s", c.config.ContainerID)
+		log.Debugf("[IO] [10/12] Waiting for goroutines to exit for %s", c.config.ContainerID)
 		done := make(chan struct{})
 		go func() {
 			c.wg.Wait()
@@ -717,9 +717,9 @@ func (c *Copier) Stop() {
 		}()
 		select {
 		case <-done:
-			log.Infof("[IO] [11] Goroutines exited for %s", c.config.ContainerID)
+			log.Debugf("[IO] [11/12] Goroutines exited for %s", c.config.ContainerID)
 		case <-time.After(500 * time.Millisecond):
-			log.Warnf("[IO] [11] Goroutines timeout waiting for %s, continuing anyway", c.config.ContainerID)
+			log.Warnf("[IO] [11/12] Goroutines timeout waiting for %s, continuing anyway", c.config.ContainerID)
 		}
 
 		// Clean up epoll fd
@@ -740,7 +740,7 @@ func (c *Copier) Stop() {
 			c.cancelPipeR = -1
 		}
 
-		log.Infof("[IO] [12] Copier stopped for %s", c.config.ContainerID)
+		log.Infof("[IO] [12/12] Copier stopped for %s", c.config.ContainerID)
 	}
 }
 
@@ -829,7 +829,7 @@ func (c *Copier) copyStdin() {
 		n, err := c.stdinFifo.Read(buf)
 		// Only log errors and significant events, not every read (high-frequency)
 		if err != nil && !isClosed(err) && err != io.EOF && !isEAGAIN(err) {
-			log.Debugf("[IO] stdin FIFO read: n=%d, err=%v", n, err)
+			log.Tracef("[IO] stdin FIFO read: n=%d, err=%v", n, err)
 		}
 		if err != nil {
 			// Check for EOF or closed
@@ -1012,7 +1012,7 @@ func (c *Copier) copyStdinTTY(data []byte) {
 				lineWithoutTerm = lineWithoutTerm[:len(lineWithoutTerm)-1]
 			}
 
-			log.Infof("[IO] TTY: lineWithoutTerm=%q (len=%d)", string(lineWithoutTerm), len(lineWithoutTerm))
+			log.Tracef("[IO] TTY: lineWithoutTerm=%q (len=%d)", string(lineWithoutTerm), len(lineWithoutTerm))
 
 			// Check for "exit" command - stop BEFORE sending line ending to RTOS
 			if isExitCommand(lineWithoutTerm) {
@@ -1056,7 +1056,7 @@ func (c *Copier) copyStdinTTY(data []byte) {
 			log.Errorf("[IO] TTY write error for %s: %v", c.config.ContainerID, err)
 			return
 		}
-		log.Debugf("[IO] TTY write OK for %s: wrote %d bytes (ch=%d %q)", c.config.ContainerID, n, originalCh, originalCh)
+		log.Tracef("[IO] TTY write OK for %s: wrote %d bytes (ch=%d %q)", c.config.ContainerID, n, originalCh, originalCh)
 
 		// Track sent characters for echo suppression (in TTY mode)
 		// This helps filter out RTOS echo to avoid double echo
@@ -1073,7 +1073,7 @@ func (c *Copier) copyStdinTTY(data []byte) {
 					c.sentCharsCursor -= 128
 				}
 			}
-			log.Debugf("[IO] Tracking sent char: %d (%q), total tracked: %d", originalCh, originalCh, len(c.sentChars))
+			log.Tracef("[IO] Tracking sent char: %d (%q), total tracked: %d", originalCh, originalCh, len(c.sentChars))
 		}
 	}
 }
@@ -1082,7 +1082,7 @@ func (c *Copier) copyStdinTTY(data []byte) {
 // Returns true if detach sequence is detected.
 func (c *Copier) checkDetachSequence(ch byte) bool {
 	// Debug logging for all detach sequence checks
-	log.Debugf("[IO] checkDetachSequence: ch=%d (%q), detachPending=%v, detachKeys=%v",
+	log.Tracef("[IO] checkDetachSequence: ch=%d (%q), detachPending=%v, detachKeys=%v",
 		ch, ch, c.detachPending, c.detachKeys)
 
 	// Fast path: first character must match first key
@@ -1100,14 +1100,14 @@ func (c *Copier) checkDetachSequence(ch byte) bool {
 			}
 			return len(c.detachKeys) == 1 // Single key detach sequence
 		}
-		log.Debugf("[IO] checkDetachSequence: ch=%d doesn't match detachKeys[0]=d, continuing",
+		log.Tracef("[IO] checkDetachSequence: ch=%d doesn't match detachKeys[0]=d, continuing",
 			ch, c.detachKeys[0])
 		return false
 	}
 
 	// We have a pending partial match, check if this continues the sequence
 	c.detachBuf = append(c.detachBuf, ch)
-	log.Debugf("[IO] Detach pending: added ch=%d to detachBuf, now %v",
+	log.Tracef("[IO] Detach pending: added ch=%d to detachBuf, now %v",
 		ch, c.detachBuf)
 	if len(c.detachBuf) >= len(c.detachKeys) {
 		// Check if we've matched the full sequence
@@ -1126,7 +1126,7 @@ func (c *Copier) checkDetachSequence(ch byte) bool {
 			}
 			return true
 		}
-		log.Debugf("[IO] Detach sequence partial match didn't complete")
+		log.Tracef("[IO] Detach sequence partial match didn't complete")
 	}
 
 	// Sequence didn't match, flush the buffer to TTY and reset
@@ -1138,7 +1138,7 @@ func (c *Copier) checkDetachSequence(ch byte) bool {
 	}
 	c.detachBuf = c.detachBuf[:0]
 	c.detachPending = false
-	log.Debugf("[IO] Detach sequence reset, pending=false")
+	log.Tracef("[IO] Detach sequence reset, pending=false")
 	return false
 }
 
@@ -1180,7 +1180,7 @@ func isExitCommandWithNewline(data []byte) bool {
 func (c *Copier) copyStdinNonTTY(data []byte) {
 	log.Infof("[IO] Non-TTY: received data: %q (%d bytes)", string(data), len(data))
 	// Debug: print hex data for diagnosis
-	log.Infof("[IO] Non-TTY: hex data: %s", hexDump(data))
+	log.Tracef("[IO] Non-TTY: hex data: %s", hexDump(data))
 
 	// Split data by newlines to handle multi-line input properly
 	// This allows detection of "exit" commands even when multiple lines
@@ -1239,14 +1239,14 @@ func (c *Copier) copyStdinNonTTY(data []byte) {
 		}
 
 		// Log the data being sent for debugging
-		log.Infof("[IO] Non-TTY: sending %q (%d bytes) to TTY", string(converted), len(converted))
+		log.Debugf("[IO] Non-TTY: sending %q (%d bytes) to TTY", string(converted), len(converted))
 
 		if _, err := c.ttyIn.Write(converted); err != nil {
 			log.Errorf("[IO] TTY write error for %s: %v", c.config.ContainerID, err)
 			return
 		}
 
-		log.Infof("[IO] Non-TTY: wrote %d bytes (converted from %d)", len(converted), len(line))
+		log.Debugf("[IO] Non-TTY: wrote %d bytes (converted from %d)", len(converted), len(line))
 	}
 }
 
@@ -1355,7 +1355,7 @@ func (c *Copier) copyStdout() {
 		totalRead += n
 		// Log first reads for debugging (with hex dump for diagnosis)
 		if totalRead <= 500 || n < 20 {
-			log.Infof("[IO] TTY→stdout read %d bytes: %q, hex: %s", n, string(buf[:min(n, 100)]), hexDump(buf[:n]))
+			log.Debugf("[IO] TTY→stdout read %d bytes: %q, hex: %s", n, string(buf[:min(n, 100)]), hexDump(buf[:n]))
 		}
 
 		// Filter NUL bytes if enabled
@@ -1410,7 +1410,7 @@ func (c *Copier) copyStdout() {
 		}
 
 		// Add debug log after successful write
-		log.Infof("[IO] TTY→stdout: successfully wrote %d bytes to FIFO for %s", len(data), c.config.ContainerID)
+		log.Debugf("[IO] TTY→stdout: successfully wrote %d bytes to FIFO for %s", len(data), c.config.ContainerID)
 	}
 }
 
@@ -1428,9 +1428,9 @@ func (c *Copier) copyStdoutErrUnified() {
 		log.Warnf("[IO] Unified: stdout FIFO is nil for %s - output will be discarded!", c.config.ContainerID)
 	}
 	if c.stderrFIFO == nil {
-		log.Debugf("[IO] Unified: stderr FIFO is nil for %s (this is OK if merged with stdout)", c.config.ContainerID)
+		log.Tracef("[IO] Unified: stderr FIFO is nil for %s (this is OK if merged with stdout)", c.config.ContainerID)
 	} else {
-		log.Infof("[IO] Unified: stderr FIFO is set for %s but will NOT be written (unified mode only writes stdout to avoid duplicate output)", c.config.ContainerID)
+		log.Debugf("[IO] Unified: stderr FIFO is set for %s but will NOT be written (unified mode only writes stdout to avoid duplicate output)", c.config.ContainerID)
 	}
 
 	buf := make([]byte, c.config.StdoutBufSize)
@@ -1501,7 +1501,7 @@ func (c *Copier) copyStdoutErrUnified() {
 		totalRead += n
 		// Log first reads for debugging
 		if totalRead <= 500 || n < 20 {
-			log.Infof("[IO] Unified TTY read %d bytes: %q for %s", n, string(buf[:min(n, 100)]), c.config.ContainerID)
+			log.Debugf("[IO] Unified TTY read %d bytes: %q for %s", n, string(buf[:min(n, 100)]), c.config.ContainerID)
 		}
 
 		// Filter NUL bytes if enabled
@@ -1557,7 +1557,7 @@ func (c *Copier) copyStdoutErrUnified() {
 			} else {
 				// Log successful writes (first few for debugging)
 				if totalRead <= 100 {
-					log.Infof("[IO] Unified: wrote %d bytes to stdout FIFO for %s", written, c.config.ContainerID)
+					log.Debugf("[IO] Unified: wrote %d bytes to stdout FIFO for %s", written, c.config.ContainerID)
 				}
 			}
 		}
@@ -1694,7 +1694,7 @@ func (c *Copier) SetTTYs(ttyIn io.WriteCloser, ttyOut, ttyErr io.Reader) {
 			newFd = int(f.Fd())
 		}
 	}
-	log.Infof("[IO] SetTTYs for %s: oldFd=%d, newFd=%d", c.config.ContainerID, oldFd, newFd)
+	log.Tracef("[IO] SetTTYs for %s: oldFd=%d, newFd=%d", c.config.ContainerID, oldFd, newFd)
 	c.ttyIn = ttyIn
 	c.ttyOut = ttyOut
 	c.ttyErr = ttyErr
@@ -1834,7 +1834,7 @@ func (c *Copier) suppressRTOSEcho(data []byte) []byte {
 				if c.sentCharsCursor < len(c.sentChars) {
 					expectedByte = string([]byte{c.sentChars[c.sentCharsCursor]})
 				}
-				log.Debugf("[IO] Echo suppression lost sync at pos %d, resetting (expected %s, got %d (%q))",
+				log.Tracef("[IO] Echo suppression lost sync at pos %d, resetting (expected %s, got %d (%q))",
 					c.sentCharsCursor, expectedByte, ch, ch)
 			}
 			result = append(result, ch)
@@ -1852,7 +1852,7 @@ func (c *Copier) suppressRTOSEcho(data []byte) []byte {
 	}
 
 	if suppressedCount > 0 {
-		log.Debugf("[IO] Suppressed %d echoed characters from RTOS", suppressedCount)
+		log.Tracef("[IO] Suppressed %d echoed characters from RTOS", suppressedCount)
 	}
 
 	return result

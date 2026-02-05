@@ -353,6 +353,41 @@ func ErrorLevelf(format string, args ...any) {
 	Log.Errorf(format, args...)
 }
 
+// Tracef logs a message at TRACE level.
+//
+// This function has DIFFERENT implementations in debug and release builds:
+//
+//   - Debug builds (-tags debug): Outputs to both containerd log fifo AND log file
+//                                with "[TRACE]" prefix for easy identification
+//
+//   - Release builds: This is a NO-OP function. The compiler optimizes away
+//                     all calls to Tracef, resulting in:
+//                       * Zero runtime overhead
+//                       * No string formatting
+//                       * No memory allocation
+//
+// Usage guidelines (when to use Tracef vs Debugf/Infof):
+//
+//   USE Tracef for:
+//   - Test-only diagnostics (fd values, byte-level tracking, raw epoll events)
+//   - High-frequency events that don't help in production debugging
+//   - Implementation details that don't affect problem diagnosis
+//   - Variable values that are only useful during development
+//
+//   DO NOT use Tracef for (use Debugf instead):
+//   - Functional debugging info (function entry/exit with context)
+//   - State changes that help understand what's happening
+//   - API calls and their parameters
+//
+//   DO NOT use Tracef for (use Infof/Warnf/Errorf instead):
+//   - State transitions (use Infof)
+//   - Recoverable issues (use Warnf)
+//   - Failures (use Errorf)
+func Tracef(format string, args ...any) {
+	// Implemented differently in logger_debug.go and logger_release.go
+	tracefImpl(format, args...)
+}
+
 // Debugf logs a formatted message at debug level.
 func Debugf(format string, args ...any) {
 	Log.Debugf(format, args...)

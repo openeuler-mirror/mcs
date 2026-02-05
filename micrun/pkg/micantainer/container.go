@@ -102,7 +102,7 @@ func newContainer(ctx context.Context, s *Sandbox, cc *ContainerConfig) (*Contai
 	}
 
 	if cc.ID == "" {
-		log.Debugf("Empty container id.")
+		log.Tracef("Empty container id.")
 		return &Container{}, er.EmptyContainerID
 	}
 
@@ -821,15 +821,15 @@ func validOS(os string) bool {
 // validComponent checks if a component file is a regular file.
 func validComponent(component string) bool {
 	if !utils.IsRegular(component) {
-		log.Debugf("validComponent: %s is not a regular file", component)
+		log.Tracef("validComponent: %s is not a regular file", component)
 		return false
 	}
 
 	hostArch := runtime.GOARCH
-	log.Debugf("validComponent: checking %s on host arch %s", component, hostArch)
+	log.Tracef("validComponent: checking %s on host arch %s", component, hostArch)
 
 	if match, _ := utils.IsELFForHost(component); match {
-		log.Debugf("validComponent: %s is a valid ELF for host", component)
+		log.Tracef("validComponent: %s is a valid ELF for host", component)
 		return true
 	}
 
@@ -884,17 +884,17 @@ func (c *Container) validMicaContainer() bool {
 
 	os := c.os()
 	firmware := c.getFirmware()
-	log.Debugf("validMicaContainer: os=%q, firmware=%q", os, firmware)
+	log.Tracef("validMicaContainer: os=%q, firmware=%q", os, firmware)
 
 	osValid := validOS(os)
 	fwValid := validFirmware(firmware)
 	if HostPedType == ped.Xen {
 		binFile := validBinfile(c.getPedConf())
-		log.Debugf("validMicaContainer: pedConf=%q, binFile valid=%v", c.getPedConf(), binFile)
+		log.Tracef("validMicaContainer: pedConf=%q, binFile valid=%v", c.getPedConf(), binFile)
 		fwValid = binFile && fwValid
 	}
 	judge := osValid && fwValid
-	log.Debugf("container validation: os=%v, firmware=%v, valid=%v", osValid, fwValid, judge)
+	log.Tracef("container validation: os=%v, firmware=%v, valid=%v", osValid, fwValid, judge)
 
 	return judge
 }
@@ -970,20 +970,20 @@ func (c *Container) checkState() StateString {
 // register client when container is missing and the container is not a infra container
 func (c *Container) ensureClientPresence() (StateString, error) {
 	state := c.checkState()
-	log.Debugf("ensureClientPresence: container %s state=%s shouldPresent=%v", c.id, state, c.shouldPresent())
+	log.Tracef("ensureClientPresence: container %s state=%s shouldPresent=%v", c.id, state, c.shouldPresent())
 	if state != StateDown {
 		return state, nil
 	}
 
 	if c.shouldPresent() && libmica.ClientNotExist(c.id) {
-		log.Debugf("ensureClientPresence: registering client %s", c.id)
+		log.Tracef("ensureClientPresence: registering client %s", c.id)
 		if err := c.registerClient(); err != nil {
 			return StateDown, err
 		}
 	}
 
 	state = c.checkState()
-	log.Debugf("ensureClientPresence: after registration, container %s state=%s", c.id, state)
+	log.Tracef("ensureClientPresence: after registration, container %s state=%s", c.id, state)
 	if state == StateDown {
 		return StateDown, er.ContainerNotFound
 	}
@@ -999,18 +999,18 @@ func (c *Container) shouldPresent() bool {
 }
 
 func (c *Container) registerClient() error {
-	log.Debugf("registerClient: creating mica client conf for %s", c.id)
+	log.Tracef("registerClient: creating mica client conf for %s", c.id)
 	conf, err := createMicaClientConf(c)
 	if err != nil {
 		return err
 	}
 
-	log.Debugf("registerClient: calling libmica.Create for %s", c.id)
+	log.Tracef("registerClient: calling libmica.Create for %s", c.id)
 	if err := libmica.Create(conf); err != nil {
 		log.Errorf("registerClient: libmica.Create failed: %v", err)
 		return err
 	}
-	log.Debugf("registerClient: libmica.Create succeeded for %s", c.id)
+	log.Tracef("registerClient: libmica.Create succeeded for %s", c.id)
 
 	limit := c.config.memoryLimitMB()
 	initialMem := limit
@@ -1048,7 +1048,7 @@ func (c *Container) setupMemory() error {
 	}
 
 	target := int(limit)
-	log.Debugf("setting mem threshold to %d MB", target)
+	log.Tracef("setting mem threshold to %d MB", target)
 	if err := c.me.UpdateMemoryThreshold(limit); err != nil {
 		return fmt.Errorf("failed to set new memory threshold to %d MB for %s: %w", limit, c.id, err)
 	}
@@ -1247,7 +1247,7 @@ func (c *Container) winresize(height, width uint32) error {
 	if c.notOperational() {
 		return fmt.Errorf("container not ready or running, impossible to resize the container pty")
 	}
-	log.Debugf("resizing PTY for container %s to [%dx%d]", c.id, width, height)
+	log.Tracef("resizing PTY for container %s to [%dx%d]", c.id, width, height)
 	// Use a background context for TTY wait to avoid RPC deadline issues
 	ttyCtx := context.Background()
 	stdin, stdout, p, err := dialTTY(ttyCtx, c.id)
@@ -1256,7 +1256,7 @@ func (c *Container) winresize(height, width uint32) error {
 	}
 	_ = stdin.Close()
 	defer stdout.Close()
-	log.Debugf("resizing rpmsg tty at %s", p)
+	log.Tracef("resizing rpmsg tty at %s", p)
 
 	ws := &unix.Winsize{Row: uint16(height), Col: uint16(width)}
 	if err := unix.IoctlSetWinsize(int(stdout.Fd()), unix.TIOCSWINSZ, ws); err != nil {

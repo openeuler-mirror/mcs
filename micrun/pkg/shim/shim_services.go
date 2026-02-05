@@ -9,12 +9,14 @@ import (
 	log "micrun/logger"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
 	"time"
 
 	cntr "micrun/pkg/micantainer"
+	"micrun/definitions"
 	micrunio "micrun/pkg/io"
 	oci "micrun/pkg/oci"
 	"micrun/pkg/utils"
@@ -109,9 +111,12 @@ func New(ctx context.Context, id string, publisher shimv2.Publisher, shutdown fu
 		forwarder := s.newEventsForwarder(ctx, publisher)
 		go forwarder.forward()
 
+		// Clean up orphaned container directories from previous shim crashes
+		cleanupOrphanedContainers(s.namespace)
+
 		// Try to restore sandbox and containers if they exist
 		if err := s.restoreSandboxAndContainers(ctx); err != nil {
-			log.Debugf("no existing sandbox to restore: %v", err)
+			log.Tracef("no existing sandbox to restore: %v", err)
 			// This is expected for new containers, not an error
 		}
 	} else {
@@ -125,6 +130,42 @@ func New(ctx context.Context, id string, publisher shimv2.Publisher, shutdown fu
 	}
 
 	return s, nil
+}
+
+// cleanupOrphanedContainers cleans up orphaned container directories
+// that are not tracked by containerd (e.g., left over from shim crashes)
+func cleanupOrphanedContainers(namespace string) {
+	containersDir := defs.DefaultMicaContainersRoot
+
+	entries, err := os.ReadDir(containersDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Debugf("Failed to read containers directory %s: %v", containersDir, err)
+		}
+		return
+	}
+
+	if len(entries) == 0 {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		containerID := entry.Name()
+		// Check if the containerd task state directory exists
+		// If not, this is an orphaned container directory
+		taskDir := filepath.Join(defs.ContainerdTaskDir, namespace, containerID)
+		if _, err := os.Stat(taskDir); os.IsNotExist(err) {
+			orphanPath := filepath.Join(containersDir, containerID)
+			log.Infof("[CLEANUP] Removing orphaned container directory: %s", orphanPath)
+			if err := os.RemoveAll(orphanPath); err != nil {
+				log.Errorf("[CLEANUP] Failed to remove orphaned directory %s: %v", orphanPath, err)
+			}
+		}
+	}
 }
 
 // restoreSandboxAndContainers restores the sandbox and containers from disk
@@ -176,7 +217,7 @@ func (s *shimService) restoreSandboxAndContainers(ctx context.Context) error {
 			stdinCloser: make(chan struct{}),
 		}
 		s.containers[c.ID()] = sc
-		log.Debugf("restored container %s (type: %v, status: %v)", c.ID(), cType, initialStatus)
+		log.Tracef("restored container %s (type: %v, status: %v)", c.ID(), cType, initialStatus)
 	}
 
 	return nil
@@ -260,7 +301,7 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 		return sockaddr, nil
 	}
 
-	log.Debugf("args: %s", os.Args)
+	log.Tracef("args: %s", os.Args)
 	cmd, err := newCommand(ctx, opts, bundle)
 	if err != nil {
 		return "", err
@@ -289,7 +330,7 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 			}
 			return sockAddr, nil
 		}
-		log.Debugf("removing stale socket and creating new one")
+		log.Tracef("removing stale socket and creating new one")
 		if err := shimv2.RemoveSocket(sockAddr); err != nil {
 			return "", fmt.Errorf("remove pre-existing socket: %w", err)
 		}
@@ -302,7 +343,7 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 		if retErr != nil {
 			socket.Close()
 			if err := shimv2.RemoveSocket(sockAddr); err != nil {
-				log.Debugf("failed to remove socket %s: %v", sockAddr, err)
+				log.Tracef("failed to remove socket %s: %v", sockAddr, err)
 			}
 		}
 	}()
@@ -324,12 +365,12 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 		tipSchedCore()
 	}
 
-	log.Debugf("starting daemon shim process...")
+	log.Tracef("starting daemon shim process...")
 	if err := cmd.Start(); err != nil {
 		_ = sock.Close()
 		return "", fmt.Errorf("failed to start shim task service: %w", err)
 	}
-	log.Debugf("daemon shim process started with PID: %d", cmd.Process.Pid)
+	log.Tracef("daemon shim process started with PID: %d", cmd.Process.Pid)
 
 	runtime.UnlockOSThread()
 
@@ -414,7 +455,7 @@ func (s *shimService) Cleanup(ctx context.Context) (*taskAPI.DeleteResponse, err
 			return nil, err
 		}
 	default:
-		log.Debugf("unknown container type to be cleaned up: %s", ctype)
+		log.Tracef("unknown container type to be cleaned up: %s", ctype)
 	}
 
 	return &taskAPI.DeleteResponse{
@@ -458,7 +499,7 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	log.Debugf("creating task %s (bundle: %s, terminal: %v)", r.ID, r.Bundle, r.Terminal)
+	log.Tracef("creating task %s (bundle: %s, terminal: %v)", r.ID, r.Bundle, r.Terminal)
 	if err := utils.ValidContainerID(r.ID); err != nil {
 		return nil, er.InvalidCID
 	}
@@ -490,20 +531,20 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 		Pid:        pid,
 	})
 
-	log.Debugf("[CREATE] Container created (not started), returning PID=%d", pid)
+	log.Tracef("[CREATE] Container created (not started), returning PID=%d", pid)
 	return &taskAPI.CreateTaskResponse{
 		Pid: pid,
 	}, nil
 }
 
 func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
-	log.Debugf("[START METHOD] Start method called! Container ID: %s, Exec ID: %s", r.ID, r.ExecID)
-	log.Debugf("starting container %s", r.ID)
+	log.Tracef("[START METHOD] Start method called! Container ID: %s, Exec ID: %s", r.ID, r.ExecID)
+	log.Tracef("starting container %s", r.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, found := s.containers[r.ID]
 	if c == nil || !found {
-		log.Debugf("container %s not found in shim service storage", r.ID)
+		log.Tracef("container %s not found in shim service storage", r.ID)
 		return nil, er.ContainerNotFound
 	}
 
@@ -754,7 +795,7 @@ func (s *shimService) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptyp
 
 	c.setStatus(task.Status_PAUSING)
 	if s.sandbox == nil {
-		log.Debugf("Sandbox is nil, cannot pause container %s", r.ID)
+		log.Tracef("Sandbox is nil, cannot pause container %s", r.ID)
 		return nil, er.SandboxNotFound
 	}
 
@@ -769,10 +810,10 @@ func (s *shimService) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptyp
 
 	status, err := s.getContainerStatus(c.id)
 	if err != nil {
-		log.Debugf("container %s status query failed: %v", r.ID, err)
+		log.Tracef("container %s status query failed: %v", r.ID, err)
 		c.setStatus(task.Status_UNKNOWN)
 	} else {
-		log.Debugf("container %s status: %s", r.ID, status)
+		log.Tracef("container %s status: %s", r.ID, status)
 		c.setStatus(status)
 	}
 
@@ -790,7 +831,7 @@ func (s *shimService) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*pt
 	}
 
 	if s.sandbox == nil {
-		log.Debugf("Sandbox is nil, cannot resume container %s", c.id)
+		log.Tracef("Sandbox is nil, cannot resume container %s", c.id)
 		return nil, er.SandboxNotFound
 	}
 
@@ -829,14 +870,14 @@ func (s *shimService) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes
 	}
 
 	if r.ExecID != "" {
-		log.Debugf("exec processes are not supported for container %s, ignoring Kill request", r.ID)
+		log.Tracef("exec processes are not supported for container %s, ignoring Kill request", r.ID)
 		return emptyResponse, nil
 	}
 
 	switch signum {
 	case syscall.SIGKILL, syscall.SIGTERM:
 		if c.status == task.Status_STOPPED {
-			log.Debugf("container %s already stopped", c.id)
+			log.Tracef("container %s already stopped", c.id)
 			return emptyResponse, nil
 		}
 
@@ -848,11 +889,11 @@ func (s *shimService) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes
 			if s.sandbox != nil {
 				log.Infof("[KILL] Stopping sandbox for container %s", c.id)
 				if err := s.sandbox.Stop(ctx, true); err != nil {
-					log.Debugf("sandbox Stop returned: %v", err)
+					log.Tracef("sandbox Stop returned: %v", err)
 				}
 				log.Infof("[KILL] Deleting sandbox for container %s", c.id)
 				if err := s.sandbox.Delete(ctx); err != nil {
-					log.Debugf("sandbox Delete returned: %v", err)
+					log.Tracef("sandbox Delete returned: %v", err)
 				}
 				s.sandbox = nil
 			} else {
@@ -898,15 +939,15 @@ func (s *shimService) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes
 
 	case syscall.SIGSTOP:
 		if c.status == task.Status_PAUSING || c.status == task.Status_STOPPED {
-			log.Debugf("container %s pausing or stopped, cannot pause again", c.id)
+			log.Tracef("container %s pausing or stopped, cannot pause again", c.id)
 			return emptyResponse, nil
 		}
 		if s.sandbox == nil {
-			log.Debugf("Sandbox is nil, cannot pause container %s", c.id)
+			log.Tracef("Sandbox is nil, cannot pause container %s", c.id)
 			return nil, er.SandboxNotFound
 		}
 		if err := s.sandbox.PauseContainer(ctx, c.id); err != nil {
-			log.Debugf("sandbox pause container %s failed %v", c.id, err)
+			log.Tracef("sandbox pause container %s failed %v", c.id, err)
 			st, err1 := s.getContainerStatus(c.id)
 			if err1 != nil {
 				c.setStatus(task.Status_UNKNOWN)
@@ -915,19 +956,19 @@ func (s *shimService) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes
 			}
 			return nil, err
 		}
-		log.Debugf("container %s paused successfully", c.id)
+		log.Tracef("container %s paused successfully", c.id)
 
 	case syscall.SIGCONT:
 		if c.status == task.Status_RUNNING {
-			log.Debugf("container %s already running, ignoring SIGCONT", c.id)
+			log.Tracef("container %s already running, ignoring SIGCONT", c.id)
 			return emptyResponse, nil
 		}
 		if s.sandbox == nil {
-			log.Debugf("Sandbox is nil, cannot resume container %s", c.id)
+			log.Tracef("Sandbox is nil, cannot resume container %s", c.id)
 			return nil, er.SandboxNotFound
 		}
 		if err := s.sandbox.ResumeContainer(ctx, c.id); err != nil {
-			log.Debugf("sandbox resume container %s failed %v", c.id, err)
+			log.Tracef("sandbox resume container %s failed %v", c.id, err)
 			st, err1 := s.getContainerStatus(c.id)
 			if err1 != nil {
 				c.setStatus(task.Status_UNKNOWN)
@@ -936,7 +977,7 @@ func (s *shimService) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes
 			}
 			return nil, err
 		}
-		log.Debugf("container %s resumed successfully via SIGCONT", c.id)
+		log.Tracef("container %s resumed successfully via SIGCONT", c.id)
 	default:
 		return emptyResponse, nil
 	}
@@ -1125,7 +1166,7 @@ func (s *shimService) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*
 	// Close stdin pipe to signal IO copier
 	if c.stdinPipe != nil {
 		if err := c.stdinPipe.Close(); err != nil {
-			log.Debugf("stdin pipe close for %s returned: %v", r.ID, err)
+			log.Tracef("stdin pipe close for %s returned: %v", r.ID, err)
 		}
 	}
 
@@ -1142,7 +1183,7 @@ func (s *shimService) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) 
 	c, found := s.containers[r.ID]
 	if c == nil || !found {
 		// Best-effort: container may already be gone; treat as success to avoid disrupting higher layers
-		log.Debugf("Update ignored: container %s not found", r.ID)
+		log.Tracef("Update ignored: container %s not found", r.ID)
 		return emptyResponse, nil
 	}
 
@@ -1153,23 +1194,23 @@ func (s *shimService) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) 
 			if lr, ok := raw.(*specs.LinuxResources); ok && lr != nil {
 				res = *lr
 			} else {
-				log.Debugf("Update ignored: invalid resources type for %s", s.id)
+				log.Tracef("Update ignored: invalid resources type for %s", s.id)
 			}
 		} else {
-			log.Debugf("Update ignored: unable to unmarshal resources for %s: %v", s.id, err)
+			log.Tracef("Update ignored: unable to unmarshal resources for %s: %v", s.id, err)
 		}
 	}
 
-	log.Debugf("Update task annotations: %v", r.Annotations)
-	log.Debugf("Update task resource: %+v", res)
+	log.Tracef("Update task annotations: %v", r.Annotations)
+	log.Tracef("Update task resource: %+v", res)
 
 	if s.sandbox == nil {
-		log.Debugf("Sandbox is nil, cannot update container %s", r.ID)
+		log.Tracef("Sandbox is nil, cannot update container %s", r.ID)
 		return nil, er.SandboxNotFound
 	}
 
 	if err := s.sandbox.UpdateContainer(ctx, r.ID, res); err != nil {
-		log.Debugf("UpdateContainer best-effort ignore error for %s: %v", r.ID, err)
+		log.Tracef("UpdateContainer best-effort ignore error for %s: %v", r.ID, err)
 	}
 
 	return emptyResponse, nil
@@ -1286,7 +1327,7 @@ func killWithBackoff(proc *os.Process) error {
 		err := proc.Kill()
 		if err == nil {
 			if attempt > 0 {
-				log.Debugf("kill succeeded on attempt %d", attempt+1)
+				log.Tracef("kill succeeded on attempt %d", attempt+1)
 			}
 			return nil
 		}
@@ -1298,7 +1339,7 @@ func killWithBackoff(proc *os.Process) error {
 			wait = maxWait
 		}
 
-		log.Debugf("kill attempt %d failed, waiting %v before retry: %v", attempt+1, wait, err)
+		log.Tracef("kill attempt %d failed, waiting %v before retry: %v", attempt+1, wait, err)
 		time.Sleep(wait)
 	}
 

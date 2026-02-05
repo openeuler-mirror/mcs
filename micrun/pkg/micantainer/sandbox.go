@@ -674,15 +674,15 @@ func (s *Sandbox) sandboxStoragePath() string {
 }
 
 func (s *Sandbox) newSandboxStoragePath() (string, error) {
-	log.Debugf("newSandboxStoragePath: sandbox id=%s", s.id)
+	log.Tracef("newSandboxStoragePath: sandbox id=%s", s.id)
 	dir := s.sandboxStoragePath()
-	log.Debugf("newSandboxStoragePath: creating directory %s with mode %v", dir, defs.DirMode)
+	log.Tracef("newSandboxStoragePath: creating directory %s with mode %v", dir, defs.DirMode)
 	if err := os.MkdirAll(dir, defs.DirMode); err != nil {
 		log.Errorf("newSandboxStoragePath: failed to create directory %s: %v", dir, err)
 		return "", err
 	}
 	stateFile := filepath.Join(dir, defs.SandboxStateFile)
-	log.Debugf("newSandboxStoragePath: returning state file path %s", stateFile)
+	log.Tracef("newSandboxStoragePath: returning state file path %s", stateFile)
 	return stateFile, nil
 }
 
@@ -707,8 +707,7 @@ func (s *Sandbox) addContainer(c *Container) error {
 	return nil
 }
 
-// TODO: not finished well
-// NOTICE: we need idempotence, and make removeNetwork()
+// TODO: ensure idempotence - removeNetwork() should handle multiple calls safely
 func (s *Sandbox) removeNetwork() error {
 	log.Infof("remove network for sandbox %s", s.id)
 	if s.config == nil {
@@ -843,7 +842,7 @@ func (s *Sandbox) restore() error {
 
 	if ss != nil {
 		if ss.ID != s.id {
-			log.Debugf("sandbox ID mismatch: %v != %v", ss.ID, s.id)
+			log.Tracef("sandbox ID mismatch: %v != %v", ss.ID, s.id)
 			log.Pretty("%v", ss)
 			return fmt.Errorf("sandbox ID mismatch: %v != %v", ss.ID, s.id)
 		}
@@ -872,7 +871,7 @@ func restoreSandbox(ctx context.Context, id string) (*SandboxStorage, error) {
 	raw, err := utils.RestoreStructFromJSON(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Debugf("not found sandbox state file: %s, sandbox may have been already cleaned up", configPath)
+			log.Tracef("not found sandbox state file: %s, sandbox may have been already cleaned up", configPath)
 			return nil, er.SandboxNotFound
 		}
 		return nil, fmt.Errorf("failed to load sandbox state from %s: %w", configPath, err)
@@ -899,7 +898,7 @@ func (s *Sandbox) notOperational() bool {
 }
 
 func (s *Sandbox) createNetwork(ctx context.Context) error {
-	log.Debugf("createNetwork.")
+	log.Tracef("createNetwork.")
 	return nil
 }
 
@@ -980,7 +979,7 @@ func (s *Sandbox) checkVCPUsPinning(ctx context.Context) error {
 
 	if valid, outOfRangeCPUs := cpusetRangeValid(cpuList); !valid {
 		match = false
-		log.Debugf("these cpus are out of range: %v", outOfRangeCPUs)
+		log.Tracef("these cpus are out of range: %v", outOfRangeCPUs)
 		// TODO: handle the overrange cpus
 	}
 
@@ -989,14 +988,14 @@ func (s *Sandbox) checkVCPUsPinning(ctx context.Context) error {
 		numVCPUs, numCPUs := int(s.resManager.VcpuNum), len(cpuList)
 		if numCPUs != numVCPUs {
 			match = false
-			log.Debugf("the number of cpusets %d is not equal to the number of vcpus %d", numCPUs, numVCPUs)
+			log.Tracef("the number of cpusets %d is not equal to the number of vcpus %d", numCPUs, numVCPUs)
 		}
 	}
 
 	if !match {
 		if s.vcpuAlreadyPinned {
 			s.vcpuAlreadyPinned = false
-			log.Debugf("the sandbox is already pinned to cpusets")
+			log.Tracef("the sandbox is already pinned to cpusets")
 		}
 	}
 
@@ -1159,11 +1158,11 @@ func (s *Sandbox) pinVCPU(cpuSet cpuset.CPUSet) error {
 			containerCPUSet = parsed
 		} else {
 			// No cpuset specified, skip pinning for this container
-			log.Debugf("container %s has no cpuset specified, skipping CPU pinning", cid)
+			log.Tracef("container %s has no cpuset specified, skipping CPU pinning", cid)
 			continue
 		}
 
-		log.Debugf("try to pin container %s vcpu affinity to its own cpuset %v", cid, containerCPUSet.ToSlice())
+		log.Tracef("try to pin container %s vcpu affinity to its own cpuset %v", cid, containerCPUSet.ToSlice())
 		if err := c.setVcpuAffinity(containerCPUSet); err != nil {
 			result = multierror.Append(result, err)
 		} else {
