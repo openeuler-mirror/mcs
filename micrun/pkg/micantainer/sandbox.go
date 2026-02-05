@@ -707,7 +707,8 @@ func (s *Sandbox) addContainer(c *Container) error {
 	return nil
 }
 
-// TODO: ensure idempotence - removeNetwork() should handle multiple calls safely
+// TODO: not finished well
+// NOTICE: we need idempotence, and make removeNetwork()
 func (s *Sandbox) removeNetwork() error {
 	log.Infof("remove network for sandbox %s", s.id)
 	if s.config == nil {

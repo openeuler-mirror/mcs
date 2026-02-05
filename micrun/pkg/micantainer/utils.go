@@ -5,14 +5,18 @@ import (
 	"errors"
 	"fmt"
 	er "micrun/errors"
+	defs "micrun/definitions"
 	log "micrun/logger"
 	"micrun/pkg/cpuset"
 	"micrun/pkg/libmica"
 	"micrun/pkg/pedestal"
 	"micrun/pkg/utils"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func startClient(ctx context.Context, sandbox SandboxTraits, c *Container) error {
@@ -337,6 +341,31 @@ func loadSandbox(ctx context.Context, id string) (sandbox *Sandbox, err error) {
 		log.Debugf("Failed to restore sandbox from disk: %v.", err)
 		return nil, err
 	}
+
+	// Validate the restored state before proceeding
+	// This checks if shim PID is alive and if RTOS client still exists
+	isValid, shouldCleanup, err := ValidateSandboxState(ctx, id, ss)
+	if err != nil && !shouldCleanup {
+		// Validation failed with a real error (not just stale state)
+		return nil, fmt.Errorf("sandbox state validation failed: %w", err)
+	}
+
+	if shouldCleanup {
+		// Clean up stale state files
+		log.Warnf("Cleaning up stale sandbox state for %s", id)
+		sandboxDir := defs.SandboxDataDir + "/" + id
+		if removeErr := os.RemoveAll(sandboxDir); removeErr != nil {
+			log.Errorf("Failed to remove stale sandbox directory %s: %v", sandboxDir, removeErr)
+		}
+		// Return SandboxNotFound so caller treats this as a new container
+		return nil, er.SandboxNotFound
+	}
+
+	if !isValid {
+		// State is not valid for restoration, but doesn't need cleanup
+		return nil, fmt.Errorf("sandbox state is not valid for restoration")
+	}
+
 	c := ss.Config
 
 	sandbox, err = createSandbox(ctx, &c)
@@ -384,4 +413,70 @@ func copyBool(src *bool) *bool {
 	}
 	val := *src
 	return &val
+}
+
+// State validation and cleanup support
+
+// processExists checks if a process with the given PID is running.
+// It uses unix.Kill with signal 0, which doesn't actually send a signal
+// but can be used to check if a process exists.
+func processExists(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	// unix.Kill with signal 0 checks if process exists without sending signal
+	err := unix.Kill(pid, 0)
+	return err == nil
+}
+
+// ValidateSandboxState validates if the sandbox state on disk matches the actual state.
+// Returns (isValid, shouldCleanup, error):
+//   - isValid: true if state is valid and can be restored
+//   - shouldCleanup: true if stale state should be cleaned up
+//   - error: validation error if any
+func ValidateSandboxState(ctx context.Context, id string, storage *SandboxStorage) (bool, bool, error) {
+	if storage == nil {
+		return false, false, fmt.Errorf("nil storage")
+	}
+
+	// 1. Check if shim PID is still alive
+	if storage.ShimPID > 0 {
+		if processExists(storage.ShimPID) {
+			// Another shim instance is running
+			log.Debugf("Sandbox %s: shim PID %d still running, another instance may be active", id, storage.ShimPID)
+			return false, false, fmt.Errorf("another shim instance (PID %d) is already running", storage.ShimPID)
+		}
+		log.Infof("Sandbox %s: shim PID %d is dead, validating RTOS state", id, storage.ShimPID)
+	}
+
+	// 2. Check if RTOS client exists in micad
+	// libmica.ClientNotExist returns true if client socket does not exist
+	if libmica.ClientNotExist(id) {
+		// RTOS client does not exist, state is stale
+		log.Warnf("Sandbox %s: RTOS client not found in micad, state is stale", id)
+		return false, true, nil // shouldCleanup = true
+	}
+
+	// 3. Optionally query RTOS actual status and compare with state file
+	// This provides additional validation but may fail if micad is busy
+	status, err := libmica.Status(id, libmica.Filter{})
+	if err != nil {
+		log.Warnf("Sandbox %s: failed to query RTOS status: %v", id, err)
+		// Status query failed, but RTOS client exists (socket exists)
+		// Allow restore attempt, may succeed
+		return true, false, nil
+	}
+
+	// 4. Check state consistency
+	// If state file says running but RTOS says stopped, that's a mismatch
+	storageState := storage.State.State
+
+	if storageState == StateRunning && status.IsStopped() {
+		log.Warnf("Sandbox %s: state mismatch, file=running, actual=%s", id, status.State)
+	} else if storageState == StateStopped && string(status.State) == "Running" {
+		log.Warnf("Sandbox %s: state mismatch, file=stopped, actual=%s", id, status.State)
+	}
+
+	// Even with mismatch, allow restore (RTOS exists, can update state)
+	return true, false, nil
 }
