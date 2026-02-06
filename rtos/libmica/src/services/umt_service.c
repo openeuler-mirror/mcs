@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
+#include <errno.h>
+#include <stdbool.h>
+#include <string.h>
 #include <mica/service.h>
 #include <mica/platform/macro.h>
 #include <mica/platform/sem.h>
@@ -25,17 +28,27 @@ struct umt_rcv_msg {
     size_t len;
 };
 
+/* 用户注册的接收回调（仅支持一个，直接传 payload 指针，回调返回后无效） */
+struct umt_rcv_cb {
+    umt_rcv_cb_t fn;
+    void *priv;
+    bool registered;
+};
+
 /* UMT服务私有数据 */
 struct umt_service_priv {
-    mica_sem_t rx_sem;
+    mica_sem_t rx_sem;             /* rpmsg 收到消息时 post，umt_service_thread 消费 */
+    mica_sem_t passive_rcv_sem;    /* 被动拉取：umt_service_thread post，mica_rcv_data 消费 */
     struct umt_rcv_msg rx_msg;
-    bool umt_send_addr_init;      /* 是否初始化发送地址 */
-    uintptr_t send_buffer_addr;  /* 发送缓冲区地址 */
+    struct umt_rcv_cb rcv_cb;
+    bool umt_send_addr_init;       /* 是否初始化发送地址 */
+    uintptr_t send_buffer_addr;   /* 发送缓冲区地址 */
 };
 
 #define RPMSG_UMT_EPT_NAME "rpmsg-umt"
 static struct rpmsg_endpoint g_umt_ept;
 static struct umt_service_priv g_umt_priv;
+static bool g_umt_service_running = false;
 
 /**
  * 检查UMT是否就绪
@@ -82,7 +95,9 @@ void *umt_service_thread(void *arg)
 {
     int ret;
     struct rpmsg_device *rpdev = mica_get_rpdev();
+    umt_data_t *umt_data;
 
+    (void)arg;
     if (!rpdev) {
         mica_log("UMT: rpmsg device not initialized\n");
         goto err_init;
@@ -91,11 +106,17 @@ void *umt_service_thread(void *arg)
     /* 创建信号量 */
     ret = mica_sem_init(&g_umt_priv.rx_sem, 0);
     if (ret != MICA_SUCCESS) {
-        mica_log("UMT: failed to create semaphore: %d\n", ret);
+        mica_log("UMT: failed to create rx_sem: %d\n", ret);
         goto err_init;
+    }
+    ret = mica_sem_init(&g_umt_priv.passive_rcv_sem, 0);
+    if (ret != MICA_SUCCESS) {
+        mica_log("UMT: failed to create passive_rcv_sem: %d\n", ret);
+        goto err_rx_sem;
     }
 
     g_umt_priv.umt_send_addr_init = false;
+    g_umt_priv.rcv_cb.registered = false;
 
     g_umt_ept.priv = &g_umt_priv;
     /* 注册并创建UMT endpoint */
@@ -104,13 +125,38 @@ void *umt_service_thread(void *arg)
                    umt_rx_callback, NULL);
     if (ret != 0) {
         mica_log("UMT: failed to create endpoint: %d\n", ret);
-        goto err_sem;
+        goto err_passive_sem;
     }
 
-    /* UMT service不需要主循环，只提供send/receive API */
-    pthread_exit(NULL);
+    g_umt_service_running = true;
 
-err_sem:
+    /* 常驻循环：消费 rx_sem，回调模式则直接调用户回调（传 payload 指针），否则 post passive_rcv_sem 供 mica_rcv_data 拉取 */
+    while (g_umt_ept.addr != RPMSG_ADDR_ANY && g_umt_service_running) {
+        if (mica_sem_wait(g_umt_priv.rx_sem) != MICA_SUCCESS)
+            continue;
+        if (g_umt_priv.rx_msg.len == 0 || g_umt_priv.rx_msg.data == NULL)
+            continue;
+
+        umt_data = (umt_data_t *)g_umt_priv.rx_msg.data;
+
+        if (g_umt_priv.rcv_cb.registered && g_umt_priv.rcv_cb.fn != NULL) {
+            /* 回调模式：直接传 payload 指针，约定仅在回调期间有效 */
+            g_umt_priv.rcv_cb.fn((const void *)(uintptr_t)umt_data->phy_addr,
+                                (int)umt_data->data_len,
+                                g_umt_priv.rcv_cb.priv);
+        } else {
+            /* 被动拉取模式：通知 mica_rcv_data */
+            mica_sem_post(g_umt_priv.passive_rcv_sem);
+            continue;   /* 不 release，由 mica_rcv_data 取走后 release */
+        }
+        rpmsg_release_rx_buffer(&g_umt_ept, g_umt_priv.rx_msg.data);
+        g_umt_priv.rx_msg.data = NULL;
+        g_umt_priv.rx_msg.len = 0;
+    }
+
+err_passive_sem:
+    mica_sem_destroy(g_umt_priv.passive_rcv_sem);
+err_rx_sem:
     mica_sem_destroy(g_umt_priv.rx_sem);
 err_init:
     mica_log("UMT: service thread exiting with error\n");
@@ -168,7 +214,37 @@ int mica_send_data(void *data, int offset, size_t len)
 }
 
 /**
- * 接收数据从对端（零拷贝）
+ * 注册 UMT 接收回调。与 mica_rcv_data 互斥；已注册时再次注册返回 -EALREADY。
+ */
+int mica_umt_register_rcv_cb(umt_rcv_cb_t callback, void *priv)
+{
+    if (!mica_umt_is_ready())
+        return -EAGAIN;
+    if (!callback)
+        return -EINVAL;
+    if (g_umt_priv.rcv_cb.registered)
+        return -EALREADY;
+
+    g_umt_priv.rcv_cb.fn = callback;
+    g_umt_priv.rcv_cb.priv = priv;
+    g_umt_priv.rcv_cb.registered = true;
+    return 0;
+}
+
+/**
+ * 取消注册 UMT 接收回调。之后由 mica_rcv_data() 被动拉取。
+ */
+int mica_umt_unregister_rcv_cb(void)
+{
+    g_umt_priv.rcv_cb.registered = false;
+    g_umt_priv.rcv_cb.fn = NULL;
+    g_umt_priv.rcv_cb.priv = NULL;
+    return 0;
+}
+
+/**
+ * 接收数据从对端（被动拉取，零拷贝到用户 buffer）。
+ * 与回调模式互斥：已注册 mica_umt_register_rcv_cb 时调用返回 -EBUSY。
  */
 int mica_rcv_data(void *buffer, size_t *len)
 {
@@ -183,18 +259,20 @@ int mica_rcv_data(void *buffer, size_t *len)
         return -EINVAL;
     }
 
-    /* 等待接收数据 */
-    ret = mica_sem_wait(g_umt_priv.rx_sem);
+    if (g_umt_priv.rcv_cb.registered) {
+        return -EBUSY;
+    }
 
+    /* 被动等待：由 umt_service_thread 在收到消息时 post */
     /* TODO: do timeout */
     // if (timeout_ms < 0) {
-    //     ret = mica_sem_wait(g_umt_priv.rx_sem, MICA_WAIT_FOREVER);
+    //     ret = mica_sem_wait(g_umt_priv.passive_rcv_sem, MICA_WAIT_FOREVER);
     // } else if (timeout_ms == 0) {
-    //     ret = mica_sem_wait(g_umt_priv.rx_sem, MICA_NO_WAIT);
+    //     ret = mica_sem_wait(g_umt_priv.passive_rcv_sem, MICA_NO_WAIT);
     // } else {
-    //     ret = mica_sem_wait(g_umt_priv.rx_sem, timeout_ms);
+    //     ret = mica_sem_wait(g_umt_priv.passive_rcv_sem, timeout_ms);
     // }
-
+    ret = mica_sem_wait(g_umt_priv.passive_rcv_sem);
     if (ret != MICA_SUCCESS) {
         return -EAGAIN;
     }
@@ -212,12 +290,10 @@ int mica_rcv_data(void *buffer, size_t *len)
     memcpy(buffer, (void *)(uintptr_t)umt_data->phy_addr, umt_data->data_len);
     *len = umt_data->data_len;
 
-    /* 释放rx buffer */
+    /* 释放 rx buffer 并清空 */
     rpmsg_release_rx_buffer(&g_umt_ept, g_umt_priv.rx_msg.data);
-
-    /* 清空接收消息 */
     g_umt_priv.rx_msg.len = 0;
     g_umt_priv.rx_msg.data = NULL;
 
-    return MICA_SUCCESS;
+    return 0;
 }
