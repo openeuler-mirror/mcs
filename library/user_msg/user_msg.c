@@ -209,7 +209,7 @@ static void *rcv_callback_thread(void *arg)
 static int _stop_rcv_callback(umt_context_t *ctx)
 {
     if (ctx->rcv_cb == NULL)
-        return -1;
+        return -EINVAL;
     ctx->rcv_stop = 1;
     pthread_join(ctx->rcv_thread, NULL);
     ctx->rcv_cb = NULL;
