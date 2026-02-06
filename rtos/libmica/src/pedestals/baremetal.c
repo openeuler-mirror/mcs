@@ -156,16 +156,8 @@ static void handle_ipi(void)
 
 static void baremetal_irq_handler(void)
 {
-    /* mask irq */
-    mask_riscv_irq();
-    /* clear irq flags */
-    clear_riscv_irq();
-
     if (g_ipi_handler)
         g_ipi_handler();
-
-    /* unmask irq */
-    unmask_riscv_irq();
 }
 static void ipi_handler_init_done(void)
 {
