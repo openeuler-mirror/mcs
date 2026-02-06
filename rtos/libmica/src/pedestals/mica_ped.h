@@ -14,40 +14,37 @@
 extern "C" {
 #endif
 
-/* ========== 底座操作接口 ========== */
+/* ========== Pedestal operations ========== */
 struct mica_pedestal_ops {
     /**
-     * 初始化中断
-     * @param config: MICA配置
-     * @return: 0成功，负数失败
+     * Initialize IPC interrupt.
+     * @param config: MICA configuration
+     * @return: 0 on success, negative errno on failure
      */
     int (*init_irq)(struct mica_config *config);
 
     /**
-     * 初始化RPMsg backend
-     * @param config: MICA配置
-     * @return: 0成功，负数失败
+     * Initialize RPMsg backend.
+     * @param config: MICA configuration
+     * @return: 0 on success, negative errno on failure
      */
     int (*init_rpmsg)(struct mica_config *config);
 
     /**
-     * 初始化RPMsg backend
-     * @param config: MICA配置
-     * @return: rpmsg_device指针，NULL表示失败
+     * Process received RPMsg messages (poll/loop; called from receiver thread).
      */
     void (*rcv_message)(void);
 
     /**
-     * 反初始化RPMsg backend
-     * @param rpdev: RPMsg设备指针
+     * Deinitialize RPMsg backend and release resources.
      */
     void (*deinit)(void);
 };
 
 /**
- * 获取底座操作接口
- * @param type: 底座类型
- * @return: 操作接口指针，NULL表示不支持
+ * Get pedestal operations for the current platform.
+ *
+ * @return: pointer to ops, or NULL if pedestal type not supported
  */
 const struct mica_pedestal_ops *mica_get_ped_ops(void);
 

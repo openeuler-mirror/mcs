@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-/* ========== Service类型 ========== */
+/* ========== Service types ========== */
 enum mica_service_type {
     MICA_SERVICE_RPC = 0,
     MICA_SERVICE_TTY,
@@ -22,93 +22,104 @@ enum mica_service_type {
     MICA_SERVICE_MAX
 };
 
-/* ========== Service配置 ========== */
+/* ========== Service configuration ========== */
 
 /**
- * 创建所有默认service（RPC + TTY + UMT）
- * 注意：会创建独立的接收线程
- * @return: 0成功，负数失败
+ * Create all default services (RPC + TTY + UMT).
+ * Note: spawns dedicated receiver and service threads.
+ *
+ * @return: 0 on success; negative errno or pthread error on failure
  */
 int mica_create_all_services(void);
 
 /**
- * 创建已注册的service endpoint
- * @param type: service类型
- * @return: 0成功，负数失败
+ * Create a registered service endpoint by type.
+ *
+ * @param type: service type
+ * @return: 0 on success; negative errno on failure (e.g. -EINVAL, -EOPNOTSUPP)
  */
 int mica_create_service(enum mica_service_type type);
 
 /**
- * 停止接收线程
- * 注意：会停止所有service的接收
+ * Stop the receiver thread. Stops reception for all services.
  */
 void mica_stop_receiver(void);
 
 /**
- * 检查service是否就绪
- * @param type: service类型
- * @return: 1就绪，0未就绪
+ * Check whether a service is ready.
+ *
+ * @param type: service type
+ * @return: 1 if ready, 0 if not ready
  */
 int mica_service_is_ready(enum mica_service_type type);
 
 /* ========== TTY API ========== */
 /**
- * TTY发送数据
- * @param data: 数据缓冲区
- * @param len: 数据长度
- * @return: 发送字节数，负数表示失败
+ * Send data on TTY endpoint.
+ *
+ * @param data: data buffer
+ * @param len:  data length
+ * @return: number of bytes sent on success; 0 if TTY not ready; negative on failure
  */
 int mica_tty_send(unsigned char *data, size_t len);
 
 /**
- * 打印到TTY endpoint
- * @param format: printf格式字符串
- * @return: 打印字符数，失败返回-1
+ * Print to TTY endpoint (printf-style).
+ *
+ * @param format: printf format string
+ * @return: number of characters printed on success; negative errno on failure (e.g. printf/rpmsg error)
  */
 int mica_tty_printf(const char *format, ...);
 
 
 /* ========== UMT API ========== */
 /**
- * UMT 接收回调类型：数据到达时在库内线程中调用。
- * @param data     接收到的数据指针，仅在回调执行期间有效，返回后不可再使用
- * @param data_len 接收长度
- * @param priv     注册时传入的指针（如应用上下文），原样回传
+ * UMT receive callback type: invoked from library thread when data arrives.
+ *
+ * @param data     pointer to received data; valid only during the callback, must not be used after return
+ * @param data_len received length in bytes
+ * @param priv     opaque pointer passed through from registration (e.g. application context)
  */
 typedef void (*umt_rcv_cb_t)(const void *data, int data_len, void *priv);
 
 /**
- * 注册 UMT 接收回调（库内线程等待数据并调用 callback）。
- * 仅支持一个回调；与 mica_rcv_data 互斥，不能同时使用。
- * @param callback  收到数据时调用 (data, data_len, priv)，data 仅在调用期间有效
- * @param priv      不透明指针，原样传给 callback（如应用上下文）
- * @return: 0 成功，-EALREADY 已注册，-EINVAL/-EAGAIN 等失败
+ * Register UMT receive callback (library thread waits for data and invokes callback).
+ * Only one callback is supported. Mutually exclusive with mica_rcv_data(); do not use both.
+ *
+ * @param callback invoked on receive (data, data_len, priv); data valid only during the call
+ * @param priv     opaque pointer passed to callback (e.g. application context)
+ * @return: 0 on success; -EALREADY if already registered; -EAGAIN if UMT not ready; -EINVAL if callback is NULL
  */
 int mica_umt_register_rcv_cb(umt_rcv_cb_t callback, void *priv);
 
 /**
- * 取消注册 UMT 接收回调。之后由 mica_rcv_data() 被动拉取。
- * @return: 0 成功
+ * Unregister UMT receive callback. After this, use mica_rcv_data() for passive receive.
+ *
+ * @return: 0 on success
  */
 int mica_umt_unregister_rcv_cb(void);
 
 /**
- * 接收数据从对端（被动拉取，UMT拷贝到用户 buffer）。
- * 与回调模式互斥：已注册 mica_umt_register_rcv_cb 时调用返回 -EBUSY。
- * @param buffer: 接收缓冲区
- * @param len:    输入缓冲区大小，输出实际接收长度
- * @return: 0成功，负数失败（-EBUSY 表示当前为回调模式）
+ * Receive data from peer (passive pull; UMT copies into user buffer).
+ * Mutually exclusive with callback mode: returns -EBUSY if mica_umt_register_rcv_cb was already registered.
+ *
+ * @param buffer: receive buffer (output)
+ * @param len:    in: buffer size; out: actual received length
+ * @return: 0 on success; -EBUSY if callback mode is active; -EAGAIN if UMT not ready or wait failed;
+ *          -EINVAL if buffer or len is NULL; -EFAULT on internal receive error
  */
 int mica_rcv_data(void *buffer, size_t *len);
 
 /**
- * 发送数据到对端（UMT零拷贝传输）
- * @param data: 数据缓冲区
- * @param offset: 数据缓冲区偏移量
- * @param len: 数据长度
- * @return: 0成功，负数失败
+ * Send data to peer (UMT zero-copy transfer into shared memory).
+ *
+ * @param data:   data buffer
+ * @param offset: offset in shared send buffer to copy from
+ * @param len:    data length (must be > 0 and within buffer limits)
+ * @return: 0 on success; -EAGAIN if UMT not ready; -EINVAL if data NULL, len 0 or too large;
+ *          -EFAULT if send buffer not yet initialized; -EIO on send failure
  */
- int mica_send_data(void *data, int offset, size_t len);
+int mica_send_data(void *data, int offset, size_t len);
 
 
 #ifdef __cplusplus

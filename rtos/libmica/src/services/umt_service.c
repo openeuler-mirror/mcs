@@ -16,33 +16,33 @@
 
 #define UMT_SEND_BUFFER_OFFSET  0x100000  /* 1MB */
 
-/* UMT数据结构 */
+/* UMT data descriptor */
 typedef struct umt_data {
-    uint64_t phy_addr;            /* 物理地址 */
-    uint32_t data_len;            /* 数据长度 */
+    uint64_t phy_addr;            /* physical address */
+    uint32_t data_len;            /* data length */
 } umt_data_t;
 
-/* UMT接收消息 */
+/* UMT receive message */
 struct umt_rcv_msg {
     void *data;
     size_t len;
 };
 
-/* 用户注册的接收回调（仅支持一个，直接传 payload 指针，回调返回后无效） */
+/* User-registered receive callback (single; payload pointer invalid after callback returns) */
 struct umt_rcv_cb {
     umt_rcv_cb_t fn;
     void *priv;
     bool registered;
 };
 
-/* UMT服务私有数据 */
+/* UMT service private data */
 struct umt_service_priv {
-    mica_sem_t rx_sem;             /* rpmsg 收到消息时 post，umt_service_thread 消费 */
-    mica_sem_t passive_rcv_sem;    /* 被动拉取：umt_service_thread post，mica_rcv_data 消费 */
+    mica_sem_t rx_sem;             /* posted when rpmsg receives; consumed by umt_service_thread */
+    mica_sem_t passive_rcv_sem;    /* passive pull: posted by umt_service_thread, consumed by mica_rcv_data */
     struct umt_rcv_msg rx_msg;
     struct umt_rcv_cb rcv_cb;
-    bool umt_send_addr_init;       /* 是否初始化发送地址 */
-    uintptr_t send_buffer_addr;   /* 发送缓冲区地址 */
+    bool umt_send_addr_init;       /* whether send buffer addr is initialized */
+    uintptr_t send_buffer_addr;   /* send buffer address */
 };
 
 #define RPMSG_UMT_EPT_NAME "rpmsg-umt"
@@ -51,46 +51,46 @@ static struct umt_service_priv g_umt_priv;
 static bool g_umt_service_running = false;
 
 /**
- * 检查UMT是否就绪
+ * Check if UMT is ready.
  */
 int mica_umt_is_ready(void)
 {
     return is_rpmsg_ept_ready(&g_umt_ept);
 }
 
-/* UMT接收回调 */
+/* UMT receive callback */
 static int umt_rx_callback(struct rpmsg_endpoint *ept, void *data,
                           size_t len, uint32_t src, void *priv)
 {
     struct umt_service_priv *umt_priv = (struct umt_service_priv *)priv;
     umt_data_t *umt_data;
 
-    /* 保持rx buffer */
+    /* hold rx buffer */
     rpmsg_hold_rx_buffer(ept, data);
 
     umt_priv->rx_msg.data = data;
     umt_priv->rx_msg.len = len;
     umt_data = (umt_data_t *)data;
 
-    /* 首次接收时初始化发送缓冲区地址 */
+    /* init send buffer address on first receive */
     if (!g_umt_priv.umt_send_addr_init) {
         g_umt_priv.send_buffer_addr = umt_data->phy_addr + UMT_SEND_BUFFER_OFFSET;
         g_umt_priv.umt_send_addr_init = true;
 
     }
 
-    /* 如果包含有效的物理地址，则通知接收线程 */
+    /* if valid physical address, notify receive thread */
     if (umt_data->phy_addr) {
         mica_sem_post(umt_priv->rx_sem);
     } else {
-        /* 无效消息，直接释放 */
+        /* invalid message, release immediately */
         rpmsg_release_rx_buffer(ept, data);
     }
 
     return MICA_SUCCESS;
 }
 
-/* UMT service线程 */
+/* UMT service thread */
 void *umt_service_thread(void *arg)
 {
     int ret;
@@ -103,7 +103,7 @@ void *umt_service_thread(void *arg)
         goto err_init;
     }
 
-    /* 创建信号量 */
+    /* create semaphores */
     ret = mica_sem_init(&g_umt_priv.rx_sem, 0);
     if (ret != MICA_SUCCESS) {
         mica_log("UMT: failed to create rx_sem: %d\n", ret);
@@ -119,7 +119,7 @@ void *umt_service_thread(void *arg)
     g_umt_priv.rcv_cb.registered = false;
 
     g_umt_ept.priv = &g_umt_priv;
-    /* 注册并创建UMT endpoint */
+    /* register and create UMT endpoint */
     ret = rpmsg_create_ept(&g_umt_ept, rpdev, RPMSG_UMT_EPT_NAME,
                    RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
                    umt_rx_callback, NULL);
@@ -130,7 +130,7 @@ void *umt_service_thread(void *arg)
 
     g_umt_service_running = true;
 
-    /* 常驻循环：消费 rx_sem，回调模式则直接调用户回调（传 payload 指针），否则 post passive_rcv_sem 供 mica_rcv_data 拉取 */
+    /* main loop: consume rx_sem; callback mode invokes user callback with payload ptr, else post passive_rcv_sem for mica_rcv_data */
     while (g_umt_ept.addr != RPMSG_ADDR_ANY && g_umt_service_running) {
         if (mica_sem_wait(g_umt_priv.rx_sem) != MICA_SUCCESS)
             continue;
@@ -140,14 +140,14 @@ void *umt_service_thread(void *arg)
         umt_data = (umt_data_t *)g_umt_priv.rx_msg.data;
 
         if (g_umt_priv.rcv_cb.registered && g_umt_priv.rcv_cb.fn != NULL) {
-            /* 回调模式：直接传 payload 指针，约定仅在回调期间有效 */
+            /* callback mode: pass payload pointer, valid only during callback */
             g_umt_priv.rcv_cb.fn((const void *)(uintptr_t)umt_data->phy_addr,
                                 (int)umt_data->data_len,
                                 g_umt_priv.rcv_cb.priv);
         } else {
-            /* 被动拉取模式：通知 mica_rcv_data */
+            /* passive pull: notify mica_rcv_data */
             mica_sem_post(g_umt_priv.passive_rcv_sem);
-            continue;   /* 不 release，由 mica_rcv_data 取走后 release */
+            continue;   /* do not release here; mica_rcv_data releases after copy */
         }
         rpmsg_release_rx_buffer(&g_umt_ept, g_umt_priv.rx_msg.data);
         g_umt_priv.rx_msg.data = NULL;
@@ -164,7 +164,7 @@ err_init:
 }
 
 /**
- * 初始化UMT service（创建独立线程）
+ * Initialize UMT service (spawn dedicated thread).
  */
 int mica_umt_init_service(pthread_attr_t *attr)
 {
@@ -177,7 +177,7 @@ int mica_umt_init_service(pthread_attr_t *attr)
 }
 
 /**
- * 发送数据到对端（零拷贝）
+ * Send data to peer (zero-copy into shared buffer).
  */
 int mica_send_data(void *data, int offset, size_t len)
 {
@@ -192,15 +192,15 @@ int mica_send_data(void *data, int offset, size_t len)
         return -EINVAL;
     }
 
-    /* 检查发送缓冲区是否已初始化 */
+    /* check send buffer initialized */
     if (!g_umt_priv.umt_send_addr_init) {
         mica_log("UMT: send_buffer_addr not initialized\n");
         return -EFAULT;
     }
 
-    /* 拷贝数据到共享内存 */
+    /* copy data to shared memory */
     memcpy((void *)(uintptr_t)g_umt_priv.send_buffer_addr + offset, data, len);
-    /* 设置消息物理地址和数据长度 */
+    /* set message physical address and length */
     msg.phy_addr = g_umt_priv.send_buffer_addr + offset;
     msg.data_len = (uint32_t)len;
 
@@ -214,7 +214,7 @@ int mica_send_data(void *data, int offset, size_t len)
 }
 
 /**
- * 注册 UMT 接收回调。与 mica_rcv_data 互斥；已注册时再次注册返回 -EALREADY。
+ * Register UMT receive callback. Mutually exclusive with mica_rcv_data; returns -EALREADY if already registered.
  */
 int mica_umt_register_rcv_cb(umt_rcv_cb_t callback, void *priv)
 {
@@ -232,7 +232,7 @@ int mica_umt_register_rcv_cb(umt_rcv_cb_t callback, void *priv)
 }
 
 /**
- * 取消注册 UMT 接收回调。之后由 mica_rcv_data() 被动拉取。
+ * Unregister UMT receive callback. After this, use mica_rcv_data() for passive receive.
  */
 int mica_umt_unregister_rcv_cb(void)
 {
@@ -243,8 +243,8 @@ int mica_umt_unregister_rcv_cb(void)
 }
 
 /**
- * 接收数据从对端（被动拉取，零拷贝到用户 buffer）。
- * 与回调模式互斥：已注册 mica_umt_register_rcv_cb 时调用返回 -EBUSY。
+ * Receive data from peer (passive pull; copy into user buffer).
+ * Mutually exclusive with callback mode: returns -EBUSY if mica_umt_register_rcv_cb was registered.
  */
 int mica_rcv_data(void *buffer, size_t *len)
 {
@@ -263,7 +263,7 @@ int mica_rcv_data(void *buffer, size_t *len)
         return -EBUSY;
     }
 
-    /* 被动等待：由 umt_service_thread 在收到消息时 post */
+    /* passive wait: umt_service_thread posts when message received */
     /* TODO: do timeout */
     // if (timeout_ms < 0) {
     //     ret = mica_sem_wait(g_umt_priv.passive_rcv_sem, MICA_WAIT_FOREVER);
@@ -277,20 +277,20 @@ int mica_rcv_data(void *buffer, size_t *len)
         return -EAGAIN;
     }
 
-    /* 检查接收消息 */
+    /* check received message */
     if (g_umt_priv.rx_msg.len == 0 || g_umt_priv.rx_msg.data == NULL) {
         return -EFAULT;
     }
 
     umt_data = (umt_data_t *)g_umt_priv.rx_msg.data;
 
-    /* todo: 检查缓冲区大小 */
+    /* TODO: check buffer size */
 
-    /* 从共享内存拷贝数据 */
+    /* copy from shared memory */
     memcpy(buffer, (void *)(uintptr_t)umt_data->phy_addr, umt_data->data_len);
     *len = umt_data->data_len;
 
-    /* 释放 rx buffer 并清空 */
+    /* release rx buffer and clear */
     rpmsg_release_rx_buffer(&g_umt_ept, g_umt_priv.rx_msg.data);
     g_umt_priv.rx_msg.len = 0;
     g_umt_priv.rx_msg.data = NULL;

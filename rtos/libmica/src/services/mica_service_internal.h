@@ -13,24 +13,24 @@
 extern "C" {
 #endif
 
-/* ========== 模块间共享接口 ========== */
+/* ========== Inter-module shared API ========== */
 
 /**
- * 设置rpmsg device（pedestal初始化完成后调用）
+ * Set rpmsg device (called after pedestal init).
  */
 void mica_set_rpdev(struct rpmsg_device *rpdev);
 
 /**
- * 获取rpmsg device（由pedestal始化，供service使用）
+ * Get rpmsg device (set by pedestal, used by services).
  */
 struct rpmsg_device *mica_get_rpdev(void);
 
 /**
- * 获取MICA配置（由mica_init保存，供service使用）
+ * Get MICA config (saved by mica_init, used by services).
  */
 struct mica_config *mica_get_config(void);
 
-/* ========== Service初始化函数 ========== */
+/* ========== Service init entry points ========== */
 int mica_rpc_init_service(void);
 int mica_tty_init_service(pthread_attr_t *attr);
 int mica_umt_init_service(pthread_attr_t *attr);
