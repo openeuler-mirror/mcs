@@ -369,9 +369,298 @@ SHELLCMD_ENTRY(mica_send_shellcmd, CMD_TYPE_EX, "mica_send", XARGS, (CmdCallBack
 
 ## libmica系统头文件
 
-### 待补充
+libmica系统头文件位于`rtos/libmica/lib/system/@PROJECT_SYSTEM@/`目录下，是对接第三方OS的核心接口。**第三方OS需要根据自身特性实现这些头文件中的函数**，以便libmica能够正确运用于该OS。注意，若libmica系统头文件需要包含client OS头文件，需确保在 `rtos/libmica/cmake/platform/xxx.cmake` 中添加相应的路径到 `PLATFORM_INCLUDE_DIRS`。
 
+以下是各个头文件及接口的详细说明：
 
+### 1. barrier.h - 内存屏障
+
+**作用**：提供内存屏障功能，确保指令的执行顺序，防止编译器或CPU的乱序执行导致的问题。
+
+**需要实现的函数**：
+```c
+void mica_mb(void);
+```
+
+**使用场景**：在MICA的共享内存通信中，用于确保数据的可见性和一致性，特别是在多线程或多核心环境下。
+
+**底座使用情况**：
+- baremetal、hetero：建议实现
+
+**内核态示例（以ARM架构为例）**：
+```c
+static inline void mica_mb(void)
+{
+    // ARM DMB指令 - 数据内存屏障
+    __asm__ __volatile__("dmb" : : : "memory");
+}
+
+// 也可以使用宏定义的方式
+// #define mica_mb() __asm__ __volatile__("dmb" : : : "memory")
+```
+
+### 2. delay.h - 延时功能
+
+**作用**：提供任务延时功能，用于控制任务的执行时间。
+
+**需要实现的函数**：
+```c
+void mica_delay_tick(uint32_t tick);
+```
+
+**使用场景**：在MICA的服务初始化和通信过程中，用于等待资源就绪或控制执行节奏。
+
+**底座使用情况**：
+- baremetal、hetero：建议实现
+
+**标准Linux/POSIX示例**：
+```c
+#include <unistd.h>
+
+static inline void mica_delay_tick(uint32_t tick)
+{
+    // 假设tick为毫秒单位
+    usleep(tick * 1000);
+}
+```
+
+### 3. io.h - 寄存器读写
+
+**作用**：提供硬件寄存器的读写功能，用于访问和控制硬件设备。
+
+**需要实现的函数**：
+```c
+void mica_writeb(uint8_t val, unsigned long addr);
+void mica_writew(uint16_t val, unsigned long addr);
+void mica_writel(uint32_t val, unsigned long addr);
+```
+
+**使用场景**：在MICA的中断处理和硬件通信中，用于配置和控制硬件寄存器。
+
+**底座使用情况**：
+- baremetal：不需要实现，该底座不直接操作硬件寄存器
+- hetero：需要实现，在处理异构中断通信时调用
+
+**内核态示例**：
+```c
+static inline void mica_writeb(uint8_t val, unsigned long addr)
+{
+    *(volatile uint8_t *)addr = val;
+}
+
+static inline void mica_writew(uint16_t val, unsigned long addr)
+{
+    *(volatile uint16_t *)addr = val;
+}
+
+static inline void mica_writel(uint32_t val, unsigned long addr)
+{
+    *(volatile uint32_t *)addr = val;
+}
+```
+
+### 4. irq.h - 中断处理
+
+**作用**：提供中断请求和管理功能，用于处理硬件中断。
+
+**需要实现的函数**：
+```c
+typedef void (*mica_irq_handler_t)(void);
+int mica_request_irq(unsigned int irq, mica_irq_handler_t handler);
+void mica_unmask_irq(unsigned int irq);
+void mica_trigger_irq(unsigned int irq);
+```
+
+**使用场景**：在MICA的通信过程中，用于处理来自Linux侧的中断请求。
+
+**底座使用情况**：
+- `mica_request_irq`：
+  - baremetal、hetero：需要实现
+- `mica_unmask_irq`：
+  - baremetal：不需要实现，该底座不使用此函数
+  - hetero：需要实现
+- `mica_trigger_irq`：
+  - baremetal：需要实现
+  - hetero：不需要实现，该底座通过直接写寄存器触发中断
+
+**内核态示例**：
+```c
+// 假设OS提供了以下内核API
+extern int os_irq_register(unsigned int irq_num, void (*handler)(void));
+extern void os_irq_unmask(unsigned int irq_num);
+extern void os_irq_trigger(unsigned int irq_num);
+
+typedef void (*mica_irq_handler_t)(void);
+
+static inline int mica_request_irq(unsigned int irq, mica_irq_handler_t handler)
+{
+    return os_irq_register(irq, handler);
+}
+
+static inline void mica_unmask_irq(unsigned int irq)
+{
+    os_irq_unmask(irq);
+}
+
+static inline void mica_trigger_irq(unsigned int irq)
+{
+    os_irq_trigger(irq);
+}
+```
+
+### 5. log.h - 日志功能
+
+**作用**：提供日志输出功能，用于调试和信息输出。
+
+**需要实现的函数**：
+```c
+void mica_log(const char *fmt, ...);
+```
+
+**使用场景**：在MICA的各个模块中，用于输出调试信息和运行状态。
+
+**底座使用情况**：
+- baremetal、hetero：建议实现
+
+**内核态示例**：
+```c
+#include <stdarg.h>
+#include <mica/service.h>
+
+// 可以选择直接调用mica_tty_printf
+#define mica_log(fmt, ...) mica_tty_printf(fmt, ##__VA_ARGS__)
+
+// 也可以实现自己的日志函数，例如在调通mica tty之前，直接输出到开发板的串口寄存器
+/*
+static void mica_log(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    
+    // 调用OS提供的日志输出函数
+    os_vprintf(fmt, args);
+    
+    va_end(args);
+}
+*/
+```
+
+### 6. macro.h - 通用宏定义
+
+**作用**：提供通用的宏定义，用于错误码和状态标识。
+
+**需要实现的宏**：
+```c
+#define MICA_SUCCESS          0
+#define MICA_FAIL             -1
+```
+
+**使用场景**：在MICA的各个函数中，用于返回操作结果和状态。
+
+**底座使用情况**：
+- baremetal、hetero：建议实现
+
+**标准Linux/POSIX示例**：
+```c
+// 可以直接使用标准定义
+#define MICA_SUCCESS          0
+#define MICA_FAIL             -1
+```
+
+### 7. securec.h - 安全内存操作
+
+**作用**：提供安全的内存操作函数，用于防止内存溢出和安全漏洞。
+
+**需要实现的函数**：
+```c
+int mica_memset_s(void *dest, size_t destMax, int c, size_t len);
+int mica_memcpy_s(void *dest, size_t destMax, const void *src, size_t len);
+```
+
+**使用场景**：在MICA的数据处理和通信过程中，用于安全地进行内存操作。
+
+**底座使用情况**：
+- baremetal、hetero：建议实现，目前未使用，未来会用于支持RPC服务
+
+**标准Linux/POSIX示例**：
+```c
+#include <string.h>
+
+static inline int mica_memset_s(void *dest, size_t destMax, int c, size_t len)
+{
+    if (dest == NULL || destMax < len) {
+        return -1;
+    }
+    memset(dest, c, len);
+    return 0;
+}
+
+static inline int mica_memcpy_s(void *dest, size_t destMax, const void *src, size_t len)
+{
+    if (dest == NULL || src == NULL || destMax < len) {
+        return -1;
+    }
+    memcpy(dest, src, len);
+    return 0;
+}
+```
+
+### 8. sem.h - 信号量功能
+
+**作用**：提供信号量功能，用于线程同步和互斥访问。
+
+**需要实现的函数**：
+```c
+typedef int mica_sem_t;
+int mica_sem_init(mica_sem_t *sem, unsigned int value);
+void mica_sem_destroy(mica_sem_t sem);
+unsigned int mica_sem_post(mica_sem_t sem);
+unsigned int mica_sem_wait(mica_sem_t sem);
+```
+
+**使用场景**：在MICA的多线程服务中，用于线程间的同步和资源管理。
+
+**底座使用情况**：
+- baremetal、hetero：需要实现
+
+**标准Linux/POSIX示例**：
+```c
+#include <semaphore.h>
+
+typedef sem_t mica_sem_t;
+
+static inline int mica_sem_init(mica_sem_t *sem, unsigned int value)
+{
+    return sem_init(sem, 0, value);
+}
+
+static inline void mica_sem_destroy(mica_sem_t sem)
+{
+    sem_destroy(&sem);
+}
+
+static inline unsigned int mica_sem_post(mica_sem_t sem)
+{
+    return sem_post(&sem);
+}
+
+static inline unsigned int mica_sem_wait(mica_sem_t sem)
+{
+    return sem_wait(&sem);
+}
+```
+
+### 实现建议
+
+1. **保持接口一致性**：尽量按照头文件和本文档中的接口描述实现，确保libmica能够正确调用。
+
+2. **考虑性能影响**：对于频繁调用的函数（如内存屏障、寄存器读写），可考虑优化实现以减少性能开销。
+
+3. **确保线程安全**：如果OS支持多线程，需要确保信号量等同步机制的线程安全实现。
+
+4. **错误处理**：合理处理各种错误情况，返回明确的错误码，便于调试和问题定位。
+
+5. **参考demo实现**：可以参考`libmica/lib/system/demo/`目录下的示例实现，了解接口的使用方式和实现思路。
 
 
 # Support List
