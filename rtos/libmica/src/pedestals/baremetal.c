@@ -130,24 +130,24 @@ static void handle_ipi(void)
     struct fw_resource_table *rsc_table;
     uint32_t status;
 
-    /* 读取resource table状态 */
+    /* read resource table status */
     rsc_table_get(&rsc, &rsc_size);
     rsc_table = (struct fw_resource_table *)rsc;
     mica_mb();
 
     status = rsc_table->reserved[0];
 
-    /* 根据状态处理 */
+    /* handle by status */
     if (status == 0 || status == CPU_ON_FUNCID) {
-        /* 正常消息 */
+        /* normal message */
         mica_sem_post(g_ipi_sem);
     } else if (status == SYSTEM_RESET) {
-        /* 重置virtqueue */
+        /* reset virtqueue */
         reset_vq();
         rsc_table->reserved[0] = 0;
         mica_mb();
     } else if (status == CPU_OFF_FUNCID) {
-        /* 下电请求 */
+        /* power-off request */
         if (g_ped_mica_config->sys_ops.system_poweroff) {
             g_ped_mica_config->sys_ops.system_poweroff();
         }
@@ -156,16 +156,8 @@ static void handle_ipi(void)
 
 static void baremetal_irq_handler(void)
 {
-    /* mask irq */
-    mask_riscv_irq();
-    /* clear irq flags */
-    clear_riscv_irq();
-
     if (g_ipi_handler)
         g_ipi_handler();
-
-    /* unmask irq */
-    unmask_riscv_irq();
 }
 static void ipi_handler_init_done(void)
 {
@@ -179,7 +171,7 @@ static int ped_baremetal_init_irq(struct mica_config *config)
 
     g_ped_mica_config = config;
 
-    /* 注册中断 */
+    /* register IRQ */
     ret = mica_request_irq(config->ipc_irq_num, baremetal_irq_handler);
     if (ret) {
         return ret;
@@ -339,7 +331,7 @@ cleanup_ipi:
     return err;
 }
 
-/* 反初始化 */
+/* Deinitialize */
 static void ped_baremetal_deinit(void)
 {
     rpmsg_deinit_vdev(&g_rvdev);
@@ -349,7 +341,7 @@ static void ped_baremetal_deinit(void)
     /* TODO: disable openamp ipi */
 }
 
-/* 底座操作接口 */
+/* Pedestal ops */
 static const struct mica_pedestal_ops baremetal_ops = {
     .init_irq = ped_baremetal_init_irq,
     .init_rpmsg = ped_baremetal_init_rpmsg,
@@ -357,7 +349,7 @@ static const struct mica_pedestal_ops baremetal_ops = {
     .deinit = ped_baremetal_deinit,
 };
 
-/* 获取底座操作接口 */
+/* Get pedestal ops */
 const struct mica_pedestal_ops *mica_get_ped_ops(void)
 {
     return &baremetal_ops;

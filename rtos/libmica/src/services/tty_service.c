@@ -16,13 +16,13 @@
 
 #define TTY_MAX_BUFFER_SIZE  512
 
-/* TTY接收消息 */
+/* TTY receive message */
 struct tty_rcv_msg {
     void *data;
     size_t len;
 };
 
-/* TTY服务私有数据 */
+/* TTY service private data */
 struct tty_service_priv {
     mica_sem_t rx_sem;
     struct tty_rcv_msg rx_msg;
@@ -37,14 +37,14 @@ static struct tty_service_priv g_tty_priv;
 static bool g_tty_service_running = false;
 
 /**
- * 检查TTY是否就绪
+ * Check if TTY is ready.
  */
 int mica_tty_is_ready(void)
 {
     return is_rpmsg_ept_ready(&g_tty_ept);
 }
 
-/* TTY接收回调 */
+/* TTY receive callback */
 static int rx_tty_callback(struct rpmsg_endpoint *ept, void *data,
                           size_t len, uint32_t src, void *priv)
 {
@@ -56,7 +56,7 @@ static int rx_tty_callback(struct rpmsg_endpoint *ept, void *data,
     tty_priv->rx_msg.data = data;
     tty_priv->rx_msg.len = len;
     
-    /* 通知处理线程 */
+    /* notify processing thread */
     ret = mica_sem_post(tty_priv->rx_sem);
     
     if (ret != 0) {
@@ -96,7 +96,7 @@ void *tty_service_thread(void *arg)
     g_tty_service_running = true;
 
     while (g_tty_ept.addr != RPMSG_ADDR_ANY && g_tty_service_running) {
-        /* 等待接收数据 */
+        /* wait for received data */
         ret = mica_sem_wait(g_tty_priv.rx_sem);
 
         if (ret != MICA_SUCCESS) {
@@ -113,17 +113,17 @@ void *tty_service_thread(void *arg)
         tty_data = (char *)g_tty_priv.rx_msg.data;
         tty_data[g_tty_priv.rx_msg.len] = '\0';
 
-        /* 调用平台shell处理回调 */
+        /* invoke platform shell handler callback */
         if (mica_config && mica_config->sys_ops.shell_cmd_handler) {
             for (int i = 0; i < g_tty_priv.rx_msg.len; i++) {
                 mica_config->sys_ops.shell_cmd_handler(tty_data[i]);
             }
         }
 
-        /* 释放rx buffer */
+        /* release rx buffer */
         rpmsg_release_rx_buffer(&g_tty_ept, g_tty_priv.rx_msg.data);
 
-        /* 清空消息 */
+        /* clear message */
         g_tty_priv.rx_msg.len = 0;
         g_tty_priv.rx_msg.data = NULL;
     }
@@ -139,7 +139,7 @@ err_init:
 }
 
 /**
- * 初始化TTY service（创建独立线程）
+ * Initialize TTY service (spawn dedicated thread).
  */
 int mica_tty_init_service(pthread_attr_t *attr)
 {
@@ -157,7 +157,7 @@ int mica_tty_stop_service(void)
 }
 
 /**
- * TTY发送数据
+ * TTY send data.
  */
 int mica_tty_send(unsigned char *data, size_t len)
 {
@@ -178,7 +178,7 @@ int mica_tty_send(unsigned char *data, size_t len)
 }
 
 /**
- * TTY格式化打印
+ * TTY printf-style output.
  */
 int mica_tty_printf(const char *format, ...)
 {

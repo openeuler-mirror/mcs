@@ -11,11 +11,11 @@
 #include "pedestals/mica_ped.h"
 #include "services/mica_service_internal.h"
 
-/* 接收线程相关 */
+/* Receiver thread */
 static pthread_t g_receiver_thread;
 static int g_receiver_running = 0;
 
-/* 接收线程函数 */
+/* Receiver thread entry */
 static void *receiver_thread_func(void *arg)
 {
     const struct mica_pedestal_ops *ped_ops = mica_get_ped_ops();
@@ -27,7 +27,7 @@ static void *receiver_thread_func(void *arg)
 }
 
 /**
- * 启动接收线程
+ * Start receiver thread.
  */
 static int mica_start_receiver(pthread_attr_t *attr)
 {
@@ -49,7 +49,7 @@ static int mica_start_receiver(pthread_attr_t *attr)
 }
 
 /**
- * 停止接收线程
+ * Stop receiver thread.
  */
 void mica_stop_receiver(void)
 {
@@ -57,9 +57,9 @@ void mica_stop_receiver(void)
 }
 
 /**
- * 检查service是否就绪
- * @param type: service类型
- * @return: 1就绪，0未就绪
+ * Check if a service is ready.
+ * @param type: service type
+ * @return: 1 if ready, 0 if not
  */
 int mica_service_is_ready(enum mica_service_type type)
 {
@@ -146,7 +146,7 @@ int mica_create_all_services(void)
     int ret_tty, ret_umt, ret_rcv;
     int ret;
 
-    /* 初始化线程属性（共用） */
+    /* init thread attr (shared) */
     ret = pthread_attr_init(&attr);
     if (ret != 0) {
         mica_log("ERROR: pthread_attr_init failed: %d\n", ret);
@@ -160,7 +160,7 @@ int mica_create_all_services(void)
         return ret;
     }
 
-    /* 一次性创建所有线程 */
+    /* create all threads */
 
     mica_log("Creating TTY thread...\n");
     ret_tty = mica_tty_init_service(&attr);
@@ -173,7 +173,7 @@ int mica_create_all_services(void)
 
     pthread_attr_destroy(&attr);
 
-    /* 检查是否都成功 */
+    /* check all succeeded */
     if (ret_tty != 0 || ret_umt != 0 || ret_rcv != 0) {
         mica_log("ERROR: Thread creation failed: tty=%d, umt=%d, rcv=%d\n",
                  ret_tty, ret_umt, ret_rcv);
@@ -181,7 +181,7 @@ int mica_create_all_services(void)
         return -1;
     }
 
-    /* 等待 UMT 就绪 */
+    /* wait for UMT ready */
     while (!mica_service_is_ready(MICA_SERVICE_UMT)) {
         mica_delay_tick(100);
     }

@@ -14,24 +14,24 @@
 extern "C" {
 #endif
 
-/* ========== 平台操作回调 ========== */
+/* ========== Platform operation callbacks ========== */
 struct mica_sys_ops {
-    /* Shell处理函数（可选）
-     * @param c: 输入字符
+    /* Shell command handler (optional).
+     * @param c: input character
      */
     void (*shell_cmd_handler)(char c);
 
-    /* 系统控制回调（可选） */
+    /* System control callback (optional) */
     void (*system_poweroff)(void);
 
-    /* 异常通知（可选）
-     * @param signal: 信号值
-     * @param frame: 异常帧（可为NULL）
+    /* Exception notification (optional).
+     * @param signal: signal value
+     * @param frame: exception frame (may be NULL)
      */
     // void (*notify_panic)s(int signal, void *frame);
 };
 
-/* ========== MICA主配置结构 ========== */
+/* ========== MICA main configuration ========== */
 struct mica_config {
     /* shared memory configuration */
     uintptr_t shm_base_addr;
@@ -45,16 +45,21 @@ struct mica_config {
     struct mica_sys_ops sys_ops;
 };
 
-/* ========== Backend核心接口 ========== */
+/* ========== Backend core API ========== */
 /**
- * 初始化MICA backend
- * @param config: backend配置
- * @return: 0成功，负数失败
+ * Initialize MICA backend (IRQ, RPMsg, shared memory).
+ *
+ * @param config: backend configuration (must not be NULL)
+ * @return: 0 on success; negative errno on failure:
+ *   -EINVAL config is NULL
+ *   -EBUSY  already initialized
+ *   -ENODEV pedestal ops unavailable or init_irq/init_rpmsg failed
  */
 int mica_init(struct mica_config *config);
 
 /**
- * 移除RPMsg backend
+ * Tear down MICA backend (RPMsg and related resources).
+ * Safe to call if not initialized.
  */
 void mica_remove(void);
 
