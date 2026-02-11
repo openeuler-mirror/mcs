@@ -3,6 +3,7 @@ package shim
 import (
 	"context"
 	log "micrun/logger"
+	"os"
 	"time"
 
 	"github.com/containerd/containerd/api/events"
@@ -96,6 +97,33 @@ func (ef *eventsForwarder) forward() {
 func (s *shimService) listenAndReportExits() {
 	for e := range s.ec {
 		s.reportExit(e)
+		// After reporting main container exit, trigger shim shutdown
+		// This allows containerd to automatically clean up the task
+		//
+		// However, if the container was killed via Kill API, we should NOT
+		// trigger shim auto-exit. The shim should continue running to serve
+		// subsequent API requests (like Delete).
+		if e.execid == "" {
+			if s.killedByAPI {
+				log.Infof("[SHIM] Main container %s exited via Kill API, keeping shim running for cleanup", e.cid)
+				// Reset the flag for future exits
+				s.killedByAPI = false
+				// Continue listening for events
+				continue
+			}
+			log.Infof("[SHIM] Main container %s exited naturally, shutting down shim", e.cid)
+			// Call shutdown in a separate goroutine to avoid blocking
+			go func() {
+				if s.ss != nil {
+					s.ss()
+				}
+				// Give time for the shutdown signal to be processed
+				time.Sleep(100 * time.Millisecond)
+				os.Exit(0)
+			}()
+			// Exit the loop after main container exit
+			return
+		}
 	}
 }
 

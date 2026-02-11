@@ -1,0 +1,80 @@
+#!/usr/bin/expect -f
+# UX Test - Attach to existing container
+# This test attaches to running container and tests echo behavior
+
+set timeout 60
+set test_host "root@192.168.7.2"
+set container_name "test-ux-echo"
+
+log_user 1
+
+puts "\n=========================================="
+puts "MicRun UX Echo Test (Attach)"
+puts "==========================================\n"
+
+# Connect to test host
+puts "Connecting to $test_host..."
+spawn ssh -tt $test_host
+
+expect -re "#|\\$" { puts "Connected" }
+
+# Clean up and create new container
+puts "\nCleaning up old containers..."
+send "nerdctl rm -f $container_name 2>/dev/null || true\r"
+expect -re "#|\\$"
+
+puts "\nCleaning log file..."
+send "rm -f /var/log/mica/mica-runtime.log\r"
+expect -re "#|\\$"
+
+puts "\nStarting new container..."
+send "nerdctl run -it --runtime io.containerd.mica.v2 --network=none -l org.openeuler.micrun.container.auto_close=false --name $container_name localhost:5000/mica-uniproton-app:xen-0.1\r"
+
+# Wait for prompt
+expect {
+    -re "MainTCB>|Main>|>|#" {
+        puts "\nPROMPT DETECTED - Starting echo test..."
+    }
+    timeout {
+        puts "\nTimeout waiting for prompt, trying anyway..."
+    }
+}
+
+# Test 1: Type "help" and observe
+puts "\n>>> Typing 'help' command..."
+send "help"
+send "\r"
+
+after 2000
+
+# Test 2: Empty enter
+puts "\n>>> Pressing Enter (empty command)..."
+send "\r"
+
+after 1000
+
+# Test 3: Type "help" again
+puts "\n>>> Typing 'help' command again..."
+send "help"
+send "\r"
+
+after 2000
+
+# Exit
+puts "\n>>> Exiting container..."
+send "\004"
+
+expect -re "#|\\$" {
+    puts "\nCleanup..."
+    send "nerdctl rm -f $container_name 2>/dev/null\r"
+    expect -re "#|\\$"
+    send "exit\r"
+}
+
+puts "\n=========================================="
+puts "Test Complete - Please check:"
+puts "1. Did 'help' appear twice (input + echo)?"
+puts "2. Or did it appear 4 times (double echo problem)?"
+puts "==========================================\n"
+
+expect eof

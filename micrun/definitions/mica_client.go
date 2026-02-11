@@ -7,6 +7,7 @@ const (
 	DefaultXenImg       = "image.bin"
 	DefaultFirmwareName = "firmware.elf"
 	DefaultMinMemMB     = 16
+	DefaultOS           = "uniproton" // Default RTOS type when annotation is missing
 )
 
 var (

@@ -1,186 +1,743 @@
-# MicRun
+# MicRun 快速入门指南
 
-MicRun 是一个基于 containerd shimv2 的容器运行时，专为 Mica 项目设计，用于在不同 CPU 核上运行 RTOS（实时操作系统）。
+> **本文档约定**：命令中以 `<...>` 包裹的内容（如 `<build_dir>`、`<container_name>`）表示需要用户根据实际情况替换的自定义值。
 
-## 为什么要有 MicRun
+## 什么是 MicRun
 
-边侧的RTOS业务往往需要自用的管理系统，如果能云化处理, 用 Kubeedge 管理，就可以利用这些平台的优势，比如RTOS适配了MQTT接口后，与 Kubeedge在低带宽或者脱机状况下仍然维护集群中节点的状态
-而要接入 Kubeedge, 首先应该先让边侧的业务能够接收 Kubeedge 控制面管理的请求, 而该请求是一个 Kubelet-like,因此考虑通用性，问题聚焦为“如何将RTOS适配到Kubernetes中”
+`MicRun`是一个基于`containerd shimv2`的容器运行时，专为`Mica`项目设计，用于在同一`SoC`的不同`CPU`核上运行`RTOS`（`Real-Time Operating System`，实时操作系统）。
 
-运行上述的一切,还需要一个 Linux 设备来作为本地控制面,我们通过混合关键性系统部署(mcs)来运行RTOS在同一SoC上。此处的mcs方案为 MICA, 问题进一步推导为"如何将Mica纳入Kubernetes管理"
+### 核心价值
 
-想要将 RTOS  接入到 K8s 中，有几种常见路子：
+通过`MicRun`，你可以：
+- 用`Kubernetes/KubeEdge`管理`RTOS`业务
+- 用容器镜像分发`RTOS`固件
+- 在单一设备上实现`Linux`和`RTOS`的混合部署
+- 复用云原生工具链（`ctr`、`nerdctl`等）
 
-* 实现一个K8s CRD来管理 mica, K8s devops 工程师写 operator 就是做这种事情
-* 实现一个 KubeVirt 类型的框架
-* 实现一个容器 low-level runtime, 将RTOS作为某种容器 (容器化方案)
-* 将RTOS适配到 WASM micro runtime, ocrn 等边缘特化的 runtime 中
+---
 
-第二种方案的讨论价值不高，第四种方案无法充分利用mica混合部署的能力，因此,值得考量的是CRD方案和MicRun
+## 背景知识
 
-对于专业的 K8s 开发者而言，CRD 方案是十分自然的, 我们可以绕过容器引擎, 并且按经典实践规范好 restAPI, service endpoint, 扩展mica, 将资源的管理和规范都在 operator 中实现好。
-而 容器化 方案有十分自然的优点：它还可以做到RTOS容器化, 随着RTOS容器化的支持逐渐增加，可以让mica RTOS支持更多使用特性，并且可以利用容器镜像分发特性，减少镜像的构建,将镜像托管在镜像仓
-并且可以在结构上,让混合部署底座逐步通往云侧, 每一步都有对应方案。泛用性会略高。
+### 什么是"边侧"（边缘计算）
 
+**边侧**（`Edge`）指的是靠近数据源头或用户的一侧，相对于"云侧"（`Cloud`）而言。
 
-oci容器化有至少3种策略，
-1. 让RTOS自身容器化，并且让混合部署能够将RTOS容器能力暴露给容器引擎, 调整 ocispec中特定RTOS的相关定义
-2. 模拟 Linux 容器，
-3. 使用 WAMR 策略
-而我们优选 containerd 作为容器引擎, 它也是 Kubernetes 现在默认的 runtime endpoint.
+```
+                    云侧 (Cloud)
+                       │
+                    KubeEdge
+                       │
+    ┌──────────────────┼──────────────────┐
+    │                  │                  │
+ 边侧节点A          边侧节点B          边侧节点C
+ (工厂车间)         (智能门店)         (车载设备)
+    │                  │                  │
+   RTOS               RTOS               RTOS
+ (实时控制)         (数据采集)         (自动驾驶)
+```
 
-从而，我们的问题就变为 "如何实现一个容器 runtime
+### 什么是混合关键性系统（MCS）
 
-镜像分发问题：
+**混合关键性系统**（`Mixed Criticality System`，简称`MCS`）是指在同一硬件平台上同时运行不同关键性级别任务的系统。
 
-我们以 dockerhub 的镜像分发为例，对于主流 docker 容器镜像的**使用者**， 一个镜像有这些关键要素用于**选择所需**
+- **非关键任务**：`Linux`系统上的常规应用（如日志、`UI`）
+- **关键任务**：`RTOS`上的实时控制任务（如电机控制、安全监控）
 
+### 为什么选择容器化方案
 
+将`RTOS`接入`Kubernetes`有几种常见方案：
 
-## 快速使用
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| `CRD`+`Operator` | 灵活定制 | 需要为每个功能写代码 |
+| `KubeVirt`类型 | 成熟框架 | 无法充分利用`Mica`能力 |
+| **MicRun 容器化** | 复用云原生生态 | 需要适配`OCI`规范 |
+| `WASM`微运行时 | 轻量级 | 无法混合部署 |
 
+**MicRun 选择容器化方案的原因**：
+1. 复用容器镜像分发机制，简化固件管理
+2. 利用`Kubernetes`生态，降低运维复杂度
+3. 渐进式云化，每一步都有对应方案
 
-使用 MicRun 包含几步：
+---
 
-1. 构建包含相关特性 openEuler Embedded 镜像 
-1. (可选)在host上主动构建镜像
-1. 启动镜像，使用容器引擎load镜像或pull镜像
-1. 注册 MicRun 作为runtime，使用容器引擎运行RTOS混合部署镜像
+## 快速开始
 
-如果要试验集群加入：
-1. 部署集群node，注册 MicRun 作为 K8s/K3s 集群 Runtimeclass
-1. 在云侧部署 RTOS pod
+使用`MicRun`包含以下步骤：
 
-> **如果没有 docker, nerdctl, podman 的使用经验，建议先[快速上手 docker](https://docs.docker.com/get-started/)**
->
-> MicRun目前处于 preview 阶段，欢迎在[混合部署repo](https://gitee.com/openeuler/mcs/issues)反馈缺陷，
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. 构建系统镜像          构建包含 MicRun 的 openEuler Embedded │
+│  2. 启动系统              进入构建好的系统                      │
+│  3. 构建 RTOS 镜像        用 mica-image-builder 打包固件        │
+│  4. 导入镜像              将镜像导入 containerd                 │
+│  5. 注册运行时            在 containerd 中注册 MicRun           │
+│  6. 运行 RTOS 容器        启动并测试 RTOS 容器                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
+---
 
-### 构建 MicRun
+## 步骤 1：构建系统镜像
 
+`openeuler Embedded`基础构建过程可参考以下内容
++ [快速上手](https://embedded.pages.openeuler.org/master/getting_started/index.html)
++ [mica构建指导](https://embedded.pages.openeuler.org/master/features/mica/build.html)
 
-为了在openEuler Embedded 中使用 MicRun, 镜像需要具备:
+### 1.1 系统要求
 
-* kernel支持 容器功能，具备相关容器引擎
-* kernel支持 K8s功能(如果要使用集群功能)
-* 添加mcs,micrun特性
-* 使用 xen 作为 mcs 底座
-* systemd (最好是)
-* containerd 1.19+ (推荐)
+构建的`openEuler Embedded`镜像需要包含：
 
-1. 生成构建环境
+| 组件 | 版本要求 | 说明 |
+|------|----------|------|
+| `Kernel` | - | 支持容器功能和`K8s`功能 |
+| `micrun` | - | `MicRun`运行时 |
+| `micad` | - | `MCS`特性的守护进程，管理RTOS |
+| `Xen` | - | 作为`MCS`底座（虚拟化层） |
+| `systemd` | 推荐 | 系统和服务管理 |
+| `containerd` | 1.7.27+ | 容器引擎，推荐版本 |
 
-更新 oebuild, 
+### 1.2 生成构建环境
 
-```shell
-oebuild neo-generate -p qemu-aarch64 -f zephyr -f micrun -f systemd -f containerd -d playmicrun # 使用containerd 作容器引擎,目前这个是必须的。最好是 systemd
-cd playmicrun
+```bash
+# 安装/更新 oebuild
+oebuild neo-generate -p qemu-aarch64 \
+  -f zephyr \      # Zephyr RTOS 支持
+  -f micrun \      # MicRun 运行时
+  -f mcs/xen \     # mcs和xen支持
+  -f systemd \     # systemd 服务管理
+  -f containerd \  # containerd 容器引擎（必须）
+  -d <build_dir>   # 构建目录名称，自定义（如 playmicrun）
+
+cd <build_dir>
 oebuild bitbake
+```
+
+**选项说明**：
+| 选项 | 说明 |
+|------|------|
+| `-p` | 目标平台，如`qemu-aarch64` |
+| `-f` | 添加的功能特性（`feature`） |
+| `-d` | 构建输出目录 |
+
+### 1.3 构建镜像
+
+```bash
+# 进入 oebuild bitbake 创建的容器环境
 bitbake openeuler-image
+
+# 如果只想单独构建 MicRun
+bitbake micrun
 ```
 
-进入 `oebuild bitbake` 创建的容器环境中构建 opeuler-image 镜像。MicRun 在构建镜像时会被自动打包进系统。使用 `bitbake micrun` 可以单独构建该软件包
+构建完成后，`MicRun`会被自动打包进系统。
 
-MicRun 是一个不使用 CGO的用户态静态链接的golang二进制, 是一个标准的golang实践。
+> **说明**：`MicRun`是一个无`CGO`依赖的静态链接`Go`二进制文件，构建产物可直接运行。
 
-> 在此文档中，你会使用 openEuler/mcs 下的 micrun 代码来构建,
-> 这是一个 minimal micrun, 尽可能保证了代码和结构清晰, 方便后续敏捷.
-> 当前版本的 MicRun 的 vendor dir 是不稳定的，所以暂时是 go mod 构建, 想要使用vendor构建，可以手动在源码目录运行 `go mod vendor` 生成 vendor 目录
+### 1.4（可选）添加`K3s`支持
 
-本指导使用 containerd + nerdctl 演示，你可以这样来构建镜像：
+如果需要使用`Kubernetes`集群功能：
 
+```bash
+oebuild neo-generate -p qemu-aarch64 \
+  -f zephyr \
+  -f micrun \
+  -f mcs/xen \
+  -f systemd \
+  -f containerd \
+  -f k3s-agent \   # 添加 K3s agent 支持
+  -d <build_dir>
 ```
-# 请确保使用了最新 oebuild 你可以运行：
-oebuild neo-generate -p qemu-aarch64 -f micrun -f mcs/xen -f containerd -d playmicrun
-# 如果需要k3s,则添加 -f k3s-agent
-cd playmicrun
-oebuild bitbake
-bitbake openeuler-image
+
+---
+
+## 步骤 2：启动系统
+
+### 2.1 配置 Xen
+
+在启动系统前，需要确保`Xen`已正确配置。请参考[`Mica-Xen`指导文档](https://embedded.pages.openeuler.org/master/features/mica/instruction.html)。
+
+### 2.2 使用`QEMU`启动（开发测试）
+
+**启动示例**：
+
+```bash
+sudo <qemu_path>/qemu-system-aarch64 \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup \
+  -initrd openeuler-image-*.cpio.gz \
+  -device loader,file=Image,addr=0x45000000 \
+  -machine virt,gic-version=3 \
+  -machine virtualization=true \
+  -cpu cortex-a53 -smp 4 -m 4096 \
+  -serial mon:stdio -nographic \
+  -kernel xen-qemu-aarch64 \
+  -append 'root=/dev/ram0 rw debugshell mem=1024M console=ttyAMA0,115200' \
+  -dtb openeuler-image-mcs-qemu-aarch64-*.qemuboot.dtb
 ```
 
-### 进入 openEuler Embedded
+**参数说明**：
+| 参数 | 说明 |
+|------|------|
+| `-device virtio-net-pci,netdev=net0` | 添加`virtio`网卡设备 |
+| `-netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup` | 配置`TAP`网络设备 |
+| `-initrd openeuler-image-*.cpio.gz` | 指定`initrd`文件 |
+| `-device loader,file=Image,addr=0x45000000` | 加载内核镜像到指定地址 |
+| `-machine virt,gic-version=3` | 使用`virt`机器类型，`GIC`v3 |
+| `-machine virtualization=true` | 启用虚拟化支持 |
+| `-cpu cortex-a53 -smp 4 -m 4096` | `CPU`类型、核心数、内存大小 |
+| `-serial mon:stdio -nographic` | 串口输出到标准输出，无图形界面 |
+| `-kernel xen-qemu-aarch64` | 指定`Xen hypervisor` |
+| `-append '...'` | 内核启动参数 |
+| `-dtb *.qemuboot.dtb` | 指定设备树文件 |
 
-1. [参考mica-xen指导文档](https://embedded.pages.openeuler.org/master/features/mica/instruction.html) 确保配置好 xen, 
+**`QEMU`注意事项**：
+- `QEMU`版本不宜过低，低版本存在影响`Xen`的`bug`
+- 确保`Xen DTS`为`Domain-0`预留足够内存（建议`1536M`）
+- 如需调整，在`conf/local.conf`中设置：
+  ```bash
+  QB_XEN_CMDLINE_EXTRA = "dom0_mem=1536M"
+  ```
 
-如果使用 qemu-aarch64 来试用 MicRun，请注意 
-> 1. qemu 版本不宜过低:
-> 低版本qemu存在影响xen的bug，会造成RTOS xen镜像卡死，建议使用高版本qemu。 
-> 可参考 [qemu.org — Build instructions](https://www.qemu.org/download/)
-> 2. 请确保xen dts 为 domain-0 预留了一个更大的内存(根据实际情况, qemu sample中是 `1536M` ) 
-> 如果要调整该值，请在 `conf/local.conf`中设置 `QB_XEN_CMDLINE_EXTRA = <size with unit>` 的值
+---
 
-1. (可选)构建镜像
-> 和标准 docker 镜像 `[os,arch]` 2元组不同，RTOS 容器的匹配需要这样的4元组: `[board, os, arch, hypervisor]`
-> 因此, 可用的构建镜像需要同时匹配这四个特征，我们需要用特化的镜像打包方式
-> 目前，你会在 构建产物目录 output 下 找到 `micrun-files/mica-image-builder`
-```
-# 由于是一个简单脚本，所以只使用 requirements.txt 保存依赖
-# 环境没uv则使用
-# pip install -r requirements.txt
-# python mica-image-builder.py 也可以
-cd micrun-files
+## 步骤 3：构建`RTOS`容器镜像
+
+### 3.1 为什么需要特殊构建工具
+
+标准`Docker`容器镜像使用`[os, arch]`二元组匹配（如`linux/amd64`）。
+
+而`RTOS`容器需要`[board, os, arch, hypervisor]`四元组匹配：
+- `board`：硬件板型（如`qemu-aarch64`）
+- `os`：`RTOS`类型（如`zephyr`、`uniproton`）
+- `arch`：`CPU`架构（如`arm64`、`amd64`）
+- `hypervisor`：虚拟化类型（如`xen`、`openamp`）
+
+因此需要使用专门的镜像打包工具`mica-image-builder`。
+
+### 3.2 准备构建环境
+
+```bash
+# 进入构建产物目录
+cd <build_dir>/output/micrun-files
+
+# 初始化 Python 环境
 uv init
 uv venv
 source .venv/bin/activate
+
+# 安装依赖
 uv pip install -r requirements.txt
-uv run ./mica-image-builder # 根据交互来选择构建
 ```
 
-1. 启动系统
-1. load本地镜像或从镜像仓pull镜像
-1. 为 containerd 注册运行时
-1. (如果使用集群) 为 k3s-agent 注册 micrun runtimeclass
+> **替代方案**：如果没有`uv`，可以用传统方式：
+> ```bash
+> pip install -r requirements.txt
+> python mica-image-builder.py
+> ```
 
+### 3.3 交互式构建镜像
 
-#### 在 containerd 上注册
+```bash
+# 启动交互式构建工具
+uv run ./mica-image-builder
+```
 
-> 通过 `--runtime io.containerd.<runtime name>` 选项，用户可以指定运行容器的运行时（如果在 `$PATH` 上安装）。
-> 我们可以使用 containerd shim 运行时 [无需在 PATH 上安装](https://docs.docker.com/engine/daemon/alternative-runtimes/#use-a-containerd-shim-without-installing-on-path)
+根据提示选择：
+1. **`Pedestal`类型**：选择`xen`或`openamp`
+2. **`OS`类型**：选择`zephyr`或`uniproton`
+3. **固件文件**：选择你的`<firmware>.elf`或`<firmware>.bin`文件
+4. **镜像名称**：使用默认或自定义名称
 
-通常，在 `/etc/containerd/config.toml` 中添加一个新插件：
+### 3.4 导出镜像
+
+构建完成后，将镜像导出为`tarball`：
+
+```bash
+# 构建时会提示是否导出，选择导出
+# 或手动导出已构建的镜像
+docker save -o <image_file>.tar <image_name>:<tag>
+# 例如：docker save -o my-rtos-image.tar localhost:5000/mica-zephyr-app:xen-0.1
+```
+
+---
+
+## 步骤 4：在`containerd`中注册 MicRun
+
+### 4.1 注册运行时
+
+编辑`/etc/containerd/config.toml`，添加以下内容：
 
 ```toml
+version = 2
+
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.micrun]
   runtime_type = "io.containerd.mica.v2"
   pod_annotations = ["org.openeuler.micrun."]
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.micrun]
-  # 保持为空
-  # micrun 命令行配置选项设计还不稳定
 ```
 
-#### 注册为 Kubernetes RuntimeClass
+**配置说明**：
+- `version = 2`：显示声明配置文件格式版本。
+- `runtime_type`：指定运行时类型为 MicRun 的`shimv2`实现`io.containerd.mica.v2`。
+- `pod_annotations`：声明`MicRun`支持的注解前缀，用于接收来自`Kubernetes`/`Pod`的配置。
+> `runc`这样的容器运行时不在此配置的原因：`runc`是`containerd`的默认运行时，由系统内置配置自动处理，无需手动添加。
 
-```yaml
-version: v1
-runtimeClass:
-  name: micrun
-  type: RuntimeClass
+### 4.2 重启`containerd`
 
+```bash
+# 重启 containerd 使配置生效
+systemctl restart containerd
+
+# 验证配置（检查 micrun 运行时是否被正确加载）
+containerd config dump | grep -A 5 runtimes.micrun
 ```
 
-```shell
-kubelet --cpu-manager-policy=static
-# isolcpus, nohz_full, ... 可以自定义
+---
+
+## 步骤 5：导入并运行`RTOS`容器
+
+### 5.1 导入镜像到`containerd`
+
+```bash
+# 从 tarball 导入镜像
+ctr image import <image_file>.tar
+
+# 查看已导入的镜像
+ctr image ls
+
+# 查看特定镜像
+ctr image ls | grep mica
 ```
 
+**选项说明**：
+| 命令 | 选项 | 说明 |
+|------|------|------|
+| `ctr image import` | - | 导入镜像`tarball`到`containerd` |
+| `ctr image ls` | - | 列出所有已导入的镜像 |
 
-#### 使用运行时
+### 5.2 使用`ctr`运行容器（开发者工具）
 
-使用 nerdctl
+```bash
+# 创建容器
+ctr container create \
+  --runtime io.containerd.mica.v2 \
+  -t \
+  --annotation org.openeuler.micrun.container.auto_close=true \
+  <image_name>:<tag> \
+  <container_name>
 
-```shell
-# 注意，在 nerdctl 中 '--label' 选项不是 docker 中的 "Label"，它是 "Annotation"
-# 因此 -l 选项将注解传递给容器 oci 配置
-nerdctl run -d --runtime io.containerd.mica.v2 -l org.openeuler.micran.auto_disconnect=true <image>
-nerdctl update --memory 1024m  <container_id>
+# 启动容器（会进入 RTOS shell）
+ctr task start <container_name>
+
+# 在另一个终端停止容器
+ctr task kill -s 9 <container_name>
+
+# 删除容器
+ctr task delete <container_name>
+ctr container delete <container_name>
 ```
 
-使用 ctr (`containerd-ctr` 测试工具, 用于开发者)
+**选项说明**：
+| 选项 | 说明 |
+|------|------|
+| `--runtime` | 指定使用的容器运行时，MicRun 使用`io.containerd.mica.v2` |
+| `-t` | 分配伪终端（`TTY`），支持交互式操作 |
+| `--annotation` | 传递给 MicRun 的配置注解，格式为`key=value` |
 
-```shell
-ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micran.auto_disconnect=true <image> <container_id>
-ctr task start <container_id> # 会进入容器shell, 确认到 RTOS 被拉起了
-ctr task kill <container_id>
-ctr task del <container_id>
+**常用注解**：
+| 注解 | 说明 | 示例 |
+|------|------|------|
+| `org.openeuler.micrun.container.auto_close` | 是否在 IO 关闭时自动停止容器 | `true`/`false` |
+| `org.openeuler.micrun.container.auto_close_timeout` | 自动关闭超时时间（持续时间字符串或秒） | `30s`（默认30秒） |
+
+> **说明**：`auto_close` 默认为 `true`，当用户断开连接（如关闭终端）或超时后，容器会自动停止。如果希望容器保持运行以支持多次 attach，可以设置 `auto_close=false` 或使用较长的超时时间（>60秒）。
+
+### 5.3 使用`nerdctl`运行容器（推荐用于生产）
+
+`nerdctl`是 Docker 兼容的 CLI 工具，与 `ctr` 相比提供更友好的用户体验。
+
+#### 5.3.1 运行容器
+
+```bash
+# 后台运行容器
+nerdctl run -d \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 创建但不启动容器
+nerdctl create \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 启动已创建的容器
+nerdctl start <container_name>
 ```
+
+**重要说明**：
+- `--network host`：对于 RTOS 容器，通常需要使用 host 网络模式，因为嵌入式环境可能没有配置 CNI 网络插件
+- 如果系统配置了 CNI 网络插件，可以省略 `--network host` 或使用其他网络模式
+
+#### 5.3.2 管理容器
+
+```bash
+# 查看运行中的容器
+nerdctl ps
+
+# 查看所有容器（包括已停止的）
+nerdctl ps -a
+
+# 停止容器
+nerdctl stop <container_name>
+
+# 强制停止容器
+nerdctl stop -t 0 <container_name>
+
+# 重启容器
+nerdctl restart <container_name>
+
+# 删除已停止的容器
+nerdctl rm <container_name>
+
+# 强制删除运行中的容器
+nerdctl rm -f <container_name>
+
+# 删除所有已停止的容器
+nerdctl container prune -f
+```
+
+#### 5.3.3 查看容器信息
+
+```bash
+# 查看容器详细信息
+nerdctl inspect <container_name>
+
+# 查看容器状态
+nerdctl inspect <container_name> --format '{{.State.Status}}'
+
+# 查看容器 PID
+nerdctl inspect <container_name> --format '{{.State.Pid}}'
+
+# 查看容器日志
+nerdctl logs <container_name>
+
+# 实时跟踪日志
+nerdctl logs -f <container_name>
+```
+
+#### 5.3.4 使用注解配置容器
+
+`nerdctl` 使用 `-l`（label）参数来传递 MicRun 的注解配置：
+
+```bash
+# 设置 auto_close 为 false，容器不会自动停止
+nerdctl run -d \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  -l org.openeuler.micrun.container.auto_close=false \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 设置自动断开超时时间（秒）
+nerdctl run -d \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  -l org.openeuler.micrun.container.auto_close_timeout=120s \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 组合多个注解
+nerdctl run -d \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  -l org.openeuler.micrun.container.auto_close=false \
+  -l org.openeuler.micrun.container.auto_close_timeout=300s \
+  --name <container_name> \
+  <image_name>:<tag>
+
+# 查看容器的注解配置
+nerdctl inspect <container_name> --format '{{json .Config.Labels}}' | grep micrun
+```
+
+#### 5.3.5 交互式 TTY 模式
+
+```bash
+# 创建交互式 TTY 容器（前台运行）
+# 注意：这种方式需要在一个交互式终端中运行
+nerdctl run -it --rm \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  <image_name>:<tag>
+
+# 创建 TTY 容器（后台运行）
+# 注意：使用 -d 和 -t 组合时，容器会立即返回但保持运行
+nerdctl run -d -t \
+  --runtime io.containerd.mica.v2 \
+  --network host \
+  --name <container_name> \
+  <image_name>:<tag>
+```
+
+**退出容器**：
+- 在 TTY 中输入 `exit` 命令并回车，容器会停止（推荐方式）
+- 使用 `Ctrl+P` 然后 `Ctrl+Q` 可以**临时退出**容器（容器继续运行，仅 TTY 模式）
+- 外部终止：使用 `ctr task kill -s SIGTERM <容器名>` 或 `SIGKILL`
+
+**Detach 和 Attach 功能说明**：
+- `Ctrl+P, Ctrl+Q` 序列可以让你临时退出容器 shell，容器在后台继续运行
+- 这是类似 Docker 的行为，方便你从交互式会话中临时脱离
+- 退出后容器继续运行，可以使用 `nerdctl attach <容器名>` 重新连接
+
+**使用示例**：
+```bash
+# 启动交互式容器
+nerdctl run -it --rm --runtime io.containerd.mica.v2 <image>
+
+# 在容器中工作...
+# 按 Ctrl+P，然后按 Ctrl+Q
+
+# 容器在后台继续运行
+nerdctl ps
+
+# 重新连接到容器
+nerdctl attach <容器名>
+
+# 或使用容器 ID
+nerdctl attach <container_id>
+```
+
+#### 5.3.6 与 `ctr` 命令对照
+
+| 操作 | ctr 命令 | nerdctl 命令 |
+|------|----------|--------------|
+| 创建容器 | `ctr container create` | `nerdctl create` |
+| 启动容器 | `ctr task start` | `nerdctl start` |
+| 创建+启动 | `ctr run` | `nerdctl run` |
+| 停止容器 | `ctr task kill` | `nerdctl stop` |
+| 连接容器 | `ctr task attach` | `nerdctl attach` |
+| 删除容器 | `ctr container delete` | `nerdctl rm` |
+| 查看容器 | `ctr container ls` | `nerdctl ps` |
+| 查看镜像 | `ctr image ls` | `nerdctl images` |
+| 传递注解 | `--annotation` | `-l` (label) |
+| 导入镜像 | `ctr image import` | `nerdctl load` |
+| 导出镜像 | `ctr image export` | `nerdctl save` |
+
+**命名空间说明**：
+- `ctr` 默认使用 `default` 命名空间
+- `nerdctl` 默认使用 `k8s.io` 命名空间
+- 两者创建的容器互相不可见，需要用 `ctr -n k8s.io` 来查看 nerdctl 创建的容器
+
+---
+
+## 步骤 6：（可选）接入`Kubernetes`集群
+
+> **详细指南**：完整的 Kubernetes 云边协同部署指南，请参考 **[Kubernetes 集成指南](k8s-integration.md)**。
+
+本节简要介绍 Kubernetes 集成的概念。完整的部署步骤、配置示例和故障排查，请查看专门的集成文档。
+
+### 6.1 什么是云边协同
+
+**云边协同**（Cloud-Edge Collaboration）是指在云侧集中管理多个边侧节点，实现：
+- 统一的资源调度和管理
+- 应用的自动化部署和升级
+- 集中的监控和日志收集
+- 高可用和负载均衡
+
+### 6.2 MicRun 在 Kubernetes 中的角色
+
+```
+云侧（K3s Server）          边侧（K3s Agent + MicRun）
+┌──────────────┐           ┌──────────────────────────┐
+│ Kubernetes   │           │  containerd              │
+│ API Server   │◄──────────┤  ┌────────────────────┐  │
+│              │  管理接口  │  │ MicRun Runtime     │  │
+│  Scheduler   │           │  │ (Shim v2)          │  │
+│              │           │  └────────────────────┘  │
+└──────────────┘           │  ┌────────────────────┐  │
+                           │  │ RTOS Container     │  │
+                           │  │ (Zephyr/UniProton) │  │
+                           │  └────────────────────┘  │
+                           └──────────────────────────┘
+```
+
+**关键概念**：
+- **RuntimeClass**：Kubernetes 资源，声明 MicRun 为容器运行时
+- **K3s**：轻量级 Kubernetes 发行版，适合边缘场景
+- **云侧**：运行 K3s Server，提供管理 API
+- **边侧**：运行 K3s Agent + containerd + MicRun，实际运行 RTOS 容器
+
+### 6.3 快速体验
+
+**前提条件**：
+1. 已完成步骤 1-5，MicRun 在边侧节点正常运行
+2. 有两台机器（或虚拟机）：一台作为云侧，一台作为边侧
+3. 网络互通
+
+**核心步骤**（详细步骤请参考 [Kubernetes 集成指南](k8s-integration.md)）：
+
+1. **云侧部署**：安装 K3s Server
+   ```bash
+   curl -sfL https://get.k3s.io | sh -
+   ```
+
+2. **边侧部署**：安装 K3s Agent
+   ```bash
+   export K3S_URL="https://<cloud-ip>:6443"
+   export K3S_TOKEN="<node-token>"
+   curl -sfL https://get.k3s.io | K3S_URL=${K3S_URL} K3S_TOKEN=${K3S_TOKEN} sh -
+   ```
+
+3. **注册 RuntimeClass**
+   ```bash
+   kubectl apply -f - <<EOF
+   apiVersion: node.k8s.io/v1
+   kind: RuntimeClass
+   metadata:
+     name: micrun
+   handler: micrun
+   EOF
+   ```
+
+4. **部署 RTOS Pod**
+   ```bash
+   kubectl apply -f rtos-pod.yaml
+   ```
+
+### 6.4 学习路径
+
+- **新手**：建议先完成步骤 1-5，熟悉 MicRun 基本用法后再尝试 Kubernetes 集成
+- **有经验用户**：直接参考 [Kubernetes 集成指南](k8s-integration.md) 进行完整部署
+- **生产环境**：需要考虑高可用、监控、安全等，详见集成指南的高级用法章节
+
+### 6.5 常见问题
+
+**Q：必须使用 K3s 吗？**
+A：不是必须的。MicRun 兼容标准 Kubernetes（1.28+），但 K3s 更轻量，适合边缘场景。
+
+**Q：可以在单节点测试吗？**
+A：可以。K3s 支持单节点模式，云侧和边侧可以在同一台机器上运行（仅用于测试）。
+
+**Q：如何监控 RTOS 容器状态？**
+A：使用 `kubectl get pods` 和 `kubectl describe pod` 查看。详细日志在边侧的 `/var/log/mica/mica-runtime.log`。
+
+**Q：Pod 无法启动怎么办？**
+A：参考 [Kubernetes 集成指南 - 故障排查](k8s-integration.md#故障排查) 章节，涵盖了常见问题和解决方法。
+
+---
+
+## 常见问题
+
+### Q：`micran`和`micrun`有什么区别？
+
+**A**：`micran`是过去的名称，现在统一使用`micrun`。如果文档中看到`micran`，应该改为`micrun`。
+
+### Q：为什么需要`-t`参数？
+
+**A**：`-t`（`--tty`）为容器分配伪终端，这对于`RTOS`容器非常重要：
+- 支持交互式`shell`
+- 支持终端窗口大小调整
+- 支持通过输入 "exit" 命令退出容器
+
+### Q：如何退出 RTOS 容器？
+
+**A**：在 RTOS 交互式 shell 中输入 `exit` 命令并按回车：
+- Shim 会检测到 "exit" 命令
+- 触发容器停止（状态变为 STOPPED）
+- **重要**：Shim 继续运行，等待后续 API 调用
+
+要完全清理容器和 shim，需要显式执行：
+```bash
+ctr task delete <container_name>
+ctr container delete <container_name>
+```
+
+### Q：镜像导入后如何查看完整名称？
+
+**A**：运行`ctr image ls`，镜像名称格式为：
+```
+<registry>/<image-name>:<tag>
+```
+例如：`localhost:5000/mica-zephyr-app:xen-0.1`
+
+### Q：如何调试容器启动问题？
+
+**A**：
+1. 查看 MicRun 日志：`tail -f /var/log/mica/mica-runtime.log`
+2. 查看`containerd`日志：`journalctl -u containerd -f`
+3. 使用`ctr task metrics <container_id>`查看容器状态
+
+### Q：遇到 `ctr: task xxx: already exists` 错误怎么办？
+
+**A**：这个错误表示 containerd 认为该容器的 task 还在运行。常见原因和解决方法：
+
+#### 场景 1：手动使用 `xl destroy` 销毁了容器
+
+如果您手动使用 `xl destroy` 销毁了 Xen domain，但 containerd 的 task 元数据仍然存在，需要手动清理：
+
+```bash
+# 1. 查看当前状态
+ctr task ls              # 检查 task 状态
+xl list                 # 检查 Xen domain 状态
+
+# 2. 清理 containerd 状态
+ctr task delete -f <container_name>
+ctr container delete <container_name>
+
+# 3. 重新启动容器
+ctr container create --runtime io.containerd.mica.v2 \
+  -t <image> <container_name>
+ctr task start -d <container_name>
+```
+
+#### 场景 2：shim 进程异常退出
+
+如果 shim 进程异常退出，但 task 元数据还存在：
+
+```bash
+# 1. 杀掉残留的 shim 进程
+killall -9 containerd-shim-mica-v2
+
+# 2. 清理 task 和 container
+ctr task delete -f <container_name>
+ctr container delete <container_name>
+
+# 3. 清理状态文件
+rm -rf /run/containerd/io.containerd.runtime.v2.task/default/<container_name>
+
+# 4. 重新创建和启动
+```
+
+#### 场景 3：容器状态不一致
+
+如果 Xen domain、shim 进程和 containerd task 三者状态不一致，最彻底的清理方法：
+
+```bash
+# 停止并删除所有相关资源
+xl destroy <container_name> 2>/dev/null
+killall -9 containerd-shim-mica-v2 2>/dev/null
+ctr task delete -f <container_name> 2>/dev/null
+ctr container delete <container_name> 2>/dev/null
+rm -rf /run/containerd/io.containerd.runtime.v2.task/default/<container_name>
+
+# 重新开始
+ctr container create --runtime io.containerd.mica.v2 \
+  -t <image> <container_name>
+ctr task start -d <container_name>
+```
+
+**提示**：大多数情况下，`ctr task delete -f` 就能解决问题。如果问题持续，使用场景3的彻底清理方法。
+
+---
+
+## 更多资源
+
+- [项目仓库](https://atomgit.com/openeuler/mcs)
+- [问题反馈](https://atomgit.com/openeuler/mcs/issues)
+- [`Mica-Xen`指导](https://embedded.pages.openeuler.org/master/features/mica/instruction.html)
+
+---
+
+**项目状态**：`MicRun`目前处于`Preview`阶段，欢迎反馈问题和建议。

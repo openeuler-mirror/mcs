@@ -1,0 +1,159 @@
+#!/usr/bin/expect -f
+# UX Test using nerdctl
+# This test uses nerdctl which handles TTY properly
+
+set timeout 20
+set test_image "localhost:5000/mica-uniproton-app:xen-0.1"
+
+log_user 1
+
+puts "\n=========================================="
+puts "MicRun UX Test (nerdctl)"
+puts "==========================================\n"
+
+# Cleanup first
+puts "Cleaning up any existing containers..."
+spawn sh -c {nerdctl rm -f \$(nerdctl ps -aq --filter name=test-ux-nerdctl) 2>/dev/null || true}
+expect eof
+
+# Start container with nerdctl
+puts "\nStarting container with nerdctl..."
+spawn nerdctl run -it --runtime io.containerd.mica.v2 --network=none -l org.openeuler.micrun.container.auto_close=false $test_image
+
+set all_output ""
+set test_count 0
+
+expect {
+    -re "MainTCB>|Main>|>|#|\\$" {
+        puts "Got prompt (test environment ready)"
+        set all_output $expect_out(buffer)
+
+        # Test 1: help command
+        incr test_count
+        puts "\n=== Test $test_count: Sending 'help' command ==="
+        send "help\r"
+
+        expect {
+            -re "help" {
+                append all_output $expect_out(buffer)
+                after 500
+                set help_count [regexp -all {help} $expect_out(buffer)]
+                puts "After 'help', found $help_count 'help' occurrences"
+
+                # Test 2: empty Enter
+                incr test_count
+                puts "\n=== Test $test_count: Sending empty Enter ==="
+                send "\r"
+
+                expect {
+                    -re "MainTCB>|Main>|>|#|\\$" {
+                        append all_output $expect_out(buffer)
+
+                        # Test 3: help command again
+                        incr test_count
+                        puts "\n=== Test $test_count: Sending 'help' again ==="
+                        send "help\r"
+
+                        expect {
+                            -re "help" {
+                                append all_output $expect_out(buffer)
+                                after 500
+
+                                set final_help_count [regexp -all {help} $all_output]
+                                set output_size [string length $all_output]
+
+                                # Summary
+                                puts "\n=========================================="
+                                puts "Results Summary"
+                                puts "=========================================="
+                                puts "Tests run: $test_count"
+                                puts "Final 'help' count: $final_help_count"
+                                puts "Output size: $output_size bytes"
+                                puts ""
+
+                                # Check for issues
+                                set issues 0
+
+                                # Check 1: Too many help keywords
+                                if {$final_help_count > 4} {
+                                    puts "ISSUE: Excessive 'help' ($final_help_count > 4)"
+                                    puts "  - Expected: ~4 (2 user inputs + 2 RTOS responses)"
+                                    puts "  - This indicates duplicate output"
+                                    incr issues
+                                } elseif {$final_help_count == 4} {
+                                    puts "OK: 'help' appears 4 times (expected)"
+                                } else {
+                                    puts "INFO: 'help' appears $final_help_count times"
+                                }
+
+                                # Check 2: Double echo pattern
+                                if {[regexp {helphelp} $all_output]} {
+                                    puts "ISSUE: Found 'helphelp' pattern (double echo)"
+                                    incr issues
+                                }
+
+                                # Check 3: Empty line issues
+                                set empty_lines [regexp -all {\n\n\n} $all_output]
+                                if {$empty_lines > 2} {
+                                    puts "ISSUE: Excessive empty lines ($empty_lines)"
+                                    incr issues
+                                }
+
+                                # Save output
+                                set fd [open "/tmp/ux_nerdctl_test.log" "w"]
+                                puts $fd "=== Complete Captured Output ==="
+                                puts $fd $all_output
+                                puts $fd "\n=== Analysis ==="
+                                puts $fd "Tests run: $test_count"
+                                puts $fd "Help occurrences: $final_help_count"
+                                puts $fd "Output size: $output_size"
+                                puts $fd "Issues found: $issues"
+                                close $fd
+                                puts "Output saved to: /tmp/ux_nerdctl_test.log"
+
+                                # Exit
+                                puts "\nExiting container..."
+                                send "\004"  # Ctrl-D to exit
+                                expect {
+                                    eof { puts "Exited" }
+                                    timeout { puts "Timeout exiting" }
+                                }
+
+                                puts "\n=========================================="
+                                if {$issues > 0} {
+                                    puts "FAIL: Found $issues issues"
+                                } else {
+                                    puts "PASS: All tests passed"
+                                }
+                                puts "==========================================\n"
+                            }
+                            timeout {
+                                puts "Timeout on second help"
+                                send "\004"
+                                expect eof
+                            }
+                        }
+                    }
+                    timeout {
+                        puts "Timeout after empty Enter"
+                        send "\004"
+                        expect eof
+                    }
+                }
+            }
+            timeout {
+                puts "Timeout waiting for help response"
+                send "\004"
+                expect eof
+            }
+        }
+    }
+    timeout {
+        puts "Timeout waiting for initial prompt"
+        send "\004"
+        expect eof
+    }
+    eof {
+        puts "Connection closed"
+    }
+}

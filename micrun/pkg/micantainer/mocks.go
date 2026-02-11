@@ -23,7 +23,7 @@ func dummySandboxConfig(cid string, spec *specs.Spec) (*SandboxConfig, error) {
 		ID:       cid,
 		Hostname: spec.Hostname,
 		Annotations: map[string]string{
-			"org.openeuler.micran.test": "true",
+			"org.openeuler.micrun.test": "true",
 		},
 		ContainerConfigs:   make(map[string]*ContainerConfig),
 		SharedMemorySize:   64 * 1024 * 1024, // 64MB

@@ -23,6 +23,7 @@
 
 # no build artifacts 
 build/
+vendor/
 
 .cache/
 __pycache__/

@@ -1,0 +1,121 @@
+#!/bin/bash
+# Manual IO Test Guide for MicRun
+# This script sets up the environment and provides step-by-step instructions
+# for manually testing the IO system fixes.
+
+set -e
+
+CONTAINER_NAME="io-test-rtos"
+IMAGE_NAME="localhost:5000/mica-uniproton-app:xen-0.1"
+
+echo "=========================================="
+echo "  MicRun IO System Manual Test Guide"
+echo "=========================================="
+echo ""
+echo "This script will:"
+echo "  1. Clean up any existing containers"
+echo "  2. Create a new test container"
+echo "  3. Provide step-by-step test instructions"
+echo ""
+echo "Press Enter to continue..."
+read
+
+# Cleanup
+echo "[1/4] Cleaning up..."
+ctr task kill -s 9 ${CONTAINER_NAME} 2>/dev/null || true
+ctr task delete -f ${CONTAINER_NAME} 2>/dev/null || true
+ctr container delete ${CONTAINER_NAME} 2>/dev/null || true
+rm -rf /run/containerd/s/* /run/containerd/io.containerd.runtime.v2.task.default/* 2>/dev/null || true
+echo "      Cleanup complete"
+echo ""
+
+# Create container
+echo "[2/4] Creating container..."
+ctr container create \
+    --runtime io.containerd.mica.v2 \
+    --annotation org.openeuler.micrun.container.auto_close_timeout=600 \
+    ${IMAGE_NAME} ${CONTAINER_NAME}
+echo "      Container created: ${CONTAINER_NAME}"
+echo ""
+
+# Instructions
+echo "[3/4] Test Instructions"
+echo ""
+echo "Now run the following command to start the container:"
+echo ""
+echo "  ctr task start ${CONTAINER_NAME}"
+echo ""
+echo "Then perform the following tests:"
+echo ""
+echo "┌─────────────────────────────────────────────────────────────────┐"
+echo "│ TEST 1: Press Enter                                          │"
+echo "│                                                             │"
+echo "│ Action: Press Enter key 2-3 times                           │"
+echo "│ Expected: Each Enter should show 'openEuler UniProton #'     │"
+echo "│           prompt without extra blank lines                  │"
+echo "│                                                             │"
+echo "│ ✅ PASS: Each Enter shows one prompt line                    │"
+echo "│ ❌ FAIL: Extra blank lines between prompts                     │"
+echo "└─────────────────────────────────────────────────────────────────┘"
+echo ""
+echo "┌─────────────────────────────────────────────────────────────────┐"
+echo "│ TEST 2: Type 'help' command                                 │"
+echo "│                                                             │"
+echo "│ Action: Type 'help' and press Enter                           │"
+echo "│ Expected: List of commands without extra blank lines         │"
+echo "│           between items                                      │"
+echo "│                                                             │"
+echo "│ ✅ PASS: Command list displayed compactly                     │"
+echo "│ ❌ FAIL: Extra blank lines between command items                │"
+echo "└─────────────────────────────────────────────────────────────────┘"
+echo ""
+echo "┌─────────────────────────────────────────────────────────────────┐"
+echo "│ TEST 3: Type 'memInfo' command                               │"
+echo "│                                                             │"
+echo "│ Action: Type 'memInfo' and press Enter                         │"
+echo "│ Expected: Memory info table without extra blank lines         │"
+echo "│                                                             │"
+echo "│ ✅ PASS: Memory table displayed compactly                     │"
+echo "│ ❌ FAIL: Extra blank lines in table                           │"
+echo "└─────────────────────────────────────────────────────────────────┘"
+echo ""
+echo "┌─────────────────────────────────────────────────────────────────┐"
+echo "│ TEST 4: Type 'exit' command                                 │"
+echo "│                                                             │"
+echo "│ Action: Type 'exit' and press Enter to terminate             │"
+echo "│ Expected: Container terminates, shows new shell prompt       │"
+echo "│                                                             │"
+echo "│ ✅ PASS: Returns to shell prompt                            │"
+echo "│ ❌ FAIL: Container doesn't terminate or hangs                 │"
+echo "└─────────────────────────────────────────────────────────────────┘"
+echo ""
+echo "[4/4] Verification Commands"
+echo ""
+echo "To verify the fixes are working, check the logs:"
+echo ""
+echo "  # Check for TTY configuration (raw mode)"
+echo "  journalctl -u containerd --since '1 minute ago' --no-pager | grep TTY"
+echo ""
+echo "  # Check for NUL byte filtering"
+echo "  journalctl -u containerd --since '1 minute ago' --no-pager | grep NUL"
+echo ""
+echo "  # Check for newline filtering"
+echo "  journalctl -u containerd --since '1 minute ago' --no-pager | grep 'extra newline'"
+echo ""
+echo "=========================================="
+echo "Expected Log Output:"
+echo "=========================================="
+echo ""
+echo "TTY Configuration should show:"
+echo "  [TTY] RPMSG TTY configured: iflag 0x1280->0x3328, oflag 0x5->0x5, lflag 0x35387->0x0"
+echo "                                                          ^^^^^^^^"
+echo "                                                    lflag should be 0x0 (raw mode)"
+echo ""
+echo "NUL Filtering should show:"
+echo "  [IO] Filtered X NUL bytes from Y total"
+echo ""
+echo "Newline Filtering should show:"
+echo "  [IO] Filtered X extra newline bytes"
+echo ""
+echo "=========================================="
+echo ""

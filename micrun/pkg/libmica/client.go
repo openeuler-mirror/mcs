@@ -257,15 +257,9 @@ func (m *MicaClientConf) InitWithOpts(opts MicaClientConfCreateOptions) {
 	m.cpuCapacity = opts.CPUCapacity
 	m.memoryMB = opts.MemoryMB
 	m.iomem = [MaxConfigStrLen]byte{}
-	memInitThreshold := opts.MemoryThreshold
-	if memInitThreshold == 0 {
-		if opts.MemoryMB > 0 {
-			memInitThreshold = opts.MemoryMB * 2
-		} else {
-			memInitThreshold = fallbackMaxMemoryMB
-		}
-	}
-	m.memoryThresholdMB = memInitThreshold
+	// On ARM64, Xen requires maxmem == memory (no Populate-on-Demand support)
+	// So we set memoryThresholdMB equal to memoryMB to ensure maxmem == memory
+	m.memoryThresholdMB = m.memoryMB
 	if opts.IOMem != "" {
 		copy(m.iomem[:], opts.IOMem)
 	}
@@ -405,8 +399,8 @@ func Start(id string) error {
 }
 
 // TODO: Extend mica response data, loading more information
-// TODO: completely migrate remove to stop, currently use remove instead of stop
-// we have to make sure that client os is down really
+// Stop stops the mica client (RTOS guest) by removing it from XEN
+// After stop, the sandbox state should be set to STOPPED to allow restart
 func Stop(id string) error {
 	if ClientNotExist(id) {
 		log.Infof("%s is already down, not need to stop it", id)

@@ -14,7 +14,7 @@ import (
 )
 
 // Constants
-const MICAD_PIDFILE = "/run/micad.pid"
+const MICAD_PIDFILE = defs.MicadPidFile
 const (
 	DaemonRunning = "running"
 	DaemonStopped = "stopped"
@@ -54,8 +54,15 @@ func micadDetect() (int, error) {
 	return pidFromFile, nil
 }
 
+// MicadDetect is a non-blocking version of micad detection.
+// It returns the micad PID if micad is running, or 0 if not.
+// Unlike DaemonState(), it does NOT attempt to start micad.
+func MicadDetect() (int, error) {
+	return micadDetect()
+}
+
 // TODO: when to check?
-// return nil => failed to setup, no need to run micran
+// return nil => failed to setup, no need to run micrun
 // return state => daemon state
 func DaemonState() (*MicaDaemonState, error) {
 	log.Info("DaemonState() called")

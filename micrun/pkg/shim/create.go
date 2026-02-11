@@ -75,6 +75,7 @@ import (
 // if any step in the creation process fails. The function ensures proper cleanup of
 // partially created resources on error.
 func create(ctx context.Context, s *shimService, r *taskAPI.CreateTaskRequest) (*shimContainer, error) {
+	log.Debugf("create: id=%s bundle=%s rootfs_count=%d", r.ID, r.Bundle, len(r.Rootfs))
 
 	rootfs := cntr.RootFs{}
 	// the first of r.Rootfs is the bundle rootfs
@@ -85,23 +86,34 @@ func create(ctx context.Context, s *shimService, r *taskAPI.CreateTaskRequest) (
 		rootfs.Options = mnt.Options
 	}
 
-	detach := r.Terminal
+	log.Debugf("create: loading OCI spec...")
 	ociSpec, bundlePath, err := loadSpec(r.ID, r.Bundle)
 
 	if err != nil {
+		log.Errorf("create: failed to load spec: %v", err)
 		return nil, err
 	}
 
+	log.Debugf("create: getting container type...")
 	containerType, err := oci.GetContainerType(ociSpec)
 	if err != nil {
+		log.Errorf("create: failed to get container type: %v", err)
 		return nil, err
 	}
 
-	disableOutput := detach && ociSpec.Process.Terminal
 	rootfsPath := filepath.Join(r.Bundle, "rootfs")
+	log.Debugf("create: loading runtime config...")
 	runtimeConfig, err := loadRuntimeConfig(s, r, ociSpec.Annotations)
+	if err != nil {
+		log.Errorf("create: failed to load runtime config: %v", err)
+		return nil, err
+	}
 
+	// Note: disableOutput parameter is no longer used, kept for API compatibility during transition
+	const disableOutput = false
+	log.Debugf("create: calling setupContainer...")
 	if err := setupContainer(ctx, s, containerType, r, ociSpec, runtimeConfig, bundlePath, rootfsPath, disableOutput, &rootfs); err != nil {
+		log.Errorf("create: setupContainer failed: %v", err)
 		return nil, err
 	}
 
@@ -135,11 +147,43 @@ func setupContainer(ctx context.Context, s *shimService, containerType cntr.Cont
 func createSandboxContainer(ctx context.Context, s *shimService, containerType cntr.ContainerType,
 	r *taskAPI.CreateTaskRequest, ociSpec *specs.Spec, runtimeConfig *oci.RuntimeConfig,
 	bundlePath, rootfsPath string, disableOutput bool, rootfs *cntr.RootFs) (err error) {
+	// If sandbox already exists (from previous shim lifecycle), check its state
+	// Allow restarting if sandbox is STOPPED, but reject if still RUNNING
 	if s.sandbox != nil {
-		return fmt.Errorf("cannot create an existing sandbox: %s", s.sandbox.SandboxID())
+		sandboxState := s.sandbox.GetState()
+		log.Infof("[SHIM] Existing sandbox found: id=%s, state=%v", s.sandbox.SandboxID(), sandboxState)
+
+		// Query actual XEN guest state to detect inconsistencies
+		// If micrun thinks sandbox is RUNNING but XEN guest is down, allow restart
+		if sandboxState == cntr.StateRunning {
+			// Check if XEN guest is actually running by querying xl list
+			// This is more reliable than checking socket files
+			xenState, err := pedestal.XenStoreReadDomainState(s.sandbox.SandboxID())
+			guestRunning := (err == nil && xenState == "running")
+			log.Infof("[SHIM] XEN guest check: id=%s, xenState=%q, running=%v", s.sandbox.SandboxID(), xenState, guestRunning)
+
+			if !guestRunning {
+				// XEN guest is not running, clean up and allow restart
+				log.Warnf("[SHIM] Sandbox %s state=RUNNING but XEN guest is down (xenState=%q), cleaning up", s.sandbox.SandboxID(), xenState)
+				if err := s.sandbox.Delete(ctx); err != nil {
+					log.Warnf("[SHIM] Failed to delete stale sandbox: %v", err)
+				}
+				s.sandbox = nil
+			} else {
+				return fmt.Errorf("cannot create an existing sandbox: %s (state=%v, XEN guest is running)", s.sandbox.SandboxID(), sandboxState)
+			}
+		} else if sandboxState == cntr.StateStopped {
+			// Sandbox is stopped, clean it up and allow creating a new one
+			log.Infof("[SHIM] Previous sandbox %s is STOPPED, cleaning up for restart", s.sandbox.SandboxID())
+			s.sandbox.Delete(ctx)
+			s.sandbox = nil
+		} else {
+			return fmt.Errorf("cannot create an existing sandbox: %s (state=%v)", s.sandbox.SandboxID(), sandboxState)
+		}
 	}
 
 	s.config = runtimeConfig
+	log.Debugf("createSandboxContainer: containerType=%v bundlePath=%s rootfsPath=%s", containerType, bundlePath, rootfsPath)
 
 	if containerType != cntr.PodSandbox {
 		log.Debug("rootfs mounted for single container, showing rootfs contents:")
@@ -147,6 +191,7 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 	}
 
 	if errC := mountRootfs(rootfsPath, r.Rootfs); errC != nil {
+		log.Errorf("failed to mount rootfs: %v", errC)
 		return errC
 	}
 	rootfs.Mounted = true
@@ -171,6 +216,22 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 	}
 
 	s.sandbox = sandbox
+
+	// Store sandbox state to disk for recovery on shim restart
+	// StoreSandbox is a method on *Sandbox, not on the SandboxTraits interface
+	log.Debugf("sandbox type: %T", sandbox)
+	if sb, ok := sandbox.(*cntr.Sandbox); ok {
+		log.Debugf("storing sandbox state for %s", sb.SandboxID())
+		if err := sb.StoreSandbox(ctx); err != nil {
+			log.Warnf("failed to store sandbox state: %v", err)
+			// Continue anyway, as the sandbox is created in memory
+		} else {
+			log.Debugf("sandbox state stored successfully")
+		}
+	} else {
+		log.Warnf("sandbox is not of type *cntr.Sandbox, cannot store state")
+	}
+
 	return nil
 }
 
@@ -225,7 +286,7 @@ func createPodContainerInSandbox(ctx context.Context, sandbox cntr.SandboxTraits
 		}
 	}
 
-	containerConfig, err := oci.ParseContainerCfg(containerID, bundlePath, ocispec, cntr.PodContainer, disableOutput, defaultFirmware, runtimeConfig)
+	containerConfig, err := oci.ParseContainerCfg(containerID, bundlePath, ocispec, cntr.PodContainer, defaultFirmware, runtimeConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create container config: %w", err)
 	}
@@ -249,8 +310,11 @@ func createSandbox(ctx context.Context, ocispec *specs.Spec,
 	runtimeConfig *oci.RuntimeConfig, rootfs cntr.RootFs,
 	containerId, bundle string, disableOutput bool) (_ cntr.SandboxTraits, err error) {
 
-	sandboxConfig, err := oci.SandboxConfig(ocispec, *runtimeConfig, bundle, containerId, disableOutput)
+	log.Debugf("createSandbox: containerId=%s bundle=%s rootfs.Mounted=%v", containerId, bundle, rootfs.Mounted)
+
+	sandboxConfig, err := oci.SandboxConfig(ocispec, *runtimeConfig, bundle, containerId)
 	if err != nil {
+		log.Errorf("createSandbox: failed to get sandbox config: %v", err)
 		return nil, err
 	}
 

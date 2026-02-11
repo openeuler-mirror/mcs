@@ -828,7 +828,7 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="MicRan Image Builder - Build RTOS container images for MicRan",
+        description="MicRun Image Builder - Build RTOS container images for MicRun",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

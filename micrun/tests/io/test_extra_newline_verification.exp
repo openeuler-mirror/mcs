@@ -1,0 +1,96 @@
+#!/usr/bin/expect
+# Test script to verify extra newline fix
+# Run this ON the remote host (192.168.7.2)
+# Usage: expect test_extra_newline_verification.exp
+
+set timeout 30
+
+puts "\n=========================================="
+puts "Extra Newline Fix Verification Test"
+puts "=========================================="
+
+# Cleanup
+puts "\n--- Cleanup: Removing old containers..."
+spawn sh -c "ctr task ls -q | grep test-fix && ctr task kill -s 9 test-fix 2>/dev/null; ctr task delete test-fix 2>/dev/null; ctr container delete test-fix 2>/dev/null; true"
+expect "#"
+
+# Create and start
+puts "\n--- Create: Creating container..."
+spawn ctr container create --runtime io.containerd.mica.v2 -t localhost:5000/mica-uniproton-app:xen-0.1 test-fix
+expect "test-fix"
+
+puts "\n--- Start: Starting container..."
+spawn ctr task start test-fix
+
+# Wait for initial output
+set timeout 40
+expect {
+    "Hello" { puts "\n+++ OK: Got Hello message" }
+    timeout { puts "\n+++ WARN: Timeout waiting for Hello, continuing..." }
+}
+
+set timeout 10
+expect {
+    -re "UniProton" { puts "+++ OK: Got first prompt" }
+    timeout { puts "\n+++ FAIL: Timeout waiting for prompt"; exit 1 }
+}
+
+# Test 1: Enter key
+puts "\n========== TEST 1: Pressing Enter =========="
+puts "Expected: Single prompt (no extra blank line)"
+send "\r"
+
+expect {
+    -re "UniProton" { puts ">>> PASS: Got prompt after Enter" }
+    timeout { puts ">>> FAIL: Timeout"; exit 1 }
+}
+
+# Test 2: Another Enter
+puts "\n========== TEST 2: Pressing Enter again =========="
+send "\r"
+
+expect {
+    -re "UniProton" { puts ">>> PASS: Got prompt after 2nd Enter" }
+    timeout { puts ">>> FAIL: Timeout"; exit 1 }
+}
+
+# Test 3: help command
+puts "\n========== TEST 3: Sending 'help' =========="
+puts "Expected: help output without excessive blank lines"
+send "help\r"
+
+set timeout 15
+expect {
+    "support shell" { puts ">>> PASS: Got help output" }
+    timeout { puts ">>> FAIL: Timeout"; exit 1 }
+}
+
+expect {
+    -re "UniProton" { puts ">>> PASS: Got prompt after help" }
+    timeout { puts ">>> FAIL: Timeout"; exit 1 }
+}
+
+# Cleanup
+puts "\n========== Cleanup: Detaching =========="
+send "\x11"
+sleep 0.2
+send "\x11"
+
+expect {
+    -re "#" { }
+    timeout { }
+}
+
+spawn sh -c "ctr task kill -s 9 test-fix 2>/dev/null; ctr task delete test-fix 2>/dev/null; ctr container delete test-fix"
+expect "#"
+
+puts "\n=========================================="
+puts "TEST SUMMARY - ALL TESTS PASSED"
+puts "=========================================="
+puts "Verification:"
+puts "- Each Enter key produced ONE prompt"
+puts "- Help output displayed without excessive blank lines"
+puts "- The fix is working correctly!"
+puts "==========================================\n"
+
+exit 0

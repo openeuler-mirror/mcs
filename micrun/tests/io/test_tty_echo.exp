@@ -1,0 +1,69 @@
+#!/usr/bin/expect -f
+# Direct TTY Echo Test - Tests if user input is echoed twice
+set timeout 20
+
+puts "\n=========================================="
+puts "TTY Echo Behavior Test"
+puts "==========================================\n"
+
+# Connect to test host
+spawn ssh -tt root@192.168.7.2
+expect -re "#|\\$"
+
+# Clean log
+send "rm -f /var/log/mica/mica-runtime.log\r"
+expect -re "#|\\$"
+
+# Start a new container with auto_close=false
+puts "\n>>> Starting container..."
+send "nerdctl run -itd --runtime io.containerd.mica.v2 --network=none -l org.openeuler.micrun.container.auto_close=false --name test-echo localhost:5000/mica-uniproton-app:xen-0.1\r"
+expect -re "#|\\$"
+
+# Wait a bit for container to start
+sleep 3
+
+# Attach to the container
+puts "\n>>> Attaching to container..."
+send "nerdctl attach test-echo\r"
+
+# Wait for prompt
+set prompt_found 0
+expect {
+    -re "openEuler|MainTCB>|Main>|>#" {
+        set prompt_found 1
+        puts "\nPROMPT: Got RTOS prompt"
+    }
+    timeout {
+        puts "\nWARN: No prompt detected, continuing..."
+    }
+}
+
+# Send a simple command and observe echo
+puts "\n>>> Sending: 'uname' command"
+send "uname\r"
+after 2000
+
+# Send another command
+puts ">>> Sending: 'help' command"
+send "help\r"
+after 3000
+
+# Exit
+puts "\n>>> Exiting (Ctrl-D)..."
+send "\004"
+
+expect -re "#|\\$"
+
+# Cleanup
+send "nerdctl rm -f test-echo 2>/dev/null\r"
+expect -re "#|\\$"
+send "exit\r"
+
+puts "\n=========================================="
+puts "Test Complete"
+puts "Please observe output above:"
+puts "  - Each command should appear ONCE when you type"
+puts "  - If you see commands appearing TWICE, there is a double echo bug"
+puts "==========================================\n"
+
+expect eof

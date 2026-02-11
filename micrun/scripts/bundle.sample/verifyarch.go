@@ -38,7 +38,7 @@ func verifyELFArch(path string) (bool, string, error) {
 // quickARM64RawHeuristic returns true if the file looks like an ARM64 raw Image.
 func quickARM64RawHeuristic(path string) bool {
 	// Many arm64 raw Images have the magic text "ARMd" near the header.
-	// This is a best-effort heuristic used previously in micran.
+	// This is a best-effort heuristic used previously in micrun.
 	fh, err := os.Open(path)
 	if err != nil {
 		return false

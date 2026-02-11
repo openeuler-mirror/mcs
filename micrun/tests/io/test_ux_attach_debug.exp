@@ -1,0 +1,54 @@
+#!/usr/bin/expect -f
+# Test script to debug attach/detach issues with detailed logging
+
+set timeout 30
+set container_id [lindex $argv 0]
+
+if {[string length $container_id] == 0} {
+    puts "Usage: $argv0 <container_id>"
+    exit 1
+}
+
+# Function to run a command and capture output
+proc run_attach_test {desc container_id} {
+    puts "\n=== $desc ==="
+    set spawn_id [spawn -noecho ssh -tt root@192.168.7.2 "nerdctl attach $container_id"]
+    expect {
+        timeout {
+            puts "Timeout waiting for prompt"
+            return
+        }
+        -re "MainTCB>|#" {
+            puts "Got prompt, sending help command"
+            send "help\r"
+            expect {
+                timeout { puts "Timeout waiting for help output" }
+                -re "help|MainTCB>" { puts "Got help output or prompt" }
+            }
+            after 1000
+            puts "Sending Ctrl+P Ctrl+Q to detach"
+            send \030\031
+            expect {
+                timeout { puts "Timeout - detach may have worked" }
+                eof { puts "Detached successfully" }
+                -re "." { exp_continue }
+            }
+        }
+    }
+    catch wait result
+    close
+}
+
+# First attach
+run_attach_test "First Attach" $container_id
+after 2000
+
+# Second attach
+run_attach_test "Second Attach" $container_id
+after 2000
+
+# Third attach
+run_attach_test "Third Attach" $container_id
+
+puts "\n=== Test Complete ==="
+puts "Check logs with: ssh root@192.168.7.2 'tail -100 /var/log/mica/mica-runtime.log'"

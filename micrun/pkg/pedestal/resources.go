@@ -41,7 +41,7 @@ func InitResource() *EssentialResource {
 	return &res
 }
 
-// HostCPUInventory captures the static CPU counts visible to micran.
+// HostCPUInventory captures the static CPU counts visible to micrun.
 type HostCPUInventory struct {
 	// Physical represents the physical CPUs the pedestal can schedule.
 	Physical uint32
@@ -75,7 +75,7 @@ func HostCPUCounts() HostCPUInventory {
 	return hostCPUInventory
 }
 
-// ClientCPUCapacity returns the number of CPUs micran can hand to RTOS clients.
+// ClientCPUCapacity returns the number of CPUs micrun can hand to RTOS clients.
 // Baremetal pedestals keep Linux visibility of all CPUs
 // (docs/resource-management-comparison.md:7-12), so we subtract the reserved set
 // recorded via SetBaremetalReservedCPUs instead of re-reading /proc/cpuinfo.

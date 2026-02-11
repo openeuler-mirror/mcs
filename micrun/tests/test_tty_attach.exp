@@ -1,0 +1,78 @@
+#!/usr/bin/expect
+# TTY 模式多次 attach/detach 测试
+set timeout 60
+
+puts "====== 开始测试 ======"
+
+# 第一次启动并测试
+puts "\n====== 第一次启动 ======"
+spawn nerdctl run -it --runtime io.containerd.mica.v2 --network host \
+    -l org.openeuler.micrun.container.auto_disconnect_timeout=100 \
+    localhost:5000/mica-uniproton-app:xen-0.1
+
+expect {
+    "UniProton" {
+        puts "第一次启动成功，看到提示符"
+        send "help\r"
+        expect "Available"
+        send "\r"
+        expect "UniProton"
+        # 分离
+        send "\x10\x11"
+        expect "#"
+        puts "第一次启动成功分离"
+    }
+    timeout {
+        puts "第一次启动超时"
+        exit 1
+    }
+}
+
+# 等待 1 秒
+sleep 1
+
+# 第二次 attach
+puts "\n====== 第二次 attach ======"
+set container_id [string trim [exec nerdctl ps -ql]]
+puts "Container ID: $container_id"
+
+spawn nerdctl attach $container_id
+expect {
+    "UniProton" {
+        puts "第二次 attach 成功"
+        send "help\r"
+        expect "Available"
+        send "\r"
+        expect "UniProton"
+        # 分离
+        send "\x10\x11"
+        expect "#"
+        puts "第二次 attach 成功分离"
+    }
+    timeout {
+        puts "第二次 attach 超时"
+        exit 1
+    }
+}
+
+# 等待 1 秒
+sleep 1
+
+# 第三次 attach
+puts "\n====== 第三次 attach ======"
+spawn nerdctl attach $container_id
+expect {
+    "UniProton" {
+        puts "第三次 attach 成功"
+        send "exit\r"
+        expect "exit"
+        sleep 1
+        puts "第三次 attach 成功"
+    }
+    timeout {
+        puts "第三次 attach 超时"
+        exit 1
+    }
+}
+
+puts "\n====== 测试完成 ======"

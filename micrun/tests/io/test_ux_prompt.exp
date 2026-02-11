@@ -1,0 +1,184 @@
+#!/usr/bin/expect -f
+# UX Test 3: Prompt Behavior Verification
+# 验证回车后的提示符显示行为
+
+set timeout 15
+set remote_host "root@192.168.7.2"
+set test_image "localhost:5000/mica-uniproton-app:xen-0.1"
+
+log_user 0
+log_file test_ux_prompt.log
+
+puts "\n=========================================="
+puts "UX Test 3: Prompt Behavior Verification"
+puts "==========================================\n"
+
+# Create container
+spawn ssh $remote_host "ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.container.auto_close=true $test_image test-ux-prompt"
+expect {
+    timeout { puts "WARN: Container create timeout" }
+    eof { puts "INFO: Container created" }
+}
+
+# Start TTY session
+spawn ssh -tt $remote_host "timeout 10 ctr task start test-ux-prompt"
+
+set test_results [list]
+set step 0
+
+proc check_prompt {description buffer} {
+    global test_results step
+
+    incr step
+    set prompts [regexp -all -re {MainTCB>|Main>|>|#} $buffer]
+    set lines [regexp -all {\n} $buffer]
+
+    lappend test_results [list "Step $step: $description" $prompts $lines [string length $buffer]]
+
+    puts "  Step $step: $description"
+    puts "    - Prompts found: $prompts"
+    puts "    - Lines: $lines"
+    puts "    - Buffer size: [string length $buffer] bytes"
+
+    return $prompts
+}
+
+expect {
+    # 等待初始提示符
+    -re "MainTCB>|Main>|>|#" {
+        set initial_buffer $expect_out(buffer)
+        puts "\nTest 1: Initial prompt check"
+        set prompts [check_prompt "Initial prompt received" $initial_buffer]
+        if {$prompts >= 1} {
+            puts "    - PASS: Initial prompt present"
+        } else {
+            puts "    - FAIL: No initial prompt found"
+        }
+
+        # 测试 2: 空回车后提示符
+        puts "\nTest 2: Empty Enter (should show prompt again)"
+        send "\r"
+
+        expect {
+            -re "MainTCB>|Main>|>|#" {
+                set buffer_2 $expect_out(buffer)
+                set prompts [check_prompt "After empty Enter" $buffer_2]
+
+                # 检查是否有多个提示符（不应该）
+                set multi_prompt [regexp -all -re {MainTCB>|Main>|>|#.*MainTCB>|Main>|>|#} $buffer_2]
+                if {$prompts == 1 && $multi_prompt == 0} {
+                    puts "    - PASS: Exactly 1 prompt (correct behavior)"
+                } elseif {$prompts > 1} {
+                    puts "    - WARN: Multiple prompts ($prompts) found"
+                } else {
+                    puts "    - FAIL: No prompt found"
+                }
+
+                # 测试 3: 发送 help 命令
+                puts "\nTest 3: After 'help' command (should show prompt at end)"
+                send "help\r"
+
+                expect {
+                    -re "MainTCB>|Main>|>|#" {
+                        set buffer_3 $expect_out(buffer)
+                        set prompts [check_prompt "After help command" $buffer_3]
+
+                        # 检查输出末尾是否有提示符
+                        set last_chars [string range $buffer_3 end-20 end]
+                        set has_prompt_at_end [regexp {MainTCB>|Main>|>|#} $last_chars]
+
+                        if {$has_prompt_at_end} {
+                            puts "    - PASS: Prompt present at end of output"
+                        } else {
+                            puts "    - FAIL: No prompt at end of output"
+                            puts "    - Last 20 chars: $last_chars"
+                        }
+
+                        # 测试 4: 再次空回车
+                        puts "\nTest 4: Another empty Enter after command"
+                        send "\r"
+
+                        expect {
+                            -re "MainTCB>|Main>|>|#" {
+                                set buffer_4 $expect_out(buffer)
+                                set prompts [check_prompt "After second empty Enter" $buffer_4]
+
+                                if {$prompts == 1} {
+                                    puts "    - PASS: Exactly 1 prompt"
+                                } else {
+                                    puts "    - WARN: $prompts prompts found"
+                                }
+
+                                send "exit\r"  # Use exit command instead of Ctrl-C
+                                expect eof
+
+                                # 打印总结
+                                puts "\n=========================================="
+                                puts "Summary"
+                                puts "=========================================="
+                                foreach result $test_results {
+                                    foreach {step prompts lines size} $result {
+                                        puts "$step - Prompts: $prompts, Lines: $lines, Size: $size"
+                                    }
+                                }
+
+                                # 检查提示符格式一致性
+                                puts "\nPrompt Format Analysis:"
+                                set fd [open "test_ux_prompt.log" "r"]
+                                set log_content [read $fd]
+                                close $fd
+
+                                set main_tcb_count [regexp -all {MainTCB>} $log_content]
+                                set main_count [regexp -all {Main>} $log_content]
+                                set other_count [regexp -all {>} $log_content]
+
+                                puts "  MainTCB> prompts: $main_tcb_count"
+                                puts "  Main> prompts: $main_count"
+                                puts "  Other > prompts: $other_count"
+
+                                if {$main_tcb_count > 0} {
+                                    puts "  - Primary prompt format: MainTCB>"
+                                } elseif {$main_count > 0} {
+                                    puts "  - Primary prompt format: Main>"
+                                }
+                            }
+                            timeout {
+                                puts "WARN: Timeout on second empty enter"
+                                send "\003"
+                                expect eof
+                            }
+                        }
+                    }
+                    timeout {
+                        puts "WARN: Timeout waiting for help response"
+                        send "\003"
+                        expect eof
+                    }
+                }
+            }
+            timeout {
+                puts "WARN: Timeout after first empty enter"
+                send "\003"
+                expect eof
+            }
+        }
+    }
+    timeout {
+        puts "WARN: Timeout waiting for initial prompt"
+        send "\003"
+        expect eof
+    }
+    eof {
+        puts "INFO: Connection closed"
+    }
+}
+
+# Cleanup
+puts "\n--- Cleaning up ---"
+spawn ssh $remote_host "ctr task kill -s SIGKILL test-ux-prompt 2>/dev/null; ctr task delete -f test-ux-prompt 2>/dev/null; ctr container delete test-ux-prompt 2>/dev/null"
+expect eof
+
+puts "\n=========================================="
+puts "Test 3 Complete"
+puts "==========================================\n"
+

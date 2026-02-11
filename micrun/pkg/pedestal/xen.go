@@ -170,7 +170,7 @@ type XlVcpuInfo struct {
 type VCPUEntry struct {
 	// short Id
 	DomainName string
-	// micran ignore it acutally;
+	// micrun ignore it acutally;
 	DomainID     int
 	VCPUID       int
 	CPU          int // -1 if offline

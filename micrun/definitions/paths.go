@@ -1,6 +1,3 @@
-//go:build !debug
-// +build !debug
-
 package defs
 
 import "os"
@@ -30,4 +27,9 @@ const (
 	MicrunConfEnv     = "MICRUN_CONF_FILE"
 	MicrunConfDirEnv  = "MICRUN_CONF_DIR"
 	DefaultMicrunConf = "micrun.conf"
+
+	// Additional path constants
+	MicadPidFile       = "/run/micad.pid"         // PID file for micad daemon
+	ContainerdTaskDir  = "/run/containerd/io.containerd.runtime.v2.task" // Containerd task directory
+	BackupDirName      = "backup"                 // Backup directory name (relative to MicrunStateDir)
 )

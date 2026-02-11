@@ -164,7 +164,46 @@ func SaveStructToJSON(file string, state any) error {
 		log.Pretty("err: %v, state: %v", err, state)
 		return fmt.Errorf("failed to serialize struct: %w", err)
 	}
-	return os.WriteFile(file, structBytes, defs.FileMode)
+	log.Infof("[SaveStructToJSON] Serialized %d bytes for %s", len(structBytes), file)
+
+	// Create directory if needed
+	if err := os.MkdirAll(filepath.Dir(file), defs.DirMode); err != nil {
+		log.Errorf("SaveStructToJSON: failed to create directory for %s: %v", file, err)
+		return err
+	}
+	log.Infof("[SaveStructToJSON] Created directory for %s", filepath.Dir(file))
+
+	// Open file with write flags
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, defs.FileMode)
+	if err != nil {
+		log.Errorf("SaveStructToJSON: failed to open %s: %v", file, err)
+		return err
+	}
+	log.Infof("[SaveStructToJSON] Opened file %s", file)
+
+	// Write data
+	if _, err := f.Write(structBytes); err != nil {
+		f.Close()
+		log.Errorf("SaveStructToJSON: failed to write to %s: %v", file, err)
+		return err
+	}
+	log.Infof("[SaveStructToJSON] Wrote %d bytes to %s", len(structBytes), file)
+
+	// Sync to disk - ensures data is flushed to filesystem storage
+	// This is critical for state persistence before process exit
+	if err := f.Sync(); err != nil {
+		f.Close()
+		log.Errorf("SaveStructToJSON: failed to sync %s: %v", file, err)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		log.Errorf("SaveStructToJSON: failed to close %s: %v", file, err)
+		return err
+	}
+
+	log.Infof("[SaveStructToJSON] Successfully wrote and synced %s", file)
+	return nil
 }
 
 func SetReadonly(path string) error {
@@ -181,7 +220,7 @@ func SetReadonly(path string) error {
 	})
 }
 
-// removeExternalStatFile removes state file in micran state directory
+// removeExternalStatFile removes state file in micrun state directory
 func removeExternalStatFile(id string) error {
 	// if the file does not exist, return nil
 	path := filepath.Join(defs.MicrunStateDir, id, defs.MicrunContainerStateFile)
@@ -250,7 +289,7 @@ func MountDirs(mounts []*cdtypes.Mount, dest string) error {
 
 }
 func backup(srcDir string) error {
-	backupDir := "/tmp/backupbundle"
+	backupDir := filepath.Join(defs.MicrunStateDir, defs.BackupDirName)
 
 	// Test source directory access first
 	if stat, err := os.Stat(srcDir); err != nil {

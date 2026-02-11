@@ -4,318 +4,450 @@
 package log
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
-	"time"
 
-	"github.com/kr/pretty"
 	"github.com/sirupsen/logrus"
 )
 
-const debugFileName = "/tmp/micran/runtime.log"
+// setupOutputImpl sets up output for debug builds.
+// Outputs to both containerd log fifo AND a log file.
+func setupOutputImpl(cfg *Config) error {
+	// Open containerd log fifo
+	containerdLog, err := openContainerdLog()
+	if err != nil {
+		// If we can't open containerd log, use stderr as fallback
+		containerdLog = os.Stderr
+	}
 
-var (
-	Log = logrus.New()
-)
+	// Open log file for debug output
+	if err := ensureLogDirectory(cfg.Log.File); err != nil {
+		return fmt.Errorf("failed to create log directory: %w", err)
+	}
 
-// Set default configuration for systemd compatibility
-func init() {
-	Log.SetOutput(os.Stderr)
-	Log.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp:   true,
-		TimestampFormat: "01-02 15:04:05",
+	fileLog, err := os.OpenFile(cfg.Log.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file %s: %w", cfg.Log.File, err)
+	}
+
+	// Set output to containerd log only (file output will be handled by hook)
+	Log.SetOutput(containerdLog)
+
+	// Use containerd formatter for the main output
+	Log.SetFormatter(&containerdFormatter{})
+
+	// Clear existing hooks before adding new ones to prevent duplicates
+	// This is necessary because setupOutputImpl() may be called multiple times
+	// (e.g., from Initialize() and RestoreOutput())
+	Log.ReplaceHooks(make(logrus.LevelHooks))
+
+	// Add hooks
+	Log.AddHook(&contextHook{})
+	Log.AddHook(&fileHook{
+		file:      fileLog,
+		formatter: &fileFormatter{color: cfg.Log.Color, caller: cfg.Log.Caller},
 	})
-}
 
-// Config represents the logger configuration
-type Config struct {
-	// Level is the minimum log level that will be logged
-	Level string
-	// Format is the log format (text or json)
-	Format string
-	// Output is the log output file path (if empty, uses stderr)
-	Output string
-	// Debug enables debug mode
-	Debug bool
-}
-
-// TODO:
-// make a symbolic link <debugFileName> to <debugFileName>-<ContainerID>.log
-func Init(config *Config) error {
-	if config == nil {
-		return nil
-	}
-
-	if config.Level != "" {
-		level, err := logrus.ParseLevel(config.Level)
-		if err != nil {
-			return err
-		}
-		Log.SetLevel(level)
-	}
-
-	switch config.Format {
-	case "json":
-		Log.SetFormatter(&logrus.JSONFormatter{})
-	case "text", "":
-		Log.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "01-02 15:04:05",
-		})
-	}
-
-	if config.Output != "" {
-		file, err := os.OpenFile(config.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return err
-		}
-		Log.SetOutput(file)
-	}
-
-	if config.Debug {
-		Log.SetLevel(logrus.DebugLevel)
-		Log.SetReportCaller(true)
-		Log.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "01-02 15:04:05",
-			CallerPrettyfier: func(f *runtime.Frame) (string, string) {
-				_, file, _, _ := runtime.Caller(0)
-				prefix := filepath.Dir(file) + "/"
-				function := strings.TrimPrefix(f.Function, prefix) + "()"
-				fileLine := strings.TrimPrefix(f.File, prefix) + ":" + strconv.Itoa(f.Line)
-				return function, fileLine
-			},
-		})
-	}
+	Log.SetReportCaller(true) // Enable caller reporting for debug
 
 	return nil
 }
 
-func WithField(key string, value interface{}) *logrus.Entry {
-	return Log.WithField(key, value)
-}
-
-func WithFields(fields logrus.Fields) *logrus.Entry {
-	return Log.WithFields(fields)
-}
-
-func WithError(err error) *logrus.Entry {
-	return Log.WithError(err)
-}
-
-func Debug(args ...interface{}) {
-	Debugf("%v", args...)
-}
-
-// In debug mode, all debugf will duplicate the debug message to both debug file and stderr
-func Debugf(format string, args ...interface{}) {
-	debugf(format, 1, args...)
-}
-
-func debugf(format string, additionalDepth int, args ...interface{}) {
-	Log.Debugf(format+"\n", args...)
-	FDebugf(format, additionalDepth, args...)
-}
-
-func Info(args ...interface{}) {
-	Log.Info(args...)
-}
-
-func Warn(args ...interface{}) {
-	Log.Warn(args...)
-}
-
-func Error(args ...interface{}) {
-	Log.Error(args...)
-}
-
-func Fatal(args ...interface{}) {
-	Log.Fatal(args...)
-}
-
-func Panic(args ...interface{}) {
-	Log.Panic(args...)
-}
-
-// func locatedebugf(format string, args ...interface{}) {
-// 	prefix := getdebuginfoprefix()
-// 	debugf(prefix+format+"\n", args...)
-// }
-
-func Infof(format string, args ...interface{}) {
-	Log.Infof(format, args...)
-}
-
-func Warnf(format string, args ...interface{}) {
-	Log.Warnf(format, args...)
-}
-
-func Errorf(format string, args ...interface{}) {
-	Log.Errorf(format, args...)
-}
-
-func Fatalf(format string, args ...interface{}) {
-	Log.Fatalf(format, args...)
-}
-
-func Panicf(format string, args ...interface{}) {
-	Log.Panicf(format, args...)
-}
-
-// FatalWithCleanup logs a fatal error and executes cleanup function before exiting
-func FatalWithCleanup(cleanup func(), args ...interface{}) {
-	if cleanup != nil {
-		cleanup()
-	}
-	Log.Fatal(args...)
-}
-
-// BUG:
-// 1. a write-protected dir was created
-// 2. multi-shims share the same log file
-func CleanDebugFile() error {
-	dir := filepath.Dir(debugFileName)
-	if err := os.Mkdir(dir, 0777); err != nil && !os.IsExist(err) {
-		Log.Errorf("failed to create debug log directory: %s", dir)
-		return err
-	}
-
-	f, err := os.OpenFile(debugFileName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+// openContainerdLog opens the containerd-provided log fifo.
+func openContainerdLog() (io.WriteCloser, error) {
+	f, err := os.OpenFile("log", os.O_WRONLY, 0)
 	if err != nil {
-		Log.Errorf("failed to open debug log file: %s", debugFileName)
-		return err
+		return nil, fmt.Errorf("failed to open containerd log fifo: %w", err)
 	}
-	defer f.Close()
+	return f, nil
+}
 
-	// Write timestamp
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	if _, err := fmt.Fprintf(f, "\n\n============ %s ============\n", timestamp); err != nil {
-		Log.WithError(err).Errorf("failed to write timestamp to debug log file: %s", debugFileName)
-		return err
+// contextHook adds the current namespace and container ID to all log entries.
+type contextHook struct{}
+
+func (h *contextHook) Levels() []logrus.Level {
+	return logrus.AllLevels
+}
+
+func (h *contextHook) Fire(entry *logrus.Entry) error {
+	// Get current namespace
+	namespaceMutex.RLock()
+	ns := currentNamespace
+	namespaceMutex.RUnlock()
+
+	// Get current container ID
+	containerIDMutex.RLock()
+	id := currentContainerID
+	containerIDMutex.RUnlock()
+
+	// Add namespace if not already present and if it's set
+	if ns != "" && entry.Data[NamespaceKey] == nil {
+		entry.Data[NamespaceKey] = ns
+	}
+
+	// Add id if not already present and if it's set
+	if id != "" && entry.Data[IDKey] == nil {
+		entry.Data[IDKey] = id
 	}
 
 	return nil
 }
 
-// default depth=4
-func getDebugInfoPrefix(depth int) string {
-	var prefix = ""
+// containerdFormatter formats logs in containerd-compatible format.
+// Format: time=<timestamp> level=<level> msg=<message> id=<id> namespace=<namespace>
+type containerdFormatter struct{}
 
-	noColor := os.Getenv("LOG_COLOR") != ""
-	showParent := os.Getenv("LOG_SHOW_PARENT") != ""
+func (f *containerdFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	var b *bytes.Buffer
 
-	timestamp := time.Now().Format("15:04:05")
-	if noColor {
-		prefix += fmt.Sprintf("[%s] ", timestamp)
+	if entry.Buffer != nil {
+		b = entry.Buffer
 	} else {
-		prefix += fmt.Sprintf("[\033[36m%s\033[0m] ", timestamp)
+		b = &bytes.Buffer{}
 	}
 
-	pc_parent, _, _, ok := runtime.Caller(depth + 1)
-	if ok && showParent {
-		fullFuncName := runtime.FuncForPC(pc_parent).Name()
-		funcName := fullFuncName
-		if lastDot := strings.LastIndex(fullFuncName, "."); lastDot >= 0 {
-			funcName = fullFuncName[lastDot+1:]
+	// Format: time="..." level=... msg=... id=... namespace=...
+	// Timestamp in RFC3339 format with nanoseconds, like containerd
+	timestamp := entry.Time.Format("2006-01-02T15:04:05.000000000Z")
+	b.WriteString("time=\"")
+	b.WriteString(timestamp)
+	b.WriteString("\" ")
+
+	b.WriteString("level=")
+	b.WriteString(entry.Level.String())
+	b.WriteString(" ")
+
+	// Message - use "msg" key like containerd, quote if needed
+	message := entry.Message
+	if needsQuoting(message) {
+		b.WriteString("msg=\"")
+		b.WriteString(message)
+		b.WriteString("\"")
+	} else {
+		b.WriteString("msg=")
+		b.WriteString(message)
+	}
+
+	// Add fields (id first, then namespace, matching containerd order)
+	if len(entry.Data) > 0 {
+		// Output id first if present (like containerd)
+		if id, ok := entry.Data[IDKey]; ok && id != nil {
+			b.WriteString(" ")
+			b.WriteString(IDKey)
+			b.WriteString("=")
+			b.WriteString(fmt.Sprintf("%v", id))
 		}
-		if noColor {
-			prefix += fmt.Sprintf(" %s() --> ", funcName)
-		} else {
-			prefix += fmt.Sprintf("\033[34m%s()\033[0m --> ", funcName)
+
+		// Output namespace second if present (like containerd)
+		if ns, ok := entry.Data[NamespaceKey]; ok && ns != nil {
+			b.WriteString(" ")
+			b.WriteString(NamespaceKey)
+			b.WriteString("=")
+			b.WriteString(fmt.Sprintf("%v", ns))
+		}
+
+		// Output any other fields
+		for k, v := range entry.Data {
+			if k != NamespaceKey && k != IDKey {
+				b.WriteString(" ")
+				b.WriteString(k)
+				b.WriteString("=")
+				b.WriteString(fmt.Sprintf("%v", v))
+			}
 		}
 	}
-	pc, _, _, ok := runtime.Caller(depth)
-	if ok {
-		var callee string
-		fullFuncName := runtime.FuncForPC(pc).Name()
-		file, line := runtime.FuncForPC(pc).FileLine(pc)
-		file = filepath.Base(file)
-		callee = fullFuncName
-		if lastDot := strings.LastIndex(fullFuncName, "."); lastDot >= 0 {
-			callee = fullFuncName[lastDot+1:]
-		}
-		if noColor {
-			prefix += fmt.Sprintf("%s(), @[%s:%d]  ", callee, file, line)
-		} else {
-			callee = "\033[32m" + callee + "\033[0m"
-			prefix += fmt.Sprintf("%s(), @[\033[33m%s:%d\033[0m]  ", callee, file, line)
-		}
-	}
-	return prefix
+
+	b.WriteByte('\n')
+	return b.Bytes(), nil
 }
 
-// Used for those debug points needed to be traced call stack
-func FDebugf(format string, additionalDepth int, args ...interface{}) error {
-	f, err := os.OpenFile(debugFileName, os.O_APPEND|os.O_WRONLY, 0644)
+// fileHook writes log entries to a file in a custom format.
+type fileHook struct {
+	file      io.WriteCloser
+	formatter *fileFormatter
+}
+
+func (h *fileHook) Levels() []logrus.Level {
+	return logrus.AllLevels
+}
+
+func (h *fileHook) Fire(entry *logrus.Entry) error {
+	// Fix caller information to skip logger.go wrapper
+	// The entry.Caller points to logger.go due to wrapper functions
+	// We need to find the actual caller outside of logger package
+	if entry.HasCaller() {
+		file, line, fn := getRealCaller()
+		if file != "" {
+			// Directly modify entry.Caller to point to the real caller
+			entry.Caller.File = file
+			entry.Caller.Line = line
+			entry.Caller.Function = fn
+		}
+	}
+
+	// Format the entry for file output
+	bytes, err := h.formatter.Format(entry)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	prefix := getDebugInfoPrefix(3 + additionalDepth)
-	_, err = fmt.Fprintf(f, prefix+format+"\n", args...)
+	// Write to file
+	_, err = h.file.Write(bytes)
 	return err
 }
 
-// Pretty safely formats and logs complex structs with safeguards against memory issues
-// Costy
-func Pretty(format string, args ...interface{}) {
-	formattedArgs := make([]interface{}, len(args))
-	for i, arg := range args {
-		formattedArgs[i] = safePrettyFormat(arg)
+// getRealCaller finds the actual caller by walking up the stack
+// until we find a frame outside of the logger package.
+func getRealCaller() (file string, line int, fn string) {
+	// Start from frame 4 to skip:
+	// 0: getRealCaller itself
+	// 1: fileHook.Fire
+	// 2: contextHook.Fire
+	// 3: logrus.(*logger).Log
+	// 4+: actual caller
+	const maxDepth = 15
+	for i := 4; i < maxDepth; i++ {
+		pc, f, l, ok := runtime.Caller(i)
+		if !ok {
+			break
+		}
+
+		// Skip frames from the logger package
+		if isLoggerPackage(f) {
+			continue
+		}
+
+		// Also skip logrus internal frames
+		if isLogrusPackage(f) {
+			continue
+		}
+
+		// Found a frame outside logger package
+		function := ""
+		funcPtr := runtime.FuncForPC(pc)
+		if funcPtr != nil {
+			function = funcPtr.Name()
+		}
+
+		return f, l, function
 	}
-	debugf(format, 1, formattedArgs...)
+
+	return "", 0, ""
 }
 
-// pretty packages can not ensure memory safe, hence safePrettyFormat is needed,
-// as a wrapper of pretty.Sprint
-func safePrettyFormat(arg interface{}) interface{} {
-	if arg == nil {
-		return "<nil>"
-	}
+// isLogrusPackage checks if the file is from the logrus vendor package.
+func isLogrusPackage(file string) bool {
+	// Check if file path contains "vendor/github.com/sirupsen/logrus"
+	return containsPath(file, "vendor/github.com/sirupsen/logrus") ||
+		containsPath(file, "logrus/entry.go") ||
+		containsPath(file, "logrus/logger.go")
+}
 
-	resultChan := make(chan interface{}, 1)
-	errorChan := make(chan error, 1)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				errorChan <- fmt.Errorf("panic during pretty formatting: %v", r)
-			}
-		}()
-
-		resultStr := pretty.Sprint(arg)
-
-		const maxSize = 10 * 1024
-		if len(resultStr) > maxSize {
-			resultStr = resultStr[:maxSize] + "\n... [TRUNCATED: output too large]"
-		}
-
-		// Add indentation for better readability
-		lines := strings.Split(resultStr, "\n")
-		var indentedLines []string
-		for _, line := range lines {
-			if strings.TrimSpace(line) != "" {
-				indentedLines = append(indentedLines, "    "+line)
-			} else {
-				indentedLines = append(indentedLines, line)
+// containsPath checks if a path contains a specific component.
+func containsPath(file, component string) bool {
+	for i := len(file) - len(component); i >= 0; i-- {
+		if file[i:i+len(component)] == component {
+			// Check if it's a proper path component
+			if (i == 0 || file[i-1] == '/' || file[i-1] == '\\') &&
+			   (i+len(component) >= len(file) || file[i+len(component)] == '/' || file[i+len(component)] == '\\') {
+				return true
 			}
 		}
-		resultStr = strings.Join(indentedLines, "\n")
-
-		resultChan <- resultStr
-	}()
-
-	select {
-	case result := <-resultChan:
-		return result
-	case err := <-errorChan:
-		return fmt.Sprintf("<error formatting: %v>", err)
-	case <-time.After(2 * time.Second):
-		return fmt.Sprintf("<timeout formatting type: %T>", arg)
 	}
+	return false
+}
+
+// isLoggerPackage checks if the file is from the logger package.
+func isLoggerPackage(file string) bool {
+	// Check for "/logger/" pattern (files inside logger directory)
+	for i := 0; i < len(file)-7; i++ {
+		if file[i:i+8] == "/logger/" {
+			return true
+		}
+	}
+
+	// Also check if the file is logger.go itself
+	if len(file) >= 10 && file[len(file)-10:] == "/logger.go" {
+		return true
+	}
+
+	return false
+}
+
+// fileFormatter formats logs for file output in debug builds.
+// Format: [namespace][id][timestamp]LOGLEVEL file:line func\n\tmessage
+// Timestamp uses nanosecond precision to match containerd format
+type fileFormatter struct {
+	color  bool
+	caller bool
+}
+
+func (f *fileFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	var b *bytes.Buffer
+
+	if entry.Buffer != nil {
+		b = entry.Buffer
+	} else {
+		b = &bytes.Buffer{}
+	}
+
+	// Get namespace from fields
+	namespace := ""
+	if ns, ok := entry.Data[NamespaceKey]; ok {
+		namespace = fmt.Sprintf("%v", ns)
+	}
+
+	// Get container ID from fields
+	containerID := ""
+	if id, ok := entry.Data[IDKey]; ok {
+		containerID = fmt.Sprintf("%v", id)
+	}
+
+	// Format: [namespace][id][timestamp]LOGLEVEL file:line func\n\tmessage
+	if namespace != "" {
+		b.WriteString("[")
+		b.WriteString(namespace)
+		b.WriteString("]")
+	}
+
+	if containerID != "" {
+		b.WriteString("[")
+		b.WriteString(containerID)
+		b.WriteString("]")
+	}
+
+	// Timestamp with nanoseconds: 1970-01-01T03:18:02.011123456Z
+	timestamp := entry.Time.Format("2006-01-02T15:04:05.000000000Z")
+	b.WriteString("[")
+	b.WriteString(timestamp)
+	b.WriteString("]")
+
+	// Log level (uppercase, e.g., DEBUG, INFO, WARN, ERROR)
+	level := entry.Level.String()
+	switch level {
+	case "debug":
+		level = "DEBUG"
+	case "info":
+		level = "INFO"
+	case "warning":
+		level = "WARN"
+	case "error":
+		level = "ERROR"
+	case "fatal":
+		level = "FATAL"
+	case "panic":
+		level = "PANIC"
+	default:
+		level = "UNKNOWN"
+	}
+	b.WriteString(level)
+
+	// Caller information
+	if f.caller {
+		if entry.HasCaller() {
+			file := entry.Caller.File
+			line := entry.Caller.Line
+			fn := entry.Caller.Function
+
+			// Convert file path to be relative to micrun directory
+			file = relativeToMicrun(file)
+
+			b.WriteString(" ")
+			b.WriteString(file)
+			b.WriteString(":")
+			b.WriteString(fmt.Sprintf("%d", line))
+			if fn != "" {
+				b.WriteString(" ")
+				b.WriteString(fn)
+			}
+		}
+	}
+
+	b.WriteString("\n\t")
+
+	// Message with optional color codes
+	if f.color {
+		b.WriteString(colorize(entry.Level, entry.Message))
+	} else {
+		b.WriteString(entry.Message)
+	}
+
+	// Add other fields (excluding namespace and id which we already used)
+	for k, v := range entry.Data {
+		if k != NamespaceKey && k != IDKey {
+			b.WriteString(" ")
+			b.WriteString(k)
+			b.WriteString("=")
+			b.WriteString(fmt.Sprintf("%v", v))
+		}
+	}
+
+	b.WriteByte('\n')
+	return b.Bytes(), nil
+}
+
+// relativeToMicrun converts an absolute file path to be relative to the micrun directory.
+func relativeToMicrun(file string) string {
+	// Try to find "micrun/" in the path and strip everything before and including it
+	for i := len(file) - 1; i >= 0; i-- {
+		if i+6 <= len(file) && file[i:i+6] == "micrun" {
+			// Check if this is actually the micrun directory (followed by /)
+			if i+6 < len(file) && (file[i+6] == '/' || file[i+6] == '\\') {
+				// Return everything after "micrun/"
+				return file[i+7:]
+			}
+		}
+	}
+	// If we couldn't find micrun/, return the original path
+	return file
+}
+
+// needsQuoting checks if a string needs quoting.
+func needsQuoting(s string) bool {
+	for _, c := range s {
+		if c <= ' ' || c == '"' || c == '\\' {
+			return true
+		}
+	}
+	return false
+}
+
+// Color codes for different log levels
+const (
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorYellow = "\033[33m"
+	colorGreen  = "\033[32m"
+	colorBlue   = "\033[34m"
+	colorPurple = "\033[35m"
+)
+
+// colorize adds ANSI color codes to the message based on log level.
+func colorize(level logrus.Level, msg string) string {
+	var colorCode string
+
+	switch level {
+	case logrus.DebugLevel:
+		colorCode = colorBlue
+	case logrus.InfoLevel:
+		colorCode = colorGreen
+	case logrus.WarnLevel:
+		colorCode = colorYellow
+	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
+		colorCode = colorRed
+	default:
+		colorCode = colorPurple
+	}
+
+	return colorCode + msg + colorReset
+}
+
+// tracefImpl implements Tracef for debug builds.
+// Outputs to both containerd log fifo AND log file with "[TRACE]" prefix.
+// The prefix makes trace logs easily identifiable in the log file.
+func tracefImpl(format string, args ...any) {
+	Log.Debugf("[TRACE] "+format, args...)
 }

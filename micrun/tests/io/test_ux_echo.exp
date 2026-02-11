@@ -1,0 +1,124 @@
+#!/usr/bin/expect -f
+# UX Test 1: Echo/Duplicate Output Detection
+# 检测用户报告的"输入1次help显示2次"问题
+
+set timeout 15
+set remote_host "root@192.168.7.2"
+set test_image "localhost:5000/mica-uniproton-app:xen-0.1"
+
+log_user 1
+set log_file [open "test_ux_echo.log" "w"]
+
+puts "\n=========================================="
+puts "UX Test 1: Echo/Duplicate Output Detection"
+puts "==========================================\n"
+
+# Test with ctr (more direct control)
+puts "Test 1A: Using ctr with TTY mode"
+puts "-------------------------------------------"
+
+# Create container
+spawn ssh $remote_host "ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.container.auto_close=true $test_image test-ux-echo"
+expect {
+    timeout { puts "WARN: Container create timeout" }
+    eof { puts "INFO: Container created" }
+}
+
+# Start TTY session and capture output
+spawn ssh -tt $remote_host "timeout 8 ctr task start test-ux-echo"
+
+set full_output ""
+set capture_started 0
+
+expect {
+    # 等待提示符
+    -re "MainTCB>|Main>|>|#" {
+        set capture_started 1
+        puts "INFO: Got prompt, sending 'help' command"
+
+        # 发送 help 命令
+        send "help\r"
+
+        # 捕获 help 命令的输出
+        expect {
+            -re "help\r\n" {
+                append full_output $expect_out(buffer)
+            }
+            -re "MainTCB>|Main>|>|#" {
+                append full_output $expect_out(buffer)
+                puts "INFO: Got response, counting 'help' occurrences..."
+
+                # 统计 help 出现的次数
+                set help_count [regexp -all {help} $full_output]
+
+                puts "\n=========================================="
+                puts "Test Results:"
+                puts "=========================================="
+                puts "Full captured output length: [string length $full_output] bytes"
+                puts "'help' keyword occurrences: $help_count"
+                puts ""
+
+                # 分析结果
+                if {$help_count <= 2} {
+                    puts "RESULT: PASS - help appears $help_count times (normal)"
+                    puts "  - 1 time in user input"
+                    puts "  - 1 time in RTOS response"
+                } elseif {$help_count <= 4} {
+                    puts "RESULT: WARN - help appears $help_count times (possible duplicate)"
+                    puts "  - Expected: 2 times (input + response)"
+                    puts "  - Found: $help_count times"
+
+                    # 保存详细输出用于分析
+                    set fd [open "test_ux_echo_detail.log" "w"]
+                    puts $fd "=== Captured Output ==="
+                    puts $fd $full_output
+                    puts $fd "\n=== Analysis ==="
+                    puts $fd "Total 'help' occurrences: $help_count"
+                    close $fd
+                    puts "  - Detailed output saved to test_ux_echo_detail.log"
+                } else {
+                    puts "RESULT: FAIL - help appears $help_count times (serious duplicate issue)"
+
+                    # 保存详细输出
+                    set fd [open "test_ux_echo_detail.log" "w"]
+                    puts $fd "=== Captured Output ==="
+                    puts $fd $full_output
+                    puts $fd "\n=== Analysis ==="
+                    puts $fd "Total 'help' occurrences: $help_count"
+                    close $fd
+                    puts "  - Detailed output saved to test_ux_echo_detail.log"
+                }
+
+                # 显示输出的关键部分
+                puts "\n--- Output Preview (first 500 chars) ---"
+                puts "[string range $full_output 0 499]"
+
+                send "exit\r"  # Use exit command instead of Ctrl-C
+                expect eof
+            }
+            timeout {
+                puts "WARN: Timeout waiting for response"
+                append full_output $expect_out(buffer)
+                send "exit\r"
+                expect eof
+            }
+        }
+    }
+    timeout {
+        puts "WARN: Timeout waiting for initial prompt"
+        send "\003"
+        expect eof
+    }
+    eof {
+        puts "INFO: Connection closed"
+    }
+}
+
+# Cleanup
+puts "\n--- Cleaning up ---"
+spawn ssh $remote_host "ctr task kill -s SIGKILL test-ux-echo 2>/dev/null; ctr task delete -f test-ux-echo 2>/dev/null; ctr container delete test-ux-echo 2>/dev/null"
+expect eof
+
+puts "\n=========================================="
+puts "Test 1A Complete"
+puts "==========================================\n"

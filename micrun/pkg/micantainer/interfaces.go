@@ -3,6 +3,7 @@ package micantainer
 import (
 	"context"
 	"io"
+	"os"
 	"syscall"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -37,6 +38,7 @@ type SandboxTraits interface {
 	GetAllContainers() []ContainerTraits
 	GetNetNamespace() string
 	NetnsHolderPID() int
+	GetState() StateString
 
 	// Sandbox Lifecycle methods
 	Start(ctx context.Context) error
@@ -53,10 +55,14 @@ type SandboxTraits interface {
 	StatsContainer(ctx context.Context, id string) (ContainerStats, error)
 	IOStream(containerID, taskID string) (io.WriteCloser, io.Reader, io.Reader, error)
 	// Not supported well
-	// TODO: aftet unified micran and micad, we can achive sending signals to RTOS clients
+	// TODO: aftet unified micrun and micad, we can achive sending signals to RTOS clients
 	PauseContainer(ctx context.Context, id string) error
 	ResumeContainer(ctx context.Context, id string) error
 	UpdateContainer(ctx context.Context, id string, resources specs.LinuxResources) error
 	WaitContainerExit(ctx context.Context, id string) (int32, error)
 	WinResize(ctx context.Context, containerID string, height, width uint32) error
+	// OpenTTYs opens fresh TTY handles for the specified container.
+	// This is used during reattach to get new TTY file descriptors
+	// instead of using stale closed ones from attachInfo.
+	OpenTTYs(ctx context.Context, containerID string) (stdin, stdout *os.File, err error)
 }

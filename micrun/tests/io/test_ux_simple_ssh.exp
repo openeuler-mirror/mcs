@@ -1,0 +1,53 @@
+#!/usr/bin/expect -f
+# Simple UX Test - Test double echo issue via SSH
+set timeout 45
+log_user 0
+
+puts "\n=========================================="
+puts "MicRun Double Echo Test"
+puts "==========================================\n"
+
+spawn ssh -tt root@192.168.7.2
+expect -re "#|\\$"
+
+send "rm -f /var/log/mica/mica-runtime.log\r"
+expect -re "#|\\$"
+
+send "nerdctl run -it --runtime io.containerd.mica.v2 --network=none -l org.openeuler.micrun.container.auto_close=false --name test-ux-simple localhost:5000/mica-uniproton-app:xen-0.1\r"
+
+# Wait for prompt (may take time)
+set got_prompt 0
+expect {
+    -re "openEuler|MainTCB>|Main>|>#" {
+        set got_prompt 1
+        puts "PROMPT received"
+    }
+    timeout {
+        puts "No prompt, continuing anyway..."
+    }
+}
+
+# Send help command
+puts "\n>>> Sending: help"
+send "help\r"
+after 3000
+
+# Send another help to test again
+puts ">>> Sending: help (again)"
+send "help\r"
+after 3000
+
+# Exit
+puts "\n>>> Exiting..."
+send "\004"
+expect -re "#|\\$"
+
+# Cleanup
+send "nerdctl rm -f test-ux-simple 2>/dev/null\r"
+expect -re "#|\\$"
+send "exit\r"
+
+puts "\n=========================================="
+puts "Test Complete"
+puts "=========================================="
+expect eof

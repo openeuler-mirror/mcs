@@ -102,7 +102,7 @@ func newContainer(ctx context.Context, s *Sandbox, cc *ContainerConfig) (*Contai
 	}
 
 	if cc.ID == "" {
-		log.Debugf("Empty container id.")
+		log.Tracef("Empty container id.")
 		return &Container{}, er.EmptyContainerID
 	}
 
@@ -214,9 +214,10 @@ func (c *Container) start(ctx context.Context) error {
 
 	if err := startClient(ctx, c.sandbox, c); err != nil {
 		log.Warnf("Failed to start container: %v, stopping it", err)
-		if err := c.stop(ctx, true); err != nil {
+		if stopErr := c.stop(ctx, true); stopErr != nil {
 			log.Warn("Failed to stop the container after start failed.")
 		}
+		return err
 	}
 
 	return c.setContainerState(ctx, StateRunning)
@@ -328,13 +329,34 @@ func (c *Container) ioStream(taskID string) (io.WriteCloser, io.Reader, io.Reade
 		return noopWriteCloser{}, bytes.NewReader(nil), bytes.NewReader(nil), nil
 	}
 
-	stdin, stdout, _, err := dialTTY(c.ctx, c.id)
+	// Use a background context for TTY wait to avoid RPC deadline issues
+	// The TTY wait can take longer than the Start RPC timeout (e.g., waiting for micad to start)
+	// This is safe because the TTY wait is independent of the RPC request lifecycle
+	ttyCtx := context.Background()
+	stdin, stdout, _, err := dialTTY(ttyCtx, c.id)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
+	// dialTTY now returns the SAME file descriptor for both stdin and stdout
+	// This prevents PTY buffer corruption from dual-fd contention
+	// stdin and stdout both point to the same os.File object
+	// Wrap stdout and stderr with noCloseFile to prevent double-close issues
+	// since stdin and stdout share the same underlying fd
 	// stdout/stderr are permanently merged for mica clients.
-	return stdin, stdout, stdout, nil
+	return stdin, &noCloseFile{stdout}, &noCloseFile{stdout}, nil
+}
+
+// noCloseFile wraps an os.File to prevent actual closure
+// When Close() is called, it does nothing, keeping the underlying file open
+type noCloseFile struct {
+	*os.File
+}
+
+func (f *noCloseFile) Close() error {
+	// Don't close the underlying TTY file descriptor
+	// This prevents the stdout copy goroutine from closing stdin's fd
+	return nil
 }
 
 func extractExitCode(err error) int {
@@ -799,12 +821,15 @@ func validOS(os string) bool {
 // validComponent checks if a component file is a regular file.
 func validComponent(component string) bool {
 	if !utils.IsRegular(component) {
+		log.Tracef("validComponent: %s is not a regular file", component)
 		return false
 	}
 
 	hostArch := runtime.GOARCH
+	log.Tracef("validComponent: checking %s on host arch %s", component, hostArch)
 
 	if match, _ := utils.IsELFForHost(component); match {
+		log.Tracef("validComponent: %s is a valid ELF for host", component)
 		return true
 	}
 
@@ -857,14 +882,19 @@ func (c *Container) validMicaContainer() bool {
 		return true
 	}
 
-	osValid := validOS(c.os())
-	fwValid := validFirmware(c.getFirmware())
+	os := c.os()
+	firmware := c.getFirmware()
+	log.Tracef("validMicaContainer: os=%q, firmware=%q", os, firmware)
+
+	osValid := validOS(os)
+	fwValid := validFirmware(firmware)
 	if HostPedType == ped.Xen {
 		binFile := validBinfile(c.getPedConf())
+		log.Tracef("validMicaContainer: pedConf=%q, binFile valid=%v", c.getPedConf(), binFile)
 		fwValid = binFile && fwValid
 	}
 	judge := osValid && fwValid
-	log.Debugf("container validation: os=%v, firmware=%v, valid=%v", osValid, fwValid, judge)
+	log.Tracef("container validation: os=%v, firmware=%v, valid=%v", osValid, fwValid, judge)
 
 	return judge
 }
@@ -940,17 +970,20 @@ func (c *Container) checkState() StateString {
 // register client when container is missing and the container is not a infra container
 func (c *Container) ensureClientPresence() (StateString, error) {
 	state := c.checkState()
+	log.Tracef("ensureClientPresence: container %s state=%s shouldPresent=%v", c.id, state, c.shouldPresent())
 	if state != StateDown {
 		return state, nil
 	}
 
-	if c.shouldPresent() && !libmica.ClientNotExist(c.id) {
+	if c.shouldPresent() && libmica.ClientNotExist(c.id) {
+		log.Tracef("ensureClientPresence: registering client %s", c.id)
 		if err := c.registerClient(); err != nil {
 			return StateDown, err
 		}
 	}
 
 	state = c.checkState()
+	log.Tracef("ensureClientPresence: after registration, container %s state=%s", c.id, state)
 	if state == StateDown {
 		return StateDown, er.ContainerNotFound
 	}
@@ -966,15 +999,18 @@ func (c *Container) shouldPresent() bool {
 }
 
 func (c *Container) registerClient() error {
-
+	log.Tracef("registerClient: creating mica client conf for %s", c.id)
 	conf, err := createMicaClientConf(c)
 	if err != nil {
 		return err
 	}
 
+	log.Tracef("registerClient: calling libmica.Create for %s", c.id)
 	if err := libmica.Create(conf); err != nil {
+		log.Errorf("registerClient: libmica.Create failed: %v", err)
 		return err
 	}
+	log.Tracef("registerClient: libmica.Create succeeded for %s", c.id)
 
 	limit := c.config.memoryLimitMB()
 	initialMem := limit
@@ -1012,7 +1048,7 @@ func (c *Container) setupMemory() error {
 	}
 
 	target := int(limit)
-	log.Debugf("setting mem threshold to %d MB", target)
+	log.Tracef("setting mem threshold to %d MB", target)
 	if err := c.me.UpdateMemoryThreshold(limit); err != nil {
 		return fmt.Errorf("failed to set new memory threshold to %d MB for %s: %w", limit, c.id, err)
 	}
@@ -1067,7 +1103,7 @@ func (c *Container) SaveState() error {
 		log.Warnf("Failed to ensure bundle directory: %v.", err)
 	}
 	if err := utils.EnsureDir(filepath.Dir(stateInMicrunDir), defs.DirMode); err != nil {
-		log.Warnf("Failed to ensure micran state directory: %v.", err)
+		log.Warnf("Failed to ensure micrun state directory: %v.", err)
 	}
 
 	if err = utils.SaveStructToJSON(stateInBundle, serializable); err != nil {
@@ -1211,20 +1247,40 @@ func (c *Container) winresize(height, width uint32) error {
 	if c.notOperational() {
 		return fmt.Errorf("container not ready or running, impossible to resize the container pty")
 	}
-	log.Debugf("resizing PTY for container %s to [%dx%d]", c.id, width, height)
-	stdin, stdout, p, err := dialTTY(c.ctx, c.id)
+	log.Tracef("resizing PTY for container %s to [%dx%d]", c.id, width, height)
+	// Use a background context for TTY wait to avoid RPC deadline issues
+	ttyCtx := context.Background()
+	stdin, stdout, p, err := dialTTY(ttyCtx, c.id)
 	if err != nil {
 		return err
 	}
 	_ = stdin.Close()
 	defer stdout.Close()
-	log.Debugf("resizing rpmsg tty at %s", p)
+	log.Tracef("resizing rpmsg tty at %s", p)
 
 	ws := &unix.Winsize{Row: uint16(height), Col: uint16(width)}
 	if err := unix.IoctlSetWinsize(int(stdout.Fd()), unix.TIOCSWINSZ, ws); err != nil {
 		return fmt.Errorf("set winsize: %w", err)
 	}
 	return nil
+}
+
+// OpenTTYs opens fresh TTY handles for the container.
+// This is used during reattach to get new TTY file descriptors
+// instead of using stale closed ones from attachInfo.
+func (c *Container) OpenTTYs() (stdin, stdout *os.File, err error) {
+	if c.notOperational() {
+		return nil, nil, fmt.Errorf("container not ready or running, impossible to open TTY")
+	}
+	log.Infof("[TTY] Opening fresh TTY handles for container %s", c.id)
+	// Use a background context for TTY wait to avoid RPC deadline issues
+	ttyCtx := context.Background()
+	stdin, stdout, p, err := dialTTY(ttyCtx, c.id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open TTY for %s: %w", c.id, err)
+	}
+	log.Infof("[TTY] Opened fresh TTY handles for container %s: %s", c.id, p)
+	return stdin, stdout, nil
 }
 
 // firmware is the elf file of rtos

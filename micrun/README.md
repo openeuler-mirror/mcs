@@ -276,7 +276,7 @@ org.openeuler.micrun.runtime.exclusive_dom0_cpu: "true"
 
 - Xen层面：xl list、xl schecd-credit2监控domain状态
 - 容器层面：ctr tasks metrics获取容器资源使用
-- MicRun日志：/tmp/micrun/runtime.log记录详细运行时信息
+- MicRun日志：/var/log/mica/mica-runtime.log记录详细运行时信息
 
 4.7 部署与集成
 
@@ -324,12 +324,46 @@ Micrun是一个创新的容器运行时，它通过以下方式弥合了传统RT
 
 该项目代表了边缘计算和混合关键性系统容器化的重要发展方向，为工业控制、自动驾驶、物联网等领域的实时应用提供了现代化的部署和管理方案。
 
+---
+
+## 文档导航
+
+MicRun 提供了完整的文档体系，帮助不同层次的用户快速上手：
+
+### 📚 用户文档
+
+| 文档 | 说明 | 适用人群 |
+|------|------|----------|
+| [快速入门](docs/quick-start.md) | 从零开始部署 MicRun，运行第一个 RTOS 容器 | 新手用户 |
+| [Kubernetes 集成指南](docs/k8s-integration.md) | 云边协同部署，完整的 K3s 集群配置 | 运维人员 |
+| [测试指南](docs/testing-guide.md) | 单元测试、集成测试、E2E 测试完整流程 | 开发者和测试人员 |
+
+### 📖 设计文档
+
+| 文档 | 说明 | 位置 |
+|------|------|------|
+| [IO 系统设计](docs/io/io-design.md) | 分层事件驱动 IO 架构详解 | docs/io/io-design.md |
+| [资源映射设计](docs/resource-design.md) | cgroup 到 hypervisor 的资源转换机制 | docs/resource-design.md |
+| [Logger 重构设计](docs/logger-refactor/design.md) | 结构化日志系统设计 | docs/logger-refactor/design.md |
+
+### 🔧 参考文档
+
+- [资源映射详解](docs/resource-mapping.md) - CPU、内存资源的详细映射规则
+- [Logger 使用指南](docs/logger-refactor/usage.md) - 如何在代码中使用日志系统
+- [问题记录](docs/issues/micad-tty-timeout.md) - 已知问题和解决方案
+
+### 📝 文档使用建议
+
+- **新手入门路径**：快速入门 → Kubernetes 集成指南 → 测试指南
+- **开发者路径**：设计文档 → 测试指南 → 源码阅读
+- **问题排查路径**：快速入门 FAQ → 测试指南故障排查 → 问题记录文档
+
 ---关键文件路径参考：
-- /home/egg/source/micrun/main.go：程序入口
-- /home/egg/source/micrun/pkg/shim/shim_services.go：shim服务核心
-- /home/egg/source/micrun/pkg/pedestal/xen.go：Xen hypervisor支持
-- /home/egg/source/micrun/definitions/annotations.go：配置注解定义
-- /home/egg/source/micrun/docs/resource-design.md：资源映射设计文档
+- main.go：程序入口
+- pkg/shim/shim_services.go：shim服务核心
+- pkg/pedestal/xen.go：Xen hypervisor支持
+- definitions/annotations.go：配置注解定义
+- docs/resource-design.md：资源映射设计文档
 
 项目状态：preview阶段，支持Xen为主要hypervisor，已实现基本容器生命周期管理，IO处理和网络支持仍在完善中。<｜end▁of▁thinking｜>
 
@@ -533,7 +567,7 @@ annotations:
   org.openeuler.micrun.container.firmware_path: "zephyr.bin"
   org.openeuler.micrun.ped.pedestal: "xen"
   org.openeuler.micrun.runtime.exclusive_dom0_cpu: "true"
-  org.openeuler.micrun.container.auto_close: "true"
+  org.openeuler.micrun.container.auto_close: "true"  # 所有IO模式默认30秒超时，防止资源泄漏
 
 5. 技术栈与依赖
 

@@ -1,0 +1,92 @@
+#!/usr/bin/expect -f
+# Interactive TTY test for micrun
+# Tests detach sequences, exit command, and other TTY interactions
+
+set timeout 10
+set remote_host "root@192.168.7.2"
+set test_image "localhost:5000/mica-uniproton-app:xen-0.1"
+set container "test-interactive-1"
+
+# Colors for terminal output
+spawn ssh -o StrictHostKeyChecking=no $remote_host
+expect "*#"
+
+send "ctr task delete -f $container\r"
+expect "*#"
+
+send "ctr container delete $container\r"
+expect "*#"
+
+send "echo 'Starting interactive TTY test'\r"
+expect "*#"
+
+# Test 1: Create and start container with TTY
+send "ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.container.auto_close=false $test_image $container\r"
+expect "*#"
+
+send "ctr task start $container\r"
+
+# Wait for shell prompt or RTOS prompt
+expect {
+    -timeout 5
+    -re "Main|>|#|\\$" {
+        # We got some kind of prompt
+        send_user "\n[INFO] Got prompt, container appears to be running\n"
+    }
+    timeout {
+        send_user "\n[WARN] No prompt detected, continuing anyway\n"
+    }
+}
+
+# Test 2: Send some input
+send "echo test\r"
+expect {
+    "test" {
+        send_user "\n[INFO] Echo test successful\n"
+    }
+    timeout {
+        send_user "\n[WARN] No echo response\n"
+    }
+}
+
+# Test 3: Test exit command handling
+sleep 1
+send "exit\r"  ;# Use exit command instead of Ctrl-C
+
+expect {
+    -re "main|>|#|\\$" {
+        send_user "\n[INFO] Exit command handled, still responsive\n"
+    }
+    timeout {
+        send_user "\n[WARN] No response after exit command\n"
+    }
+}
+
+# Test 4: Test detach sequence (Ctrl-P, Ctrl-Q)
+sleep 1
+send "\x10"  ;# Ctrl-P
+sleep 0.1
+send \x11    ;# Ctrl-Q
+
+expect {
+    -re "detach|Detached" {
+        send_user "\n[INFO] Detach sequence detected\n"
+    }
+    timeout {
+        send_user "\n[INFO] No detach message (may have exited normally)\n"
+    }
+}
+
+# Cleanup
+expect "*#"
+send "ctr task kill -s SIGKILL $container\r"
+expect "*#"
+send "ctr task delete -f $container\r"
+expect "*#"
+send "ctr container delete $container\r"
+expect "*#"
+
+send "exit\r"
+expect eof
+
+send_user "\n[INFO] Interactive test completed\n"
