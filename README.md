@@ -32,13 +32,13 @@ mcs支持两种构建安装方式：
 
    1. 根据[openEuler Embedded使用手册](https://pages.openeuler.openatom.cn/embedded/docs/build/html/master/getting_started/index.html#sdk)安装SDK并设置SDK环境变量。
 
-   2. 交叉编译内核模块 mcs_km.ko、mcs_remoteproc.ko，编译方式如下:
+   2. 交叉编译内核模块 mcs_km.ko（baremetal/hetero部署）、xen-mcsback.ko（xen部署），编译方式如下:
       ```shell
       cd mcs_km
       make
       ```
 
-      将编译出来的 ko 放到运行环境的 `/lib/modules/$(uname -r)` 目录中，并执行以下命令：
+      将编译出来的 ko 放到运行环境的 `/lib/modules/$(uname -r)` 目录中，并执行以下命令（mcs_km为例）：
       ```shell
       depmod
       echo "mcs_km" > /etc/modules-load.d/mcs_km.conf
