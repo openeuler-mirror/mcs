@@ -21,9 +21,8 @@
 # ide file and editor files
 *.vscode
 
-# no build artifacts 
+# no build artifacts
 build/
-vendor/
 
 .cache/
 __pycache__/
