@@ -104,7 +104,7 @@ class MicaImageBuilder:
     def select_pedestal(self):
         print("\nSelect pedestal type:")
         print("1. xen")
-        print("2. openamp")
+        print("2. baremetal")
 
         while True:
             choice = input("Enter choice (1-2): ").strip()
@@ -112,7 +112,7 @@ class MicaImageBuilder:
                 self.pedestal = "xen"
                 break
             elif choice == "2":
-                self.pedestal = "openamp"
+                self.pedestal = "baremetal"
                 break
             else:
                 print("Invalid choice")
@@ -840,8 +840,8 @@ Examples:
     --firmware bundle.sample/zephyr.xen.elf --xen-image bundle.sample/zephyr.xen.bin
 
   # CLI mode with custom image name and version
-  python3 mica-image-builder.py --pedestal openamp --os zephyr \
-    --firmware firmware.elf --image-name localhost:5000/mica-zephyr-myapp:openamp-1.0
+  python3 mica-image-builder.py --pedestal baremetal --os zephyr \
+    --firmware firmware.elf --image-name localhost:5000/mica-zephyr-myapp:baremetal-1.0
 
   # Build and push to registry
   python3 mica-image-builder.py --pedestal xen --os zephyr \
@@ -884,8 +884,8 @@ Examples:
     # Build parameters (any of these enables CLI mode)
     parser.add_argument(
         "--pedestal",
-        choices=["xen", "openamp"],
-        help="Pedestal type (xen or openamp) - enables CLI mode",
+        choices=["xen", "baremetal"],
+        help="Pedestal type (xen or baremetal) - enables CLI mode",
     )
     parser.add_argument(
         "--os",

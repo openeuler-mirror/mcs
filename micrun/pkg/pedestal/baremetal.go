@@ -4,8 +4,9 @@ import (
 	"micrun/pkg/cpuset"
 )
 
-// baremetal is the baremetal pedestal implementation using openAMP/rpmsg.
+// baremetal is the baremetal pedestal implementation.
 // Linux exposes all physical CPUs; RTOS clients run on reserved cores.
+// NOTE: Baremetal mode is not yet supported. This is a placeholder for future implementation.
 type baremetal struct {
 	DefaultPedestal
 }

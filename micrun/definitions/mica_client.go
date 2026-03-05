@@ -11,5 +11,5 @@ const (
 )
 
 var (
-	TrustyOS = [...]string{"zephyr", "uniproton", "linux", "liteos"}
+	TrustyOS = [...]string{"zephyr", "uniproton"}
 )

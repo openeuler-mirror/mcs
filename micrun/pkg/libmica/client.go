@@ -4,6 +4,7 @@ package libmica
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	defs "micrun/definitions"
 	er "micrun/errors"
@@ -44,8 +45,7 @@ const (
 
 const (
 	Xen PedType = iota
-	ACRN
-	FusionDock
+	Baremetal
 )
 
 const (
@@ -193,7 +193,7 @@ type MicaClientConf struct {
 	name [MaxNameLen]byte
 	// path is the firmware path (<OS>.elf)
 	path [MaxFirmwarePathLen]byte
-	// ped is string of pedestal type: xen, fusionDock, acrn, etc.
+	// ped is string of pedestal type: xen, baremetal, etc.
 	ped [MaxPedLen]byte
 	// for xen, pedcfg is the relative path of <OS>.bin
 	pedcfg [MaxFirmwarePathLen]byte
@@ -413,9 +413,12 @@ func Stop(id string) error {
 // TALK: xen supports pause, but mica...
 // TODO: might passthrough mica, directly to ped?
 func Pause(id string) error {
-	if lm, ok := pedestal.Host.(pedestal.LifecycleManager); ok {
-		return lm.Pause(id)
+	if err := pedestal.Host.Pause(id); err == nil {
+		return nil
+	} else if !errors.Is(err, pedestal.ErrNotSupported) {
+		return err
 	}
+	// Fallback to mica control if pedestal doesn't support lifecycle management
 	if err := micaCtl(MPause, id); err != nil {
 		return fmt.Errorf("failed to pause mica client %s %w", id, err)
 	}
@@ -424,11 +427,14 @@ func Pause(id string) error {
 
 // TODO: mica may not support, we handle this via ped directly
 func Resume(id string) error {
-	if lm, ok := pedestal.Host.(pedestal.LifecycleManager); ok {
-		return lm.Resume(id)
+	if err := pedestal.Host.Resume(id); err == nil {
+		return nil
+	} else if !errors.Is(err, pedestal.ErrNotSupported) {
+		return err
 	}
+	// Fallback to mica control if pedestal doesn't support lifecycle management
 	if err := micaCtl(MResume, id); err != nil {
-		return fmt.Errorf("failed to pause mica client %s %w", id, err)
+		return fmt.Errorf("failed to resume mica client %s %w", id, err)
 	}
 	return nil
 }

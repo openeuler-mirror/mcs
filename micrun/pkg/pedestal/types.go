@@ -10,18 +10,17 @@ type PedestalConfig struct {
 	MiniVCPUNum uint32
 }
 
-// Host is the global pedestal instance for the detected host pedestal type.
+// Host is the global pedestal facade instance for the detected host pedestal type.
 // Initialized at package startup via init().
-var Host Pedestal
+// Use Host to access all pedestal operations without type assertions.
+var Host *PedestalFacade
 
 func init() {
-	Host = newHostPed()
+	Host = NewPedestalFacade(newHostPed())
 }
 
 const (
 	Xen PedType = iota
-	FusionDock
-	ACRN
 	Baremetal
 	Unsupported
 )
@@ -31,10 +30,6 @@ func (p PedType) String() string {
 	switch p {
 	case Xen:
 		return "xen"
-	case FusionDock:
-		return "fusiondock"
-	case ACRN:
-		return "acrn"
 	case Baremetal:
 		return "baremetal"
 	default:
@@ -46,11 +41,7 @@ func ParsePedType(s string) PedType {
 	switch strings.ToLower(s) {
 	case "xen":
 		return Xen
-	case "fusiondock":
-		return FusionDock
-	case "acrn":
-		return ACRN
-	case "baremetal", "openamp":
+	case "baremetal":
 		return Baremetal
 	case "":
 		return Xen
@@ -64,10 +55,6 @@ func New(pedType PedType) Pedestal {
 	switch pedType {
 	case Xen:
 		return xen{}
-	case FusionDock:
-		return fusiondock{}
-	case ACRN:
-		return acrn{}
 	case Baremetal:
 		return baremetal{}
 	default:

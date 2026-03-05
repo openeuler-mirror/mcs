@@ -214,11 +214,11 @@ func xlvcpu() (*XlVcpuInfo, error) {
 	return parseXlVcpuInfo(out.String())
 }
 
-func XlVcpuList() (*XlVcpuInfo, error) {
+func xlVcpuList() (*XlVcpuInfo, error) {
 	return xlvcpu()
 }
 
-func XlDomID(clientID string) (int, error) {
+func xlDomID(clientID string) (int, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := newxl(domid, clientID)
 	cmd.Stdout = &stdout
@@ -541,8 +541,8 @@ func XlMemMax(domainName string, memMB int) error {
 	return nil
 }
 
-// XlVcpuSet sets VCPU count for a domain using xl vcpu-set
-func XlVcpuSet(domainName string, vcpuCount int) error {
+// xlVcpuSet sets VCPU count for a domain using xl vcpu-set
+func xlVcpuSet(domainName string, vcpuCount int) error {
 	cmd := newxl(vcpuset, domainName, strconv.Itoa(vcpuCount))
 	log.Debugf("run %s to set VCPU count to %d for domain %s", cmd.String(), vcpuCount, domainName)
 	if err := cmd.Run(); err != nil {
@@ -684,8 +684,8 @@ func parseAffinity(affinity string) (cpuset.CPUSet, error) {
 	return set, nil
 }
 
-func DomainID(clientID string) (int, error) {
-	if domid, err := XlDomID(clientID); err == nil {
+func domainID(clientID string) (int, error) {
+	if domid, err := xlDomID(clientID); err == nil {
 		return domid, nil
 	} else {
 		log.Debugf("xl domid fallback failed for %s: %v", clientID, err)
@@ -741,7 +741,7 @@ func parseXLListForDomain(clientID string) (int, error) {
 const xenstorePathFmt = "/local/domain/%d/%s"
 
 func xenStoreRead(name, item string) (string, error) {
-	domId, err := XlDomID(name)
+	domId, err := xlDomID(name)
 	if err != nil {
 		return "", err
 	}
@@ -774,12 +774,12 @@ func xenStoreReadRaw(key string) (string, error) {
 	return out, nil
 }
 
-// XenStoreReadDomainState reads the domain state from xenstore
+// xenStoreReadDomainState reads the domain state from xenstore
 // Returns "running" if domain is active and ready, otherwise returns the actual state
-func XenStoreReadDomainState(name string) (string, error) {
+func xenStoreReadDomainState(name string) (string, error) {
 	// Try to read domain state from xenstore
 	// Xen stores domain state as a number, but we can also check via xl list
-	domId, err := XlDomID(name)
+	domId, err := xlDomID(name)
 	if err != nil {
 		return "", err
 	}
