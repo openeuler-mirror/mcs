@@ -4,15 +4,12 @@
 
 ## 什么是 MicRun
 
-`MicRun`是一个基于`containerd shimv2`的容器运行时，专为`Mica`项目设计，用于在同一`SoC`的不同`CPU`核上运行`RTOS`（`Real-Time Operating System`，实时操作系统）。
+`MicRun`是一个容器运行时，让你用容器的方式管理`RTOS`（实时操作系统）。
 
-### 核心价值
-
-通过`MicRun`，你可以：
-- 用`Kubernetes/KubeEdge`管理`RTOS`业务
+**核心能力**：
+- 用`Kubernetes`管理`RTOS`工作负载
 - 用容器镜像分发`RTOS`固件
-- 在单一设备上实现`Linux`和`RTOS`的混合部署
-- 复用云原生工具链（`ctr`、`nerdctl`等）
+- 同一设备上同时运行`Linux`（Host）和`RTOS`
 
 ---
 
@@ -23,25 +20,24 @@
 **边侧**（`Edge`）指的是靠近数据源头或用户的一侧，相对于"云侧"（`Cloud`）而言。
 
 ```
-                    云侧 (Cloud)
-                       │
+                      Cloud
+                        │
                     KubeEdge
-                       │
-    ┌──────────────────┼──────────────────┐
-    │                  │                  │
- 边侧节点A          边侧节点B          边侧节点C
- (工厂车间)         (智能门店)         (车载设备)
-    │                  │                  │
-   RTOS               RTOS               RTOS
- (实时控制)         (数据采集)         (自动驾驶)
+                        │
+          ┌─────────────┼─────────────┐
+          │             │             │
+       Edge A       Edge B        Edge C
+      (Factory)    (Store)      (Vehicle)
+          │             │             │
+        RTOS         RTOS          RTOS
+      (Control)  (DataCollect) (AutoDrive)
 ```
 
 ### 什么是混合关键性系统（MCS）
 
-**混合关键性系统**（`Mixed Criticality System`，简称`MCS`）是指在同一硬件平台上同时运行不同关键性级别任务的系统。
-
-- **非关键任务**：`Linux`系统上的常规应用（如日志、`UI`）
-- **关键任务**：`RTOS`上的实时控制任务（如电机控制、安全监控）
+**MCS**（Mixed Criticality System）是指在同一硬件上同时运行不同优先级任务的系统：
+- **非关键任务**：`Linux`（Host）上的常规应用（日志、UI等）
+- **关键任务**：`RTOS`上的实时控制（电机控制、安全监控等）
 
 ### 为什么选择容器化方案
 
@@ -54,10 +50,10 @@
 | **MicRun 容器化** | 复用云原生生态 | 需要适配`OCI`规范 |
 | `WASM`微运行时 | 轻量级 | 无法混合部署 |
 
-**MicRun 选择容器化方案的原因**：
-1. 复用容器镜像分发机制，简化固件管理
-2. 利用`Kubernetes`生态，降低运维复杂度
-3. 渐进式云化，每一步都有对应方案
+**为什么选择容器化**：
+1. 复用容器镜像分发，简化固件管理
+2. 复用`Kubernetes`生态，降低运维成本
+3. 渐进式云化，每一步都有方案
 
 ---
 
@@ -65,16 +61,14 @@
 
 使用`MicRun`包含以下步骤：
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  1. 构建系统镜像          构建包含 MicRun 的 openEuler Embedded │
-│  2. 启动系统              进入构建好的系统                      │
-│  3. 构建 RTOS 镜像        用 mica-image-builder 打包固件        │
-│  4. 导入镜像              将镜像导入 containerd                 │
-│  5. 注册运行时            在 containerd 中注册 MicRun           │
-│  6. 运行 RTOS 容器        启动并测试 RTOS 容器                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 步骤 | 说明 |
+|------|------|
+| 1. 构建系统镜像 | 使用 oebuild 构建包含 MicRun 的 openEuler Embedded |
+| 2. 启动系统 | 启动构建好的系统镜像 |
+| 3. 构建 RTOS 镜像 | 使用 mica-image-builder 打包固件 |
+| 4. 导入镜像 | 将镜像导入 containerd |
+| 5. 注册运行时 | 在 containerd 中注册 MicRun |
+| 6. 运行容器 | 启动并测试 RTOS 容器 |
 
 ---
 
@@ -95,7 +89,7 @@
 | `micad` | - | `MCS`特性的守护进程，管理RTOS |
 | `Xen` | - | 作为`MCS`底座（虚拟化层） |
 | `systemd` | 推荐 | 系统和服务管理 |
-| `containerd` | 1.7.27+ | 容器引擎，推荐版本 |
+| `containerd` | ≥1.7.19 | 容器引擎（构建时需≥1.7.27，运行时≥1.7.19即可） |
 
 ### 1.2 生成构建环境
 
@@ -205,15 +199,16 @@ sudo <qemu_path>/qemu-system-aarch64 \
 
 ### 3.1 为什么需要特殊构建工具
 
-标准`Docker`容器镜像使用`[os, arch]`二元组匹配（如`linux/amd64`）。
+标准容器使用`[os, arch]`二元组匹配（如`linux/amd64`），而`RTOS`容器需要四元组匹配（如`qemu-aarch64/zephyr/arm64/xen`）：
 
-而`RTOS`容器需要`[board, os, arch, hypervisor]`四元组匹配：
-- `board`：硬件板型（如`qemu-aarch64`）
-- `os`：`RTOS`类型（如`zephyr`、`uniproton`）
-- `arch`：`CPU`架构（如`arm64`、`amd64`）
-- `hypervisor`：虚拟化类型（如`xen`、`openamp`）
+| 维度 | 说明 | 示例 |
+|------|------|------|
+| `board` | 硬件板型 | `qemu-aarch64` |
+| `os` | RTOS 类型 | `zephyr`、`uniproton` |
+| `arch` | CPU 架构 | `arm64`、`amd64` |
+| `hypervisor` | 虚拟化类型 | `xen`、`baremetal` |
 
-因此需要使用专门的镜像打包工具`mica-image-builder`。
+因此需要使用`mica-image-builder`工具来打包符合要求的镜像。
 
 ### 3.2 准备构建环境
 
@@ -240,11 +235,11 @@ uv pip install -r requirements.txt
 
 ```bash
 # 启动交互式构建工具
-uv run ./mica-image-builder
+uv run mica-image-builder.py
 ```
 
 根据提示选择：
-1. **`Pedestal`类型**：选择`xen`或`openamp`
+1. **`Pedestal`类型**：选择`xen`或`baremetal`
 2. **`OS`类型**：选择`zephyr`或`uniproton`
 3. **固件文件**：选择你的`<firmware>.elf`或`<firmware>.bin`文件
 4. **镜像名称**：使用默认或自定义名称
@@ -256,8 +251,17 @@ uv run ./mica-image-builder
 ```bash
 # 构建时会提示是否导出，选择导出
 # 或手动导出已构建的镜像
+
+# 方法1: 使用 ctr 导出（推荐，在目标系统上可用）
+ctr image export <image_file>.tar <image_name>:<tag>
+# 例如：ctr image export my-rtos-image.tar localhost:5000/mica-uniproton-app:xen-0.1
+
+# 方法2: 使用 nerdctl 导出（在目标系统上可用）
+nerdctl save -o <image_file>.tar <image_name>:<tag>
+
+# 方法3: 使用 docker 导出（如果构建环境有 docker）
 docker save -o <image_file>.tar <image_name>:<tag>
-# 例如：docker save -o my-rtos-image.tar localhost:5000/mica-zephyr-app:xen-0.1
+# 例如：docker save -o my-rtos-image.tar localhost:5000/mica-uniproton-app:xen-0.1
 ```
 
 ---
@@ -266,7 +270,9 @@ docker save -o <image_file>.tar <image_name>:<tag>
 
 ### 4.1 注册运行时
 
-编辑`/etc/containerd/config.toml`，添加以下内容：
+编辑或创建`/etc/containerd/config.toml`，添加以下内容：
+
+> **注意**：如果该文件不存在，需要手动创建。containerd 可以在没有配置文件的情况下运行（使用默认配置），但注册 MicRun 运行时需要显式配置。
 
 ```toml
 version = 2
@@ -289,7 +295,11 @@ version = 2
 systemctl restart containerd
 
 # 验证配置（检查 micrun 运行时是否被正确加载）
-containerd config dump | grep -A 5 runtimes.micrun
+# 注意：如果 containerd 配置文件是新创建的，需要确保 containerd 服务正确读取了配置
+containerd config dump 2>/dev/null | grep -A 5 runtimes.micrun || echo "配置未生效，请检查配置文件格式"
+
+# 如果配置未生效，可以检查 containerd 日志
+journalctl -u containerd -n 20 | grep -i config
 ```
 
 ---
@@ -348,7 +358,7 @@ ctr container delete <container_name>
 | 注解 | 说明 | 示例 |
 |------|------|------|
 | `org.openeuler.micrun.container.auto_close` | 是否在 IO 关闭时自动停止容器 | `true`/`false` |
-| `org.openeuler.micrun.container.auto_close_timeout` | 自动关闭超时时间（持续时间字符串或秒） | `30s`（默认30秒） |
+| `org.openeuler.micrun.container.auto_close_timeout` | 自动关闭超时时间 | `30s`（默认），支持 `60s`、`5m` 等格式 |
 
 > **说明**：`auto_close` 默认为 `true`，当用户断开连接（如关闭终端）或超时后，容器会自动停止。如果希望容器保持运行以支持多次 attach，可以设置 `auto_close=false` 或使用较长的超时时间（>60秒）。
 
@@ -362,14 +372,14 @@ ctr container delete <container_name>
 # 后台运行容器
 nerdctl run -d \
   --runtime io.containerd.mica.v2 \
-  --network host \
+  --network=none \
   --name <container_name> \
   <image_name>:<tag>
 
 # 创建但不启动容器
 nerdctl create \
   --runtime io.containerd.mica.v2 \
-  --network host \
+  --network=none \
   --name <container_name> \
   <image_name>:<tag>
 
@@ -378,8 +388,8 @@ nerdctl start <container_name>
 ```
 
 **重要说明**：
-- `--network host`：对于 RTOS 容器，通常需要使用 host 网络模式，因为嵌入式环境可能没有配置 CNI 网络插件
-- 如果系统配置了 CNI 网络插件，可以省略 `--network host` 或使用其他网络模式
+- `--network=none`：RTOS 容器通常不需要网络，这是测试验证过的配置
+- 如果需要网络，可以尝试省略此参数或配置 CNI 网络插件
 
 #### 5.3.2 管理容器
 
@@ -395,9 +405,6 @@ nerdctl stop <container_name>
 
 # 强制停止容器
 nerdctl stop -t 0 <container_name>
-
-# 重启容器
-nerdctl restart <container_name>
 
 # 删除已停止的容器
 nerdctl rm <container_name>
@@ -436,7 +443,7 @@ nerdctl logs -f <container_name>
 # 设置 auto_close 为 false，容器不会自动停止
 nerdctl run -d \
   --runtime io.containerd.mica.v2 \
-  --network host \
+  --network=none \
   -l org.openeuler.micrun.container.auto_close=false \
   --name <container_name> \
   <image_name>:<tag>
@@ -444,17 +451,17 @@ nerdctl run -d \
 # 设置自动断开超时时间（秒）
 nerdctl run -d \
   --runtime io.containerd.mica.v2 \
-  --network host \
-  -l org.openeuler.micrun.container.auto_close_timeout=120s \
+  --network=none \
+  -l org.openeuler.micrun.container.auto_close_timeout=120 \
   --name <container_name> \
   <image_name>:<tag>
 
 # 组合多个注解
 nerdctl run -d \
   --runtime io.containerd.mica.v2 \
-  --network host \
+  --network=none \
   -l org.openeuler.micrun.container.auto_close=false \
-  -l org.openeuler.micrun.container.auto_close_timeout=300s \
+  -l org.openeuler.micrun.container.auto_close_timeout=300 \
   --name <container_name> \
   <image_name>:<tag>
 
@@ -469,14 +476,14 @@ nerdctl inspect <container_name> --format '{{json .Config.Labels}}' | grep micru
 # 注意：这种方式需要在一个交互式终端中运行
 nerdctl run -it --rm \
   --runtime io.containerd.mica.v2 \
-  --network host \
+  --network=none \
   <image_name>:<tag>
 
 # 创建 TTY 容器（后台运行）
 # 注意：使用 -d 和 -t 组合时，容器会立即返回但保持运行
 nerdctl run -d -t \
   --runtime io.containerd.mica.v2 \
-  --network host \
+  --network=none \
   --name <container_name> \
   <image_name>:<tag>
 ```
@@ -527,14 +534,15 @@ nerdctl attach <container_id>
 
 **命名空间说明**：
 - `ctr` 默认使用 `default` 命名空间
-- `nerdctl` 默认使用 `k8s.io` 命名空间
-- 两者创建的容器互相不可见，需要用 `ctr -n k8s.io` 来查看 nerdctl 创建的容器
+- `nerdctl` 在此 openEuler Embedded 环境中默认使用 `default` 命名空间（与标准 nerdctl 不同，标准版本默认使用 `k8s.io`）
+- 可以用 `ctr -n <namespace>` 或 `nerdctl -n <namespace>` 来指定命名空间
+- 使用 `ctr namespace ls` 或 `nerdctl namespace ls` 查看所有命名空间
 
 ---
 
 ## 步骤 6：（可选）接入`Kubernetes`集群
 
-> **详细指南**：完整的 Kubernetes 云边协同部署指南，请参考 **[Kubernetes 集成指南](k8s-integration.md)**。
+> **详细指南**：完整的 Kubernetes 云边协同部署指南，请参考 **[Kubernetes 集成指南](user/kubernetes.md)**。
 
 本节简要介绍 Kubernetes 集成的概念。完整的部署步骤、配置示例和故障排查，请查看专门的集成文档。
 
@@ -549,25 +557,21 @@ nerdctl attach <container_id>
 ### 6.2 MicRun 在 Kubernetes 中的角色
 
 ```
-云侧（K3s Server）          边侧（K3s Agent + MicRun）
-┌──────────────┐           ┌──────────────────────────┐
-│ Kubernetes   │           │  containerd              │
-│ API Server   │◄──────────┤  ┌────────────────────┐  │
-│              │  管理接口  │  │ MicRun Runtime     │  │
-│  Scheduler   │           │  │ (Shim v2)          │  │
-│              │           │  └────────────────────┘  │
-└──────────────┘           │  ┌────────────────────┐  │
-                           │  │ RTOS Container     │  │
-                           │  │ (Zephyr/UniProton) │  │
-                           │  └────────────────────┘  │
-                           └──────────────────────────┘
+  Cloud - K3s Server                  Edge - K3s Agent + MicRun
+┌─────────────────────┐              ┌───────────────────────────┐
+│  Kubernetes API     │◄────────────►│  containerd               │
+│  Server + Scheduler │  Management  │  ┌─────────────────────┐  │
+│                     │     API      │  │ MicRun Runtime      │  │
+└─────────────────────┘              │  └─────────────────────┘  │
+                                     │  ┌─────────────────────┐  │
+                                     │  │ RTOS Container      │  │
+                                     │  └─────────────────────┘  │
+                                     └───────────────────────────┘
 ```
 
 **关键概念**：
 - **RuntimeClass**：Kubernetes 资源，声明 MicRun 为容器运行时
 - **K3s**：轻量级 Kubernetes 发行版，适合边缘场景
-- **云侧**：运行 K3s Server，提供管理 API
-- **边侧**：运行 K3s Agent + containerd + MicRun，实际运行 RTOS 容器
 
 ### 6.3 快速体验
 
@@ -576,7 +580,7 @@ nerdctl attach <container_id>
 2. 有两台机器（或虚拟机）：一台作为云侧，一台作为边侧
 3. 网络互通
 
-**核心步骤**（详细步骤请参考 [Kubernetes 集成指南](k8s-integration.md)）：
+**核心步骤**（详细步骤请参考 [Kubernetes 集成指南](user/kubernetes.md)）：
 
 1. **云侧部署**：安装 K3s Server
    ```bash
@@ -609,7 +613,7 @@ nerdctl attach <container_id>
 ### 6.4 学习路径
 
 - **新手**：建议先完成步骤 1-5，熟悉 MicRun 基本用法后再尝试 Kubernetes 集成
-- **有经验用户**：直接参考 [Kubernetes 集成指南](k8s-integration.md) 进行完整部署
+- **有经验用户**：直接参考 [Kubernetes 集成指南](user/kubernetes.md) 进行完整部署
 - **生产环境**：需要考虑高可用、监控、安全等，详见集成指南的高级用法章节
 
 ### 6.5 常见问题
@@ -621,10 +625,10 @@ A：不是必须的。MicRun 兼容标准 Kubernetes（1.28+），但 K3s 更轻
 A：可以。K3s 支持单节点模式，云侧和边侧可以在同一台机器上运行（仅用于测试）。
 
 **Q：如何监控 RTOS 容器状态？**
-A：使用 `kubectl get pods` 和 `kubectl describe pod` 查看。详细日志在边侧的 `/var/log/mica/mica-runtime.log`。
+A：使用 `kubectl get pods` 和 `kubectl describe pod` 查看。详细日志在边侧的 `/var/log/mica/mica-runtime.log`（如果日志目录不存在，请先创建：`sudo mkdir -p /var/log/mica`）。
 
 **Q：Pod 无法启动怎么办？**
-A：参考 [Kubernetes 集成指南 - 故障排查](k8s-integration.md#故障排查) 章节，涵盖了常见问题和解决方法。
+A：参考 [Kubernetes 集成指南 - 故障排查](user/kubernetes.md#故障排查) 章节，涵盖了常见问题和解决方法。
 
 ---
 
@@ -632,23 +636,15 @@ A：参考 [Kubernetes 集成指南 - 故障排查](k8s-integration.md#故障排
 
 ### Q：`micran`和`micrun`有什么区别？
 
-**A**：`micran`是过去的名称，现在统一使用`micrun`。如果文档中看到`micran`，应该改为`micrun`。
+**A**：`micran`是旧名称，现在统一使用`micrun`。
 
 ### Q：为什么需要`-t`参数？
 
-**A**：`-t`（`--tty`）为容器分配伪终端，这对于`RTOS`容器非常重要：
-- 支持交互式`shell`
-- 支持终端窗口大小调整
-- 支持通过输入 "exit" 命令退出容器
+**A**：`-t`为容器分配伪终端，支持交互式操作和 `exit` 命令退出。
 
 ### Q：如何退出 RTOS 容器？
 
-**A**：在 RTOS 交互式 shell 中输入 `exit` 命令并按回车：
-- Shim 会检测到 "exit" 命令
-- 触发容器停止（状态变为 STOPPED）
-- **重要**：Shim 继续运行，等待后续 API 调用
-
-要完全清理容器和 shim，需要显式执行：
+**A**：在容器中输入 `exit` 命令。完全清理需要：
 ```bash
 ctr task delete <container_name>
 ctr container delete <container_name>
@@ -656,79 +652,30 @@ ctr container delete <container_name>
 
 ### Q：镜像导入后如何查看完整名称？
 
-**A**：运行`ctr image ls`，镜像名称格式为：
-```
-<registry>/<image-name>:<tag>
-```
-例如：`localhost:5000/mica-zephyr-app:xen-0.1`
+**A**：运行 `ctr image ls`，格式为 `<registry>/<image-name>:<tag>`
 
 ### Q：如何调试容器启动问题？
 
 **A**：
-1. 查看 MicRun 日志：`tail -f /var/log/mica/mica-runtime.log`
-2. 查看`containerd`日志：`journalctl -u containerd -f`
-3. 使用`ctr task metrics <container_id>`查看容器状态
+1. 查看 MicRun 日志：`tail -f /var/log/mica/mica-runtime.log`（需先创建目录）
+2. 查看 containerd 日志：`journalctl -u containerd -f`
 
 ### Q：遇到 `ctr: task xxx: already exists` 错误怎么办？
 
-**A**：这个错误表示 containerd 认为该容器的 task 还在运行。常见原因和解决方法：
-
-#### 场景 1：手动使用 `xl destroy` 销毁了容器
-
-如果您手动使用 `xl destroy` 销毁了 Xen domain，但 containerd 的 task 元数据仍然存在，需要手动清理：
+**A**：这表示 containerd 认为容器的 task 还在运行。解决方法：
 
 ```bash
-# 1. 查看当前状态
-ctr task ls              # 检查 task 状态
-xl list                 # 检查 Xen domain 状态
-
-# 2. 清理 containerd 状态
+# 方法1：强制删除 task（大多数情况有效）
 ctr task delete -f <container_name>
 ctr container delete <container_name>
 
-# 3. 重新启动容器
-ctr container create --runtime io.containerd.mica.v2 \
-  -t <image> <container_name>
-ctr task start -d <container_name>
-```
-
-#### 场景 2：shim 进程异常退出
-
-如果 shim 进程异常退出，但 task 元数据还存在：
-
-```bash
-# 1. 杀掉残留的 shim 进程
-killall -9 containerd-shim-mica-v2
-
-# 2. 清理 task 和 container
-ctr task delete -f <container_name>
-ctr container delete <container_name>
-
-# 3. 清理状态文件
-rm -rf /run/containerd/io.containerd.runtime.v2.task/default/<container_name>
-
-# 4. 重新创建和启动
-```
-
-#### 场景 3：容器状态不一致
-
-如果 Xen domain、shim 进程和 containerd task 三者状态不一致，最彻底的清理方法：
-
-```bash
-# 停止并删除所有相关资源
+# 方法2：彻底清理（如果方法1无效）
 xl destroy <container_name> 2>/dev/null
 killall -9 containerd-shim-mica-v2 2>/dev/null
 ctr task delete -f <container_name> 2>/dev/null
 ctr container delete <container_name> 2>/dev/null
 rm -rf /run/containerd/io.containerd.runtime.v2.task/default/<container_name>
-
-# 重新开始
-ctr container create --runtime io.containerd.mica.v2 \
-  -t <image> <container_name>
-ctr task start -d <container_name>
 ```
-
-**提示**：大多数情况下，`ctr task delete -f` 就能解决问题。如果问题持续，使用场景3的彻底清理方法。
 
 ---
 

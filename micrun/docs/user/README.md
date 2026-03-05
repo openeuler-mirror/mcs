@@ -15,3 +15,4 @@
 - [快速入门](../quick-start.md) - MicRun 快速入门教程
 - [注解参考](../reference/annotations.md) - 容器注解完整列表
 - [配置参考](../reference/configuration.md) - 运行时配置说明
+- [API 参考](../reference/api-reference.md) - API 接口说明

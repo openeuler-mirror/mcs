@@ -21,12 +21,14 @@
 
 ### 查看 Sandbox 状态
 
+> **依赖**: 以下命令使用 `jq` 格式化 JSON 输出。如未安装，可使用 `sudo apt install jq` 或 `sudo yum install jq` 安装，或移除 `| jq` 直接查看原始 JSON。
+
 ```bash
 # 列出所有 Sandbox
-ls -la /var/lib/micrun/sandboxes/
+ls -la /run/micrun/sandbox/
 
 # 查看特定 Sandbox 状态
-cat /var/lib/micrun/sandboxes/<sandbox-id>/state.json | jq
+cat /run/micrun/sandbox/<sandbox-id>/state.json | jq
 ```
 
 ### 查看 FIFO 状态
@@ -109,7 +111,7 @@ ctr run --runtime io.containerd.mica.v2 localhost:5000/rtos:latest test
 
 3. **检查状态文件**
    ```bash
-   cat /var/lib/micrun/sandboxes/<container-id>/state.json
+   cat /run/micrun/sandbox/<container-id>/state.json
    ```
 
 #### 解决方案
@@ -118,7 +120,7 @@ ctr run --runtime io.containerd.mica.v2 localhost:5000/rtos:latest test
 |------|----------|
 | 固件路径错误 | 修正 `firmware_path` 注解 |
 | 缺少权限 | 确保用户有访问 `/dev/ttyRPMSG*` 的权限 |
-| Sandbox 状态不一致 | 删除 `/var/lib/micrun/sandboxes/<id>/` 后重试 |
+| Sandbox 状态不一致 | 删除 `/run/micrun/sandbox/<id>/` 后重试 |
 
 ---
 
@@ -177,7 +179,7 @@ ctr task status <container-id>
 
 2. **检查状态文件**
    ```bash
-   cat /var/lib/micrun/sandboxes/<container-id>/state.json | jq '.state'
+   cat /run/micrun/sandbox/<container-id>/state.json | jq '.state'
    ```
 
 3. **检查 containerd 连接**
@@ -269,7 +271,7 @@ ctr container delete <container-id>
 
 1. **检查当前状态**
    ```bash
-   cat /var/lib/micrun/sandboxes/<container-id>/state.json | jq '.state.state'
+   cat /run/micrun/sandbox/<container-id>/state.json | jq '.state.state'
    ```
 
 2. **检查 shim 是否仍在运行**
@@ -286,7 +288,8 @@ ctr task kill <container-id>
 
 # 方法 2: 如果 shim 已崩溃，手动清理
 xl destroy <container-id>
-rm -rf /var/lib/micrun/sandboxes/<container-id>/
+rm -rf /run/micrun/sandbox/<container-id>/
+rm -rf /run/micrun/containers/<container-id>/
 ctr task delete -f <container-id>
 ctr container delete <container-id>
 ```
@@ -353,7 +356,7 @@ failed to pin vcpu: invalid argument
 
 1. **检查 cpuset 配置**
    ```bash
-   cat /var/lib/micrun/sandboxes/<container-id>/state.json | jq '.config.container_configs'
+   cat /run/micrun/sandbox/<container-id>/state.json | jq '.config.container_configs'
    ```
 
 2. **检查主机 CPU 数量**
@@ -425,13 +428,13 @@ make run
 
 ```bash
 # 查看完整状态
-cat /var/lib/micrun/sandboxes/<id>/state.json | jq '.'
+cat /run/micrun/sandbox/<id>/state.json | jq '.'
 
 # 查看状态
-cat /var/lib/micrun/sandboxes/<id>/state.json | jq '.state'
+cat /run/micrun/sandbox/<id>/state.json | jq '.state'
 
 # 查看配置
-cat /var/lib/micrun/sandboxes/<id>/state.json | jq '.config'
+cat /run/micrun/sandbox/<id>/state.json | jq '.config'
 ```
 
 ### 清理残留资源
@@ -451,10 +454,10 @@ ctr task delete -f $CONTAINER_ID 2>/dev/null
 ctr container delete $CONTAINER_ID 2>/dev/null
 
 # 4. 删除 Sandbox 状态
-rm -rf /var/lib/micrun/sandboxes/$CONTAINER_ID
+rm -rf /run/micrun/sandbox/$CONTAINER_ID
 
-# 5. 删除容器缓存
-rm -rf /var/lib/micrun/containers/$CONTAINER_ID
+# 5. 删除容器状态
+rm -rf /run/micrun/containers/$CONTAINER_ID
 
 echo "Cleanup complete for $CONTAINER_ID"
 ```
@@ -487,7 +490,6 @@ echo "Cleanup complete for $CONTAINER_ID"
 
 ## 相关文档
 
-- [注解参考手册](./annotations-reference.md) - 注解配置
-- [API 参考手册](./api-reference.md) - API 接口
-- [Sandbox 状态验证](./sandbox-state-validation.md) - 状态管理
-- [IO 系统设计](./io/io-design.md) - IO 系统详细设计
+- [注解参考手册](../reference/annotations.md) - 注解配置
+- [API 参考手册](../reference/api-reference.md) - API 接口
+- [配置参考](../reference/configuration.md) - 运行时配置说明

@@ -23,8 +23,6 @@
 |----|------|
 | `zephyr` | Zephyr RTOS |
 | `uniproton` | UniProton RTOS (默认) |
-| `liteos` | Huawei LiteOS |
-| `linux` | Linux 容器 |
 
 **示例**：
 ```yaml
@@ -80,12 +78,13 @@ metadata:
 |------|-----|
 | 类型 | 整数 |
 | 单位 | MiB |
-| 默认值 | `16` |
+| 默认值 | 32 |
 
 **说明**：
 - 这是容器的**预留内存**（memory reservation）
 - 实际分配的内存不会低于此值
 - 如果 OCI spec 中设置了 `memory.reservation`，会覆盖此注解
+- 可通过运行时配置 `container_minmem` 覆盖默认值
 
 **示例**：
 ```yaml
@@ -186,7 +185,7 @@ metadata:
 |------|-----|
 | 类型 | 字符串 |
 | 默认值 | 主机 Hypervisor 类型 |
-| 可选值 | `xen`, `openamp`, `acrn` |
+| 可选值 | `xen`, `baremetal` |
 
 **说明**：
 - 如果指定的类型与主机不匹配，容器创建会失败
@@ -404,11 +403,11 @@ metadata:
 
 ## 内部注解
 
-以下注解由 MicRun 内部使用，通常不需要手动设置：
+以下注解由 MicRun 内部使用，通常不需要手动设置
 
 | 注解 | 说明 |
 |------|------|
-| `org.openeuler.micrun.pkg.oci.bundle_path` | OCI bundle 路径 |
+| `org.openeuler.micrun.pkg.oci.bundle_path` | OCI bundle 路径（读取 OCI spec） |
 | `org.openeuler.micrun.pkg.oci.container_type` | 容器类型 |
 | `org.openeuler.micrun.config_path` | Sandbox 配置路径 |
 
@@ -490,7 +489,7 @@ nerdctl run --runtime io.containerd.mica.v2 \
 
 4. **路径解析**：固件和配置文件路径相对于容器 rootfs (`<bundle>/rootfs/`)
 
-5. **资源限制**：OCI spec 中的资源限制（`resources.limits`）与注解配置会互相影响，详见 [资源映射文档](./resource-design.md)
+5. **资源限制**：OCI spec 中的资源限制（`resources.limits`）与注解配置会互相影响，详见 [资源映射文档](./resources.md)
 
 6. **超时机制使用注意**：
    - ⚠️ `auto_close` 是布尔值注解，**不要**使用数字（如 `auto_close=60`）

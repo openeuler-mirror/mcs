@@ -9,9 +9,11 @@
 ### 必需组件
 
 - **K3s 或 Kubernetes**: 1.28+ 版本
-- **kubectl**: 命令行工具
+- **kubectl**: 命令行工具（需在 K3s Master 节点上可用）
 - **containerd**: 带有 MicRun 运行时
 - **网络**: 节点间网络互通
+
+> **注意**: 默认测试环境（root@192.168.7.2）是单节点环境，不包含 K3s。运行 K3s 测试需要独立的 K3s 集群环境。
 
 ### 环境配置
 
@@ -242,6 +244,5 @@ ctr image import mica-uniproton-app-xen-0.1.tar.gz
 
 ## 参考资料
 
-- [K8s 集成文档](../../docs/k8s-integration.md)
-- [测试框架指南](../../docs/test-framework.md)
+- [Kubernetes 集成](../../docs/user/kubernetes.md)
 - [RuntimeClass 设计](https://kubernetes.io/docs/concepts/containers/runtime-class/)
