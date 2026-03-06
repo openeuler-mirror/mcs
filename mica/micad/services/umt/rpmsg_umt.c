@@ -77,6 +77,7 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
 	struct rpmsg_umt_service *umt_svc;
 	char message[] = "first message from umt_service!";
 	enum mcs_km_pedestal_type mcs_ped;
+	umt_send_msg_t msg = {0};
 	pthread_mutexattr_t attr;
 
 	umt_svc = malloc(sizeof(struct rpmsg_umt_service));
@@ -103,12 +104,24 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
     pthread_mutex_init(&umt_svc->lock, NULL);
 	metal_list_add_tail(&g_umt_list, &umt_svc->node);
 
-	/* Send data using core_msg_mem_info->phy_addr so client OS can init g_umt_send_data_addr.
-	 * Map pedestal_type to mcs_km_pedestal_type: HETERO -> RISCV, else -> BAREMETAL */
-	mcs_ped = (client->ped == HETERO) ? MCS_KM_PED_RISCV : MCS_KM_PED_BAREMETAL;
-	ret = send_data_to_rtos(message, sizeof(message), 0, mcs_ped);
-	if (ret)
-		goto free_ept;
+	/*
+	 * Send initial message to notify client OS.
+	 * For BARE_METAL and HETERO: use send_data_to_rtos (requires /dev/mcs)
+	 * For JAILHOUSE and XEN: use rpmsg_send directly (no /dev/mcs dependency)
+	 */
+	if (client->ped == BARE_METAL || client->ped == HETERO) {
+		mcs_ped = (client->ped == HETERO) ? MCS_KM_PED_RISCV : MCS_KM_PED_BAREMETAL;
+		ret = send_data_to_rtos(message, sizeof(message), 0, mcs_ped);
+		if (ret)
+			goto free_ept;
+	} else {
+		/* JAILHOUSE or XEN: use rpmsg_send directly */
+		msg.data_len = sizeof(message);
+		msg.phy_addr = 0x0;
+		ret = rpmsg_send(&umt_svc->ept, &msg, sizeof(msg));
+		if (ret)
+			goto free_ept;
+	}
 
 	/* 初始化共享内存 */
 	umt_svc->process_shared_memory = init_process_shared_memory(0);
