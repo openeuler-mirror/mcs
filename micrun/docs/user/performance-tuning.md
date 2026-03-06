@@ -15,12 +15,12 @@
 metadata:
   annotations:
     org.openeuler.micrun.runtime.enable_vcpus_pinning: "true"
+    org.openeuler.micrun.runtime.vcpu_pcpu_binding: "true"
 spec:
   containers:
   - resources:
       limits:
         cpu: "2"
-        cpu.cpus: "0-1"  # 绑定到 CPU 0 和 1
 ```
 
 **适用场景**：
@@ -134,18 +134,6 @@ MicRun 默认使用 epoll 进行 IO 等待，空闲时 CPU 使用率接近 0%。
 top -p $(pgrep containerd-shim-mica-v2)
 ```
 
-### NUL 字节过滤
-
-启用 NUL 字节过滤可以减少不必要的处理：
-
-```yaml
-metadata:
-  annotations:
-    org.openeuler.micrun.runtime.filter_nul: "true"
-```
-
-**默认值**：已启用
-
 ## 网络性能
 
 ### 禁用网络命名空间
@@ -197,6 +185,7 @@ kind: Pod
 metadata:
   annotations:
     org.openeuler.micrun.runtime.enable_vcpus_pinning: "true"
+    org.openeuler.micrun.runtime.vcpu_pcpu_binding: "true"
     org.openeuler.micrun.runtime.static_resource: "true"
     org.openeuler.micrun.container.min_memory_mb: "64"
 spec:
@@ -206,18 +195,24 @@ spec:
     resources:
       limits:
         cpu: "2"
-        cpu.cpus: "4-5"
         memory: "128Mi"
 ```
 
 #### 场景 2：高密度部署
+
+需要在运行时配置文件中启用共享 CPU 池：
+
+```ini
+# /etc/mica/micrun/micrun.conf
+[Resource]
+shared_cpu_pool = true
+```
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
   annotations:
-    org.openeuler.micrun.runtime.shared_cpu_pool: "true"
     org.openeuler.micrun.container.min_memory_mb: "16"
 spec:
   runtimeClassName: micrun
@@ -262,17 +257,11 @@ ctr tasks metrics <container-id>
 free -h
 lscpu
 xl info
-
-# IO 统计
-iotop
 ```
 
 ### 性能分析
 
 ```bash
-# CPU 性能
-perf top -p $(pgrep containerd-shim-mica-v2)
-
 # 内存分析
 pmap $(pgrep containerd-shim-mica-v2)
 
@@ -303,6 +292,5 @@ strace -p $(pgrep containerd-shim-mica-v2)
 
 ## 相关文档
 
-- [配置参考手册](./configuration.md) - 完整配置选项
-- [资源映射设计](./resource-design.md) - 资源限制规则
+- [配置参考手册](../reference/configuration.md) - 完整配置选项
 - [故障排查指南](./troubleshooting.md) - 性能问题排查

@@ -92,27 +92,25 @@ T4: 用户执行: ctr task ls
 Containerd通过**TTRPC socket**与shim通信：
 
 ```
-containerd                    shim
-    │                            │
-    │ ──────────────────────────> │ Connect to socket
-    │                            │
-    │<────── StateResponse ──────│ State()
-    │                            │
-    │ ──────────────────────────> │ Start()
-    │                            │
-    │<────── StartResponse ──────│
-    │                            │
-    │    [Shim崩溃...]
-    │
-    │ ──────────────────────────> │ Connect (失败)
-    │                            │
-    │ containerd检测到shim丢失   │
-    │                            │
-    │ ─────── shim start ────────> │ 重新启动shim
-    │                            │
-    │ ──────────────────────────> │ Connect (重试)
-    │                            │
-    │<────── StateResponse ──────│ State() - 必须返回正确状态！
+containerd                              shim
+    │                                    │
+    │ ───── Connect to socket ─────────►│
+    │                                    │
+    │◄────── StateResponse ─────────────│ State()
+    │                                    │
+    │ ───── Start() ───────────────────►│
+    │◄────── StartResponse ─────────────│
+    │                                    │
+    │        [Shim 崩溃...]              │
+    │                                    │
+    │ ───── Connect (失败) ─────────────►│
+    │                                    │
+    │    containerd 检测到 shim 丢失     │
+    │                                    │
+    │ ───── shim start ────────────────►│ 重新启动 shim
+    │                                    │
+    │ ───── Connect (重试) ────────────►│
+    │◄────── StateResponse ─────────────│ State() - 必须返回正确状态！
 ```
 
 **关键点**：Containerd期望重启后的shim能够**无缝**接管现有容器，返回正确的状态信息。
@@ -161,17 +159,18 @@ func (s *shimService) State(ctx context.Context, r *taskAPI.StateRequest) (*task
 - Shim应该独立管理容器状态
 
 ```
-标准架构：
-┌─────────────┐      API       ┌─────────────┐
-│ Containerd  │ ←────────────→ │    Shim     │
-│             │                │             │
-│  Task API   │                │  管理容器    │
-└─────────────┘                └─────────────┘
-                                    │
-                                    ↓
-                               ┌─────────────┐
-                               │  RTOS/容器   │
-                               └─────────────┘
+Standard Architecture:
+
+┌─────────────┐         API          ┌─────────────┐
+│ Containerd  │◄────────────────────►│    Shim     │
+│             │                      │             │
+│  Task API   │                      │  Containers │
+└─────────────┘                      └──────┬──────┘
+                                            │
+                                            ▼
+                                     ┌─────────────┐
+                                     │ RTOS/VM     │
+                                     └─────────────┘
 ```
 
 **Shim拥有状态的权威性**：

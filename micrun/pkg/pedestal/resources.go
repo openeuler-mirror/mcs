@@ -78,7 +78,7 @@ func HostCPUCounts() HostCPUInventory {
 // ClientCPUCapacity returns the number of CPUs micrun can hand to RTOS clients.
 // Baremetal pedestals keep Linux visibility of all CPUs
 // (docs/resource-management-comparison.md:7-12), so we subtract the reserved set
-// recorded via SetBaremetalReservedCPUs instead of re-reading /proc/cpuinfo.
+// recorded via setBaremetalReservedCPUs instead of re-reading /proc/cpuinfo.
 func ClientCPUCapacity() uint32 {
 	inv := HostCPUCounts()
 	switch Host.Type() {

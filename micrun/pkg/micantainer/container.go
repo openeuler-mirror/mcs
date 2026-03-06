@@ -65,7 +65,7 @@ type ContainerConfig struct {
 	// VCPUNum is the number of virtual CPUs. Matches the configured CPU capacity when not pinning; otherwise, equals the size of the cpuset.
 	VCPUNum uint32 `json:"vcpu_num"`
 	// PCPUNum is the number of allocated physical CPUs.
-	// TODO: Implement for openAMP and Jailhouse cases.
+	// TODO: Implement for baremetal and Jailhouse cases.
 	PCPUNum int `json:"ncpu"`
 	// MaxVcpuNum is the pedestal max virtual CPUs configured for this container.
 	MaxVcpuNum uint32 `json:"max_vcpu_num"`
@@ -1180,7 +1180,7 @@ func (c *Container) stats() (*ContainerStats, error) {
 
 	// CPU: sum per-vCPU consumed time(s) -> microseconds
 	var totalUsec uint64
-	if vcpuInfo, err := ped.XlVcpuList(); err == nil && vcpuInfo != nil {
+	if vcpuInfo, err := ped.Host.VCPUList(); err == nil && vcpuInfo != nil {
 		var entries []ped.VCPUEntry
 
 		if v, ok := vcpuInfo.DomainVCPUMap[c.id]; ok {

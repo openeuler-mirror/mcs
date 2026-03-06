@@ -62,7 +62,7 @@ func (xen) Resume(clientID string) error {
 
 // StateQuerier implementation
 func (xen) ClientState(clientID string) (string, error) {
-	return XenStoreReadDomainState(clientID)
+	return xenStoreReadDomainState(clientID)
 }
 
 // MemoryManager implementation
@@ -77,10 +77,10 @@ func (xen) SetMaxMemory(clientID string, memMB uint32) error {
 // Xen-specific operations (outside interface)
 // DomainID returns the Xen domain ID for a client.
 func (xen) DomainID(clientID string) (int, error) {
-	return DomainID(clientID)
+	return domainID(clientID)
 }
 
 // SetVCPUCount sets the number of VCPUs for a domain.
 func (xen) SetVCPUCount(clientID string, count uint32) error {
-	return XlVcpuSet(clientID, int(count))
+	return xlVcpuSet(clientID, int(count))
 }

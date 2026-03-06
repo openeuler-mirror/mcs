@@ -37,8 +37,8 @@ func computeHostPed() PedType {
 		return Xen
 	}
 
-	if detectACRN() {
-		return ACRN
+	if detectBaremetal() {
+		return Baremetal
 	}
 	return Unsupported
 }
@@ -96,7 +96,10 @@ func checkXLCommand() error {
 	return nil
 }
 
-func detectACRN() bool {
+// detectBaremetal detects if baremetal mode is available
+// Currently returns false as baremetal is not yet supported
+func detectBaremetal() bool {
+	// TODO: implement baremetal detection when supported
 	return false
 }
 

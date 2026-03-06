@@ -31,13 +31,13 @@ func handleMicaUpdateWithXl(id string, opts ...string) error {
 		if err != nil {
 			return fmt.Errorf("invalid memory value %s: %w", value, err)
 		}
-		return pedestal.XlMemSet(id, memMB)
+		return pedestal.Host.SetMemory(id, uint32(memMB))
 	case "MaxMem":
 		memMB, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("invalid max memory value %s: %w", value, err)
 		}
-		return pedestal.XlMemMax(id, memMB)
+		return pedestal.Host.SetMaxMemory(id, uint32(memMB))
 	case "CPUWeight":
 		weight, err := strconv.Atoi(value)
 		if err != nil {
@@ -47,19 +47,19 @@ func handleMicaUpdateWithXl(id string, opts ...string) error {
 			log.Debugf("CPU weight must be >=1, got %d, forcing default 256", weight)
 			weight = 256
 		}
-		return pedestal.XlSchedCredit2(id, weight, 0)
+		return pedestal.Host.SetCPUWeight(id, uint32(weight))
 	case "CPUCpacity":
 		capacity, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("invalid CPU capacity value %s: %w", value, err)
 		}
-		return pedestal.XlSchedCredit2(id, 0, capacity)
+		return pedestal.Host.SetCPUCapacity(id, uint32(capacity))
 	case "VCPU":
 		vcpuCount, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("invalid VCPU count value %s: %w", value, err)
 		}
-		return pedestal.XlVcpuSet(id, vcpuCount)
+		return pedestal.Host.SetVCPUCount(id, uint32(vcpuCount))
 	case "CPU":
 		log.Infof("PCPU constraint (%s) not implemented in xl fallback, skipping", value)
 		return nil

@@ -8,10 +8,10 @@ pedestal = "xen"
 conf = "{{xen_image_path}}"
 pedestal_version = "4.18.2"
 
-[pedestal.openamp]
-pedestal = "openamp"
+[pedestal.baremetal]
+pedestal = "baremetal"
 conf = "firmware.elf"
-pedestal_version = "2023.04+"
+pedestal_version = "1.0+"
 
 [os.zephyr]
 os = "zephyr"
@@ -33,7 +33,7 @@ uniproton = "{{uniproton_version}}"
 
 [default-compatibility]
 # Fallback compatibility when OS-specific doesn't exist
-openamp = "2023.04+"
+baremetal = "1.0+"
 zephyr = "3.7.1"
 uniproton = "latest"
 

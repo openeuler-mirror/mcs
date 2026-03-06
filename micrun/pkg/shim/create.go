@@ -158,7 +158,7 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 		if sandboxState == cntr.StateRunning {
 			// Check if XEN guest is actually running by querying xl list
 			// This is more reliable than checking socket files
-			xenState, err := pedestal.XenStoreReadDomainState(s.sandbox.SandboxID())
+			xenState, err := pedestal.Host.DomainState(s.sandbox.SandboxID())
 			guestRunning := (err == nil && xenState == "running")
 			log.Infof("[SHIM] XEN guest check: id=%s, xenState=%q, running=%v", s.sandbox.SandboxID(), xenState, guestRunning)
 

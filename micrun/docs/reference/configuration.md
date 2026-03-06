@@ -18,7 +18,7 @@ MicRun 支持多种配置方式，按优先级从高到低：
 | 1 | `MICRUN_CONF_FILE` 环境变量指定的文件 |
 | 2 | `MICRUN_CONF_DIR` 环境变量指定的目录（读取所有 .conf/.toml 文件） |
 | 3 | `/etc/mica/micrun/conf.d/*.conf` (drop-in 目录) |
-| 4 | `/etc/mica/micrun/config.toml` (默认配置文件) |
+| 4 | `/etc/mica/micrun/micrun.conf` (默认配置文件) |
 
 ### 配置文件格式
 
@@ -37,33 +37,33 @@ MicRun 支持多种配置方式，按优先级从高到低：
 debug = false
 
 # 最大客户端数量
-max_client_num = 8
+max_client_number = 8
 
 # 默认固件路径
-default_firmware_path = /usr/local/share/mica/firmware.elf
+firmware_path = /usr/local/share/mica/firmware.elf
 
 [Resource]
 # 容器最大 vCPU 数
-max_container_vcpus = 4
+max_container_vcpu = 4
 
 # 容器最大内存 (MiB)
-max_container_mem_mb = 512
+container_maxmem = 512
 
 # 容器最小内存 (MiB)
-min_container_mem_mb = 32
+container_minmem = 32
 
 # 静态资源管理
-static_resource_management = false
+static_resource = false
 
-# 共享 CPU 池
-shared_cpu_pool = true
+# 共享 CPU 池（Xen平台）
+shared_cpu_pool = false
 
 # HugePage 支持
-hugepage_support = false
+hugepage_enable = false
 
 [Xen]
-# Mini vCPU 数量
-mini_vcpu_num = 1
+# Sandbox 最小 vCPU 数
+sandbox_minimum_vcpu = 1
 
 # Dom0 CPU 独占
 exclusive_dom0_cpu = false
@@ -73,6 +73,9 @@ image_path = /usr/local/share/mica/xen-image.bin
 
 # 辅助文件路径
 aux_file_path = /usr/local/share/mica/xen-aux.bin
+
+# 启用主机容器
+enable_host_container = false
 ```
 
 ### TOML 配置示例
@@ -80,19 +83,19 @@ aux_file_path = /usr/local/share/mica/xen-aux.bin
 ```toml
 [mica]
 debug = false
-max_client_num = 8
-default_firmware_path = "/usr/local/share/mica/firmware.elf"
+max_client_number = 8
+firmware_path = "/usr/local/share/mica/firmware.elf"
 
 [resource]
-max_container_vcpus = 4
-max_container_mem_mb = 512
-min_container_mem_mb = 32
-static_resource_management = false
-shared_cpu_pool = true
-hugepage_support = false
+max_container_vcpu = 4
+container_maxmem = 512
+container_minmem = 32
+static_resource = false
+shared_cpu_pool = false
+hugepage_enable = false
 
 [xen]
-mini_vcpu_num = 1
+sandbox_minimum_vcpu = 1
 exclusive_dom0_cpu = false
 image_path = "/usr/local/share/mica/xen-image.bin"
 aux_file_path = "/usr/local/share/mica/xen-aux.bin"
@@ -113,19 +116,20 @@ aux_file_path = "/usr/local/share/mica/xen-aux.bin"
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `debug` | 布尔 | `false` | 启用调试模式 |
-| `max_client_num` | 整数 | `8` | 最大客户端数量 |
-| `default_firmware_path` | 字符串 | - | 默认固件路径 |
+| `max_client_number` | 整数 | `0` (无限制) | 最大客户端数量（0表示无限制） |
+| `firmware_path` | 字符串 | - | 默认固件路径 |
+| `enable_host_container` | 布尔 | `false` | 启用主机容器 |
 
 ### Resource 节配置
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `max_container_vcpus` | 整数 | `4` | 容器最大 vCPU 数 |
-| `max_container_mem_mb` | 整数 | `512` | 容器最大内存 (MiB) |
-| `min_container_mem_mb` | 整数 | `32` | 容器最小内存预留 (MiB) |
-| `static_resource_management` | 布尔 | `false` | 静态资源管理（禁止动态更新） |
-| `shared_cpu_pool` | 布尔 | `true` | 共享 CPU 池模式 |
-| `hugepage_support` | 布尔 | `false` | 启用 HugePage 支持 |
+| `max_container_vcpu` | 整数 | `8` | 容器最大 vCPU 数（配置为0时使用默认值8） |
+| `container_maxmem` | 整数 | *系统相关* | 容器最大内存 (MiB)，默认使用系统内存高阈值 |
+| `container_minmem` | 整数 | `32` | 容器最小内存预留 (MiB) |
+| `static_resource` | 布尔 | *平台相关* | 静态资源管理（禁止动态更新），Baremetal平台默认为true，其他平台为false |
+| `shared_cpu_pool` | 布尔 | `false` | 共享 CPU 池模式（Xen cpupool管理） |
+| `hugepage_enable` | 布尔 | `false` | 启用 HugePage 支持（仅 Xen） |
 
 #### Static Resource Management
 
@@ -145,7 +149,7 @@ aux_file_path = "/usr/local/share/mica/xen-aux.bin"
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `mini_vcpu_num` | 整数 | `1` | 最小 vCPU 数量 |
+| `sandbox_minimum_vcpu` | 整数 | `1` | Sandbox 最小 vCPU 数量 |
 | `exclusive_dom0_cpu` | 布尔 | `false` | Dom0 CPU 独占 |
 | `image_path` | 字符串 | - | Xen 镜像路径 |
 | `aux_file_path` | 字符串 | - | Xen 辅助文件路径 |
@@ -170,7 +174,7 @@ metadata:
 export MICRUN_CONF_FILE=/etc/mica/micrun/custom.conf
 ```
 
-优先级：`$MICRUN_CONF_FILE` > `$MICRUN_CONF_DIR` > `/etc/mica/micrun/conf.d/` > `/etc/mica/micrun/config.toml`
+优先级：`$MICRUN_CONF_FILE` > `$MICRUN_CONF_DIR` > `/etc/mica/micrun/conf.d/` > `/etc/mica/micrun/micrun.conf`
 
 ## Drop-in 目录
 
@@ -212,19 +216,21 @@ cat /proc/$(pgrep containerd-shim-mica-v2)/environ | tr '\0' '\n' | grep MICRUN
 ```ini
 [Mica]
 debug = false
-max_client_num = 16
+max_client_number = 16
+firmware_path = /usr/local/share/mica/firmware.elf
 
 [Resource]
-max_container_vcpus = 8
-max_container_mem_mb = 2048
-min_container_mem_mb = 64
-static_resource_management = true
-shared_cpu_pool = true
-hugepage_support = true
+max_container_vcpu = 8
+container_maxmem = 2048
+container_minmem = 64
+static_resource = true
+shared_cpu_pool = false
+hugepage_enable = true
 
 [Xen]
-mini_vcpu_num = 2
+sandbox_minimum_vcpu = 2
 exclusive_dom0_cpu = true
+image_path = /usr/local/share/mica/xen-image.bin
 ```
 
 ### 低资源配置
@@ -232,19 +238,21 @@ exclusive_dom0_cpu = true
 ```ini
 [Mica]
 debug = false
-max_client_num = 4
+max_client_number = 4
+firmware_path = /usr/local/share/mica/firmware.elf
 
 [Resource]
-max_container_vcpus = 2
-max_container_mem_mb = 256
-min_container_mem_mb = 16
-static_resource_management = false
+max_container_vcpu = 2
+container_maxmem = 256
+container_minmem = 16
+static_resource = false
 shared_cpu_pool = true
-hugepage_support = false
+hugepage_enable = false
 
 [Xen]
-mini_vcpu_num = 1
+sandbox_minimum_vcpu = 1
 exclusive_dom0_cpu = false
+image_path = /usr/local/share/mica/xen-image.bin
 ```
 
 ### 开发调试配置
@@ -252,28 +260,31 @@ exclusive_dom0_cpu = false
 ```ini
 [Mica]
 debug = true
-max_client_num = 4
+max_client_number = 4
+firmware_path = /usr/local/share/mica/firmware.elf
 
 [Resource]
-max_container_vcpus = 2
-max_container_mem_mb = 256
-min_container_mem_mb = 16
-static_resource_management = false
+max_container_vcpu = 2
+container_maxmem = 256
+container_minmem = 16
+static_resource = false
 shared_cpu_pool = false
-hugepage_support = false
+hugepage_enable = false
 
 [Xen]
-mini_vcpu_num = 1
+sandbox_minimum_vcpu = 1
 exclusive_dom0_cpu = false
+image_path = /usr/local/share/mica/xen-image.bin
 ```
 
 ## 日志配置
 
-日志配置位于 `/etc/mica/micrun/config.json`，由 logger 包读取：
+日志配置位于 `/etc/mica/micrun/config.json`，由 logger 包读取。
 
+ 配置结构:
 ```json
 {
-  "log": {
+  "Log": {
     "level": "info",
     "file": "/var/log/mica/mica-runtime.log",
     "color": false,
@@ -286,11 +297,11 @@ exclusive_dom0_cpu = false
 |--------|------|--------|------|
 | `level` | 字符串 | `info` | 日志级别 (debug, info, warn, error) |
 | `file` | 字符串 | `/var/log/mica/mica-runtime.log` | 日志文件路径 |
-| `color` | 布尔 | `false` | 是否启用颜色 |
+| `color` | 布尔 | `false` | 是否启用颜色输出 |
 | `caller` | 布尔 | `true` | 是否显示调用位置 |
 
 ## 相关文档
 
-- [注解参考手册](./annotations-reference.md) - 注解配置
-- [资源映射设计](./resource-design.md) - 资源限制规则
-- [故障排查指南](./troubleshooting.md) - 配置问题排查
+- [注解参考手册](./annotations.md) - 注解配置
+- [资源映射设计](./resources.md) - 资源限制规则
+- [故障排查指南](../user/troubleshooting.md) - 配置问题排查

@@ -99,7 +99,7 @@
 
 | 方法 | 返回类型 | 说明 |
 |------|----------|------|
-| `Type()` | `PedType` | 返回 Hypervisor 类型（Xen, OpenAMP, ACRN） |
+| `Type()` | `PedType` | 返回 Hypervisor 类型（Xen, Baremetal） |
 | `String()` | `string` | 返回字符串表示 |
 | `GeneratePedConf()` | `string` | 生成 Hypervisor 配置路径 |
 
@@ -168,9 +168,8 @@ CPU 调度操作（可选）：
 | 方法 | 参数 | 返回 | 说明 |
 |------|------|------|------|
 | `Start()` | - | `error` | 创建 FIFO，启动 Copier |
-| `Stop()` | - | `error` | 停止 Copier，关闭 FIFO |
+| `Stop()` | - | - | 停止 Copier，关闭 FIFO |
 | `Restart()` | - | `error` | 平滑切换到新 FIFO（支持 attach） |
-| `Close()` | - | `error` | 清理所有资源 |
 | `GetCopier()` | - | `*Copier` | 获取 Copier（设置回调） |
 
 #### 辅助函数
@@ -193,9 +192,9 @@ type Config struct {
     StderrFIFO string
 
     // TTY 接口（来自 RPMSG）
-    TTYIn  io.WriteCloser
-    TTYOut io.Reader
-    TTYErr io.Reader
+    TTYIn  io.WriteCloser  // stdin to TTY
+    TTYOut io.Reader       // stdout from TTY
+    TTYErr io.Reader       // stderr from TTY (optional)
 
     // 配置选项
     Terminal       bool
@@ -204,7 +203,7 @@ type Config struct {
     EventBus       *EventBus
     FilterNUL      bool
     ExecMode       bool
-    DetachKeys     string
+    DetachKeys     string  // detach key sequence (e.g., "ctrl-p,ctrl-q")
 }
 ```
 
@@ -222,11 +221,13 @@ type Config struct {
 
 | 方法 | 参数 | 返回 | 说明 |
 |------|------|------|------|
-| `SetTTYs(stdin, stdout, stderr)` | `WriteCloser, Reader, Reader` | - | 设置 TTY 句柄 |
-| `Start(ctx)` | `context.Context` | `error` | 启动数据复制 |
+| `SetTTYs(ttyIn, ttyOut, ttyErr)` | `io.WriteCloser, io.Reader, io.Reader` | - | 设置 TTY 句柄 |
+| `SetStdin(fifo)` | `io.ReadCloser` | - | 设置 stdin FIFO |
+| `SetStdout(fifo)` | `io.WriteCloser` | - | 设置 stdout FIFO |
+| `SetStderr(fifo)` | `io.WriteCloser` | - | 设置 stderr FIFO |
+| `SetStdoutFifoForEcho(stdout)` | `io.WriteCloser` | - | 设置 stdout FIFO 用于 TTY 模式本地回显 |
+| `Start()` | - | `error` | 启动数据复制 |
 | `Stop()` | - | `error` | 停止复制 |
-| `SetInterruptHandler(fn)` | `func(Signal)` | - | 设置中断处理器（用于 "exit" 命令检测，**非** Ctrl+C 信号） |
-| `SetDetachHandler(fn)` | `func()` | - | 设置 detach 处理器 |
 
 ### EventBus
 
@@ -254,7 +255,7 @@ type Config struct {
 |------|------|------|------|
 | `Subscribe(eventType)` | `EventType` | `EventSubscriber` | 订阅事件类型 |
 | `Publish(event)` | `Event` | - | 发布事件 |
-| `Close()` | - | - | 关闭 EventBus |
+| `Close()` | - | - | 关闭 EventBus（无返回值） |
 
 #### Event 结构
 
@@ -281,13 +282,15 @@ type Event struct {
 
 ### 容器状态
 
+容器状态使用以下状态常量：
+
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `StateDown` | `"down"` | 容器已退出 |
-| `StateCreated` | `"created"` | 容器已创建 |
-| `StateRunning` | `"running"` | 容器运行中 |
-| `StateStopped` | `"stopped"` | 容器已停止 |
-| `StatePaused` | `"paused"` | 容器已暂停 |
+| `StateReady` | `"ready"` | 已就绪 |
+| `StateRunning` | `"running"` | 运行中 |
+| `StateStopped` | `"stopped"` | 已停止 |
+| `StatePaused` | `"paused"` | 已暂停 |
+| `StateDown` | `"down"` | 已退出 |
 
 ## 使用示例
 
@@ -390,12 +393,10 @@ func example() {
         // 处理错误
     }
 
-    // 设置中断处理器（用于 "exit" 命令检测）
-    // 注意：这不会处理 Ctrl+C/SIGINT 信号，仅处理 "exit" 命令
-    session.GetCopier().SetInterruptHandler(func(sig syscall.Signal) {
-        log.Infof("Exit command detected, closing IO session")
-        // 触发容器退出流程
-    })
+    // 获取 Copier 用于后续操作
+    // Copier 提供了 SetTTYs、SetStdin、SetStdout、SetStderr 等方法
+    copier := session.GetCopier()
+    _ = copier // 通过 EventBus 监听事件来处理 IO 状态变化
 
     // ... 使用 IO ...
 
@@ -440,6 +441,6 @@ func example() {
 
 ## 相关文档
 
-- [注解参考手册](./annotations-reference.md) - 注解配置
-- [IO 系统设计](./io/io-design.md) - IO 系统详细设计
-- [资源映射设计](./resource-design.md) - 资源限制映射规则
+- [注解参考手册](./annotations.md) - 注解配置
+- [IO 系统设计](../internals/io-system.md) - IO 系统详细设计
+- [资源映射设计](./resources.md) - 资源限制映射规则

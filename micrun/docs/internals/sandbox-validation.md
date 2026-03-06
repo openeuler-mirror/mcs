@@ -9,7 +9,7 @@ MicRun 通过持久化存储和状态验证机制确保 Sandbox 的状态一致�
 ### 存储位置
 
 ```
-/var/lib/micrun/sandboxes/<sandbox-id>/state.json
+/run/micrun/sandbox/<sandbox-id>/state.json
 ```
 
 ### 存储结构
@@ -43,38 +43,26 @@ type SandboxStorage struct {
 
 | 状态 | 说明 | 允许的转换 |
 |------|------|-----------|
-| `StateCreating` | 创建中 | → `StateReady` |
-| `StateReady` | 已就绪，容器已创建但未启动 | → `StateRunning` |
-| `StateRunning` | 运行中 | → `StateStopped` |
+| `StateCreating` | 创建中 | → `StateStopped` |
+| `StateReady` | 已就绪，容器已创建但未启动 | → `StateRunning`, `StateStopped` |
+| `StateRunning` | 运行中 | → `StatePaused`, `StateStopped` |
 | `StateStopped` | 已停止 | → `StateRunning` (恢复) |
-| `StatePaused` | 已暂停 | → `StateRunning` (恢复) |
+| `StatePaused` | 已暂停 | → `StateRunning`, `StateStopped` |
 
 ### 状态转换规则
 
 ```
-┌───────────┐
-│ Creating  │  ──create──>  ┌───────────┐
-└───────────┘                │   Ready   │
-                             └─────┬─────┘
-                                   │
-                            start  │
-                                   ▼
-                             ┌───────────┐
-                    ┌───────│  Running  │◄─────┐
-                    │       └─────┬─────┘      │
-                    │             │            │
-                pause │           │ stop       │ resume
-                    │             ▼            │
-                    │       ┌───────────┐      │
-                    │       │  Stopped  │──────┘
-                    │       └───────────┘
-                    │             ▲
-                    │             │ delete
-                    │             │
-                    └──────> ┌─────────┐
-                              │Deleted  │
-                              └─────────┘
+Creating ──stop──► Stopped
+    │
+    ▼ (内部标准化)
+  Ready ──start──► Running ◄──resume── Paused
+              │         │                 ▲
+              │         └────pause────────┘
+              │
+              └────────stop──► Stopped ──resume──► Running
 ```
+
+**注意**：`StateCreating` 是过渡状态，在恢复时会自动标准化为 `StateReady`。
 
 ## 状态恢复机制
 
@@ -128,28 +116,34 @@ func (s *Sandbox) restore() error {
 ### 验证规则
 
 ```go
-func (s *SandboxState) Transition(from, to StateString) error {
-    // 允许的转换规则
-    switch from {
+func (s *StateString) transition(old StateString, new StateString) error {
+    if *s != old {
+        return fmt.Errorf("mismatched state: %s (expecting: %v)", *s, old)
+    }
+
+    switch *s {
     case StateCreating:
-        if to != StateReady {
-            return fmt.Errorf("invalid transition from Creating to %s", to)
+        if new == StateStopped {
+            return nil
         }
     case StateReady:
-        if to != StateRunning && to != StateStopped {
-            return fmt.Errorf("invalid transition from Ready to %s", to)
+        if new == StateRunning || new == StateStopped {
+            return nil
         }
     case StateRunning:
-        if to != StateStopped && to != StatePaused {
-            return fmt.Errorf("invalid transition from Running to %s", to)
+        if new == StatePaused || new == StateStopped {
+            return nil
         }
-    case StateStopped, StatePaused:
-        // 可以恢复到 Running 或被删除
-        if to != StateRunning && to != StateReady {
-            return fmt.Errorf("invalid transition from %s to %s", from, to)
+    case StatePaused:
+        if new == StateRunning || new == StateStopped {
+            return nil
+        }
+    case StateStopped:
+        if new == StateRunning {
+            return nil
         }
     }
-    return nil
+    return fmt.Errorf("cannot transition from state %v to %v", s, new)
 }
 ```
 
@@ -215,29 +209,29 @@ func (s *Sandbox) Stop(ctx context.Context, force bool) error {
 当 shim 进程崩溃后重启：
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Shim 崩溃恢复流程                          │
-│                                                             │
-│  1. Shim 重启启动                                            │
-│     │                                                       │
-│     ▼                                                       │
-│  2. 尝试从存储恢复 Sandbox 状态                              │
-│     │                                                       │
-│     ├─→ 存储不存在 ──→ 创建新 Sandbox                       │
-│     │                                                       │
-│     └─→ 存储存在 ──→ 验证 Sandbox ID                        │
-│                     │                                       │
-│                     ├─→ ID 不匹配 ──→ 错误退出              │
-│                     │                                       │
-│                     └─→ ID 匹配 ──→ 恢复状态                │
-│                                   │                         │
-│                                   ▼                         │
-│                            根据恢复的状态:                   │
-│                            - StateRunning: 尝试启动容器      │
-│                            - StateReady: 等待启动           │
-│                            - StateStopped: 等待清理         │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+|                    Shim Crash Recovery                        |
+|                                                               |
+|  1. Shim restarts                                            |
+|     |                                                        |
+|     v                                                        |
+|  2. Try to restore Sandbox state from storage                |
+|     |                                                        |
+|     +-> Storage not exist --> Create new Sandbox            |
+|     |                                                        |
+|     +-> Storage exists --> Verify Sandbox ID                 |
+|                     |                                        |
+|                     +-> ID mismatch --> Error exit           |
+|                     |                                        |
+|                     +-> ID match --> Restore state            |
+|                                   |                          |
+|                                   v                          |
+|                            Based on restored state:           |
+|                            - StateRunning: Try to start       |
+|                            - StateReady: Wait for start      |
+|                            - StateStopped: Wait for cleanup   |
+|                                                               |
++---------------------------------------------------------------+
 ```
 
 ### 状态不一致处理
@@ -255,10 +249,10 @@ func (s *Sandbox) Stop(ctx context.Context, force bool) error {
 
 ```bash
 # 查看所有 Sandbox
-ls -la /var/lib/micrun/sandboxes/
+ls -la /run/micrun/sandbox/
 
 # 查看特定 Sandbox 状态
-cat /var/lib/micrun/sandboxes/<sandbox-id>/state.json | jq
+cat /run/micrun/sandbox/<sandbox-id>/state.json | jq
 ```
 
 ### 日志标识
@@ -273,13 +267,13 @@ SetSandboxState: ...  # 状态设置日志
 ### 常见问题
 
 **Q: Shim 重启后容器状态显示错误？**
-A: 检查 `/var/lib/micrun/sandboxes/<id>/state.json` 是否存在且内容正确。
+A: 检查 `/run/micrun/sandbox/<id>/state.json` 是否存在且内容正确。
 
 **Q: 无法删除 Sandbox？**
 A: 确保状态为 `Ready`/`Paused`/`Stopped`。如果状态为 `Running`，先执行 Stop 操作。
 
 **Q: 状态文件损坏怎么办？**
-A: 删除 `/var/lib/micrun/sandboxes/<id>/` 目录，然后重新创建容器。
+A: 删除 `/run/micrun/sandbox/<id>/` 目录，然后重新创建容器。
 
 ## 相关代码
 

@@ -121,7 +121,7 @@ $$
 配置来源优先级（从高到低）：
 
 1. **Annotation** - Pod/容器注解
-2. **Config Files** - `/etc/mica/micrun/config.json`
+2. **Config Files** - `/etc/mica/micrun/micrun.conf` (INI/TOML 格式)
 3. **Environment Variables** - `MICRUN_CONF_FILE`, `MICRUN_CONF_DIR`
 4. **Default Values**
 
@@ -161,9 +161,7 @@ spec:
 
 ### 6.3 共享 CPU 池
 
-| 注解 | 值 | 说明 |
-|------|-----|------|
-| `org.openeuler.micrun.shared_cpu_pool` | `true`/`false` | 允许多个 RTOS 容器共享 CPU 资源 |
+通过配置文件 `shared_cpu_pool = true` 启用共享 CPU 池模式，允许多个 RTOS 容器共享 CPU 资源。此选项在 `/etc/mica/micrun/micrun.conf` 中配置，不是注解。
 
 ### 6.4 大页支持
 
@@ -177,21 +175,23 @@ spec:
 
 | 文件 | 说明 |
 |------|------|
-| `pkg/pedestal/planner.go` | 资源解析，`linuxResourceToEssential()` |
-| `pkg/micantainer/container_resources.go` | 资源映射 |
-| `pkg/libmica/resource_manager.go` | 资源管理 |
+| `pkg/pedestal/planner.go` | 资源解析，`PlanEssentialResources()`, `linuxResourceToEssential()` |
+| `pkg/pedestal/resources.go` | 资源结构定义 `EssentialResource` |
+| `pkg/pedestal/xen.go` | CPU shares 到 weight 转换 `ShareToWeight()` |
+| `pkg/oci/oci_configs.go` | 内存阈值计算 `calculateClientMemThreshold()` |
 
 ### 7.2 关键函数
 
 ```go
-// CPU 资源转换
+// CPU 资源转换 (pkg/pedestal/planner.go)
+func PlanEssentialResources(spec *specs.Spec) *EssentialResource
 func linuxResourceToEssential(spec *specs.Spec, convertShares bool) *EssentialResource
 
-// 内存阈值管理
-func (me *MicaExecutor) EnsureMemoryLimit(target uint32) error
+// CPU shares 到 weight 转换 (pkg/pedestal/xen.go)
+func ShareToWeight(shares uint64) uint32
 
-// VCPU 数量计算
-func calculateVcpuNum(cpuSet string, enableVcpuPcpuBinding bool) uint32
+// 内存阈值管理 (pkg/oci/oci_configs.go)
+func calculateClientMemThreshold(config *cntr.ContainerConfig, runtimeCfg *RuntimeConfig) uint32
 ```
 
 ## 8. 测试验证
