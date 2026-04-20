@@ -40,8 +40,19 @@ int rpmsg_rx_umt_callback(struct rpmsg_endpoint *ept, void *data, size_t len, ui
 	struct rpmsg_umt_service *umt_svc = priv;
 	umt_send_msg_t *msg = (umt_send_msg_t *)data;
 
-	umt_svc->process_shared_memory->rcv_phy_addr = msg->phy_addr;
-	umt_svc->process_shared_memory->rcv_data_len = msg->data_len;
+	if (len == sizeof(int)) {
+		/* Legacy ABI: RTOS only reports reply length; data lives in the shared window. */
+		umt_svc->process_shared_memory->rcv_phy_addr = 0;
+		umt_svc->process_shared_memory->rcv_data_len = *(int *)data;
+	} else if (len >= sizeof(umt_send_msg_t)) {
+		/* New ABI: RTOS reports physical address + length. */
+		umt_svc->process_shared_memory->rcv_phy_addr = msg->phy_addr;
+		umt_svc->process_shared_memory->rcv_data_len = msg->data_len;
+	} else {
+		fprintf(stderr, "WARNING: rpmsg-umt received malformed reply: len=%zu, expected %zu or %zu\n",
+			len, sizeof(int), sizeof(umt_send_msg_t));
+		return RPMSG_SUCCESS;
+	}
 	sem_post(umt_svc->sem_micad_to_user);
 	return RPMSG_SUCCESS;
 
@@ -119,7 +130,7 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
 		msg.data_len = sizeof(message);
 		msg.phy_addr = 0x0;
 		ret = rpmsg_send(&umt_svc->ept, &msg, sizeof(msg));
-		if (ret)
+		if (ret < 0)
 			goto free_ept;
 	}
 
