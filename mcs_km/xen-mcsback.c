@@ -607,6 +607,21 @@ static void mcs_backend_cleanup(struct xenbus_device *dev)
 	dev_set_drvdata(&dev->dev, NULL);
 }
 
+/*
+ * The return type of xenbus_driver::remove was changed from int to void
+ * in mainline commit 7cffcade57a4 ("xen: make remove callback of xen
+ * driver void returned"), which first appeared in v6.3.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+static void mcs_backend_remove(struct xenbus_device *dev)
+{
+	mutex_lock(&mcs_backend_lock);
+
+	mcs_backend_cleanup(dev);
+
+	mutex_unlock(&mcs_backend_lock);
+}
+#else
 static int mcs_backend_remove(struct xenbus_device *dev)
 {
 	mutex_lock(&mcs_backend_lock);
@@ -617,6 +632,7 @@ static int mcs_backend_remove(struct xenbus_device *dev)
 
 	return 0;
 }
+#endif
 
 /* Placeholder: Handle frontend state changes */
 static void mcs_frontend_changed(struct xenbus_device *dev, enum xenbus_state frontend_state)
