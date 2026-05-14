@@ -33,15 +33,30 @@ static int store_open(void *store, const char *path, const void **image_data)
 	long fsize;
 	struct img_store *image = store;
 
-	image->file = fopen(path, "r");
+	image->file = fopen(path, "rb");
 	if (!image->file) {
 		syslog(LOG_ERR, "Cannot open the file:%s\n", path);
 		return -EINVAL;
 	}
 
-	fseek(image->file, 0, SEEK_END);
+	if (fseek(image->file, 0, SEEK_END)) {
+		syslog(LOG_ERR, "Cannot seek firmware file:%s\n", path);
+		fclose(image->file);
+		return -EINVAL;
+	}
+
 	fsize = ftell(image->file);
-	fseek(image->file, 0, SEEK_SET);
+	if (fsize <= 0) {
+		syslog(LOG_ERR, "Invalid firmware file size:%s\n", path);
+		fclose(image->file);
+		return -EINVAL;
+	}
+
+	if (fseek(image->file, 0, SEEK_SET)) {
+		syslog(LOG_ERR, "Cannot rewind firmware file:%s\n", path);
+		fclose(image->file);
+		return -EINVAL;
+	}
 
 	image->buf = malloc(fsize + 1);
 	if (!image->buf) {
