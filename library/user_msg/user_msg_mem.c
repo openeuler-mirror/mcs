@@ -61,6 +61,7 @@ int init_core_shared_memory(struct core_msg_mem_info *info, enum mcs_km_pedestal
 	}
 	info->align_size = aligned_size;
     info->phy_addr = aligned_addr;
+	close(mcs_fd);
     return 0;
 err:
 	close(mcs_fd);
