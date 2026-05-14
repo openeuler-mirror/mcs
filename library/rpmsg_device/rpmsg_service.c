@@ -25,14 +25,18 @@ void print_device_of_service(struct mica_client *client, char *str, size_t size)
 {
 	struct metal_list *node;
 	struct mica_service *svc;
+	size_t len;
 
 	metal_list_for_each(&client->services, node) {
 		svc = metal_container_of(node, struct mica_service, node);
+		len = strlen(str);
+		if (len >= size)
+			break;
 
 		if (svc->get_match_device != NULL) {
-			svc->get_match_device(str + strlen(str), size - strlen(str), svc->priv);
+			svc->get_match_device(str + len, size - len, svc->priv);
 		} else {
-			snprintf(str + strlen(str), size - strlen(str), "%s ", svc->name);
+			snprintf(str + len, size - len, "%s ", svc->name);
 		}
 	}
 }
