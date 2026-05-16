@@ -1,0 +1,4 @@
+interface:
+  display_name: "QEMU 快速启动排障"
+  short_description: "按仓库路径启动 QEMU，先用原生 mica 切层，必要时在构建容器里重编 micad"
+  default_prompt: "使用 $qemu-quickstart-debug 按 quick-start.md 启动 MicRun QEMU，准备 tap0 和 192.168.7.2，先检查原生 mica+RTOS 是否已经异常；如果需要，再用现有构建容器重编 micad 做 A/B 验证。"
