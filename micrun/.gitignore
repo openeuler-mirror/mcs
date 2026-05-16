@@ -40,3 +40,6 @@ go.work.sum
 # Editor/IDE and agents, waiting for adding more
 .clinerules/
 .claude/
+
+# Internal plans not for distribution
+docs/plans/

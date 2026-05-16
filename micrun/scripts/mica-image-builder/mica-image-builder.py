@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
-import argparse
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent))
 from mica_label_manager import MicaLabelManager
+
+import argparse
 
 # Default file paths in container
 DEFAULT_FIRMWARE_PATH = "/firmware.elf"
@@ -30,16 +31,16 @@ class MicaImageBuilder:
         if init_docker:
             try:
                 import docker
-
                 self.client = docker.from_env()
+                self.client.ping()
             except ImportError:
-                print(
-                    "Error: docker-py not installed. Install with: pip install docker"
-                )
-                sys.exit(1)
+                print("Warning: docker-py not installed, running in no-docker mode")
+                self.client = None
+                self.dry_run = True
             except Exception as e:
-                print(f"Error initializing Docker client: {e}")
-                sys.exit(1)
+                print(f"Warning: Docker daemon not accessible: {e}, running in no-docker mode")
+                self.client = None
+                self.dry_run = True
         else:
             self.client = None
 
@@ -71,6 +72,7 @@ class MicaImageBuilder:
 
         for port in available_ports:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
                 if s.connect_ex(("localhost", port)) != 0:
                     selected_port = port
                     break
@@ -163,10 +165,8 @@ class MicaImageBuilder:
                 print("Invalid choice")
 
     def select_os_versions(self):
-        # Get default versions from TOML config
         default_versions = {"zephyr": "3.7.1", "uniproton": "latest"}
 
-        # Try to get versions from default-compatibility section
         try:
             if "default-compatibility" in self.label_manager.labels_config:
                 if (
@@ -186,21 +186,24 @@ class MicaImageBuilder:
         except:
             pass
 
-        print(f"\nEnter OS versions (press Enter for defaults):")
+        print(f"\nEnter OS version (press Enter for default):")
 
-        zephyr_version = input(
-            f"Zephyr version (default: {default_versions['zephyr']}): "
-        ).strip()
-        self.zephyr_version = (
-            zephyr_version if zephyr_version else default_versions["zephyr"]
-        )
-
-        uniproton_version = input(
-            f"Uniproton version (default: {default_versions['uniproton']}): "
-        ).strip()
-        self.uniproton_version = (
-            uniproton_version if uniproton_version else default_versions["uniproton"]
-        )
+        if self.os_type == "zephyr":
+            zephyr_version = input(
+                f"Zephyr version (default: {default_versions['zephyr']}): "
+            ).strip()
+            self.zephyr_version = (
+                zephyr_version if zephyr_version else default_versions["zephyr"]
+            )
+            self.uniproton_version = default_versions["uniproton"]
+        else:
+            uniproton_version = input(
+                f"Uniproton version (default: {default_versions['uniproton']}): "
+            ).strip()
+            self.uniproton_version = (
+                uniproton_version if uniproton_version else default_versions["uniproton"]
+            )
+            self.zephyr_version = default_versions["zephyr"]
 
     def select_image_files(self):
         print("\nSelect firmware file:")
@@ -350,32 +353,30 @@ class MicaImageBuilder:
             description = default_description
         return description
 
-    def get_image_names(self):
-        # Three-part image naming: registry, app name, version
-        print(f"\nImage naming (current registry: {self.registry})")
+    def get_image_names(self, need_registry=False):
+        if need_registry:
+            print(f"\nImage naming (current registry: {self.registry})")
+            registry_input = input(f"Enter registry (default: {self.registry}): ").strip()
+            if registry_input:
+                self.registry = registry_input
+        else:
+            self.registry = "local"
 
-        # Registry input
-        registry_input = input(f"Enter registry (default: {self.registry}): ").strip()
-        if registry_input:
-            self.registry = registry_input
-
-        # App name input
         default_app = "app"
         app_name = input(f"Enter app name (default: {default_app}): ").strip()
         if not app_name:
             app_name = default_app
 
-        # Version input
         default_version = "0.1"
         version = input(f"Enter version (default: {default_version}): ").strip()
         if not version:
             version = default_version
 
-        # Construct final image name: {registry}/mica-{os}-{app}:{pedestal}-{version}
         self.image_name = (
             f"{self.registry}/mica-{self.os_type}-{app_name}:{self.pedestal}-{version}"
         )
-        print(f"Final image name: {self.image_name}")
+        if need_registry:
+            print(f"Final image name: {self.image_name}")
 
         return self.image_name
 
@@ -505,15 +506,27 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
 
         print(f"Building with Docker CLI: {tag}")
 
-        # Create temporary Dockerfile
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".Dockerfile", delete=False
         ) as f:
             f.write(dockerfile_content.decode("utf-8"))
             dockerfile_path = f.name
 
+        def run_docker_build(cmd):
+            print(f"Running: {' '.join(cmd)}")
+            if self.dry_run:
+                print(f"[dry-run] Would run: {' '.join(cmd)}")
+                return True
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"Successfully built {tag} with Docker CLI")
+                return True
+            print(f"Docker build failed:")
+            print(f"STDOUT: {result.stdout}")
+            print(f"STDERR: {result.stderr}")
+            return False
+
         try:
-            # Use buildx for multi-architecture builds or regular docker build
             if self.platform:
                 multi_platform = "," in self.platform or self.platform == "all"
                 cmd = [
@@ -527,8 +540,6 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
                     "--platform",
                     self.platform,
                 ]
-                # For multi-arch builds, we need to push to registry
-                # unless it's a dry run
                 if not self.dry_run and multi_platform:
                     cmd.append("--push")
                 else:
@@ -536,13 +547,11 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
             else:
                 cmd = [
                     "docker",
-                    "buildx",
                     "build",
                     "-f",
                     dockerfile_path,
                     "-t",
                     tag,
-                    "--load",  # Load image into docker instead of pushing to registry
                 ]
 
             if annotations:
@@ -552,26 +561,28 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
 
             cmd.append(build_context)
 
-            print(f"Running: {' '.join(cmd)}")
-            if self.dry_run:
-                print(
-                    f"[dry-run] Building image {tag} with buildkit command line: {' '.join(cmd)}"
-                )
+            if run_docker_build(cmd):
                 return True
-            else:
-                result = subprocess.run(cmd, capture_output=True, text=True)
 
-                if result.returncode == 0:
-                    print(f"Successfully built {tag} with Docker CLI")
-                    return True
-                else:
-                    print(f"Docker CLI build failed for {tag}:")
-                    print(f"STDOUT: {result.stdout}")
-                    print(f"STDERR: {result.stderr}")
-                    return False
+            if not self.dry_run:
+                print("Falling back to docker build without buildx...")
+                fallback_cmd = [
+                    "docker",
+                    "build",
+                    "-f",
+                    dockerfile_path,
+                    "-t",
+                    tag,
+                ]
+                if annotations:
+                    for key, value in annotations.items():
+                        fallback_cmd.extend(["--label", f"{key}={value}"])
+                fallback_cmd.append(build_context)
+                return run_docker_build(fallback_cmd)
+
+            return False
 
         finally:
-            # Clean up temporary Dockerfile
             try:
                 os.unlink(dockerfile_path)
             except:
@@ -644,11 +655,112 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
                 for chunk in image.save(named=True):
                     f.write(chunk)
 
+            if self.platform:
+                if not self._normalize_export_platform(export_path, self.platform):
+                    return False
+
             print(f"Image exported to {export_path}")
             return True
         except Exception as e:
             print(f"Failed to export image {tag}: {e}")
             return False
+
+    def _normalize_export_platform(self, export_path, platform):
+        """Normalize a single-platform OCI archive after legacy Docker export."""
+        import hashlib
+        import json
+        import tarfile
+        import tempfile
+
+        if not platform or platform == "all" or "," in platform:
+            return True
+
+        parts = platform.split("/")
+        if len(parts) < 2:
+            print(f"Unsupported platform format for export normalization: {platform}")
+            return False
+
+        os_name, architecture = parts[0], parts[1]
+        variant = "/".join(parts[2:]) if len(parts) > 2 else None
+
+        def digest_bytes(data):
+            return hashlib.sha256(data).hexdigest()
+
+        with tempfile.TemporaryDirectory(prefix="mica-export.") as tmpdir:
+            root = Path(tmpdir)
+            with tarfile.open(export_path, "r") as tar:
+                tar.extractall(root)
+
+            index_path = root / "index.json"
+            manifest_json_path = root / "manifest.json"
+            if not index_path.exists():
+                print("Export archive has no OCI index.json; skipping platform normalization")
+                return True
+
+            index = json.loads(index_path.read_text())
+            manifests = index.get("manifests") or []
+            if not manifests:
+                print("Export archive has no OCI manifests to normalize")
+                return False
+
+            descriptor = manifests[0]
+            manifest_digest = descriptor["digest"].split(":", 1)[1]
+            manifest_path = root / "blobs" / "sha256" / manifest_digest
+            manifest = json.loads(manifest_path.read_text())
+
+            config_digest = manifest["config"]["digest"].split(":", 1)[1]
+            config_path = root / "blobs" / "sha256" / config_digest
+            config = json.loads(config_path.read_text())
+            config["os"] = os_name
+            config["architecture"] = architecture
+            if variant:
+                config["variant"] = variant
+            else:
+                config.pop("variant", None)
+
+            config_bytes = json.dumps(
+                config, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8")
+            new_config_digest = digest_bytes(config_bytes)
+            new_config_path = root / "blobs" / "sha256" / new_config_digest
+            new_config_path.write_bytes(config_bytes)
+
+            manifest["config"]["digest"] = f"sha256:{new_config_digest}"
+            manifest["config"]["size"] = len(config_bytes)
+            manifest_bytes = json.dumps(
+                manifest, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8")
+            new_manifest_digest = digest_bytes(manifest_bytes)
+            new_manifest_path = root / "blobs" / "sha256" / new_manifest_digest
+            new_manifest_path.write_bytes(manifest_bytes)
+
+            platform_descriptor = {"os": os_name, "architecture": architecture}
+            if variant:
+                platform_descriptor["variant"] = variant
+            descriptor["digest"] = f"sha256:{new_manifest_digest}"
+            descriptor["size"] = len(manifest_bytes)
+            descriptor["platform"] = platform_descriptor
+            index_path.write_text(
+                json.dumps(index, separators=(",", ":"), sort_keys=True)
+            )
+
+            if manifest_json_path.exists():
+                docker_manifest = json.loads(manifest_json_path.read_text())
+                for item in docker_manifest:
+                    if item.get("Config") == f"blobs/sha256/{config_digest}":
+                        item["Config"] = f"blobs/sha256/{new_config_digest}"
+                manifest_json_path.write_text(
+                    json.dumps(
+                        docker_manifest, separators=(",", ":"), sort_keys=True
+                    )
+                )
+
+            with tarfile.open(export_path, "w") as tar:
+                for path in sorted(root.rglob("*")):
+                    tar.add(path, arcname=str(path.relative_to(root)))
+
+        print(f"Normalized exported OCI platform metadata to {platform}")
+        return True
 
     def check_registry_access(self):
         import requests
@@ -656,7 +768,7 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
         if self.dry_run:
             return True
         try:
-            response = requests.get(f"http://{self.registry}/v2/")
+            response = requests.get(f"http://{self.registry}/v2/", timeout=3)
             return response.status_code == 200
         except:
             return False
@@ -682,14 +794,6 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
                 "[dry-run] Running in dry-run mode - no actual Docker operations will be performed"
             )
 
-        # Setup registry unless in dry-run mode or explicitly no_push
-        if not self.dry_run and not no_push:
-            if not self.check_registry_access():
-                print("Registry not accessible. Setting up...")
-                if not self.setup_registry():
-                    print("Failed to setup registry")
-                    return False
-
         self.select_pedestal()
         self.select_os_type()
         self.select_os_versions()
@@ -698,9 +802,6 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
 
         # Get custom image description
         self.image_description = self.get_image_description()
-
-        # Get image name (this also sets self.image_name)
-        self.get_image_names()
 
         # Determine export behavior
         export_requested = False
@@ -722,10 +823,21 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
 
         # Determine push behavior
         push_images = False
-        if not self.dry_run and not no_push:
-            # Ask if user wants to push to registry
+        if self.dry_run or no_push:
+            self.get_image_names(need_registry=False)
+        else:
             push_local = input("\nPush to local registry? (y/N): ").strip().lower()
             push_images = push_local == "y"
+
+            if push_images:
+                self.get_image_names(need_registry=True)
+                if not self.check_registry_access():
+                    print("Registry not accessible. Setting up...")
+                    if not self.setup_registry():
+                        print("Failed to setup registry")
+                        return False
+            else:
+                self.get_image_names(need_registry=False)
 
         # Use the unified build method
         success = self.unified_build(push_images=push_images)
@@ -783,12 +895,6 @@ ADD {self.firmware_path} ${{FIRMWARE_BUNDLE_PATH}}
             print(f"Platform(s): {self.platform}")
         print(f"Dry run: {self.dry_run}")
         print(f"Push images: {push_images}")
-
-        # Debug: Show the actual file paths that will be used
-        print(f"\nDebug - Build context: {build_ctx}")
-        print(f"Debug - Final firmware path in Dockerfile: {self.firmware_path}")
-        if self.pedestal == "xen":
-            print(f"Debug - Final Xen image path in Dockerfile: {self.xen_image_path}")
 
         print("\nBuilding final image...")
         final_dockerfile, final_labels, final_annotations = (
@@ -1030,10 +1136,11 @@ def cli_build(builder, args):
             # Default format: {registry}/mica-{os}-app:{pedestal}-{version}
             builder.image_name = f"{builder.registry}/mica-{builder.os_type}-app:{builder.pedestal}-{args.version}"
 
-        # Setup registry if needed (unless in dry-run mode)
+        # Setup registry only when an image will actually be pushed. Local
+        # build/export flows should work offline.
         if args.dry_run:
             print("[dry-run] Skipping registry checks and setup.")
-        elif not builder.check_registry_access():
+        elif args.push and not builder.check_registry_access():
             print("Registry not accessible. Setting up...")
             if not builder.setup_registry():
                 print("Failed to setup registry")
