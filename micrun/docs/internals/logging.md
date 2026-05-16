@@ -21,7 +21,7 @@
 ### 2.1 文件结构
 
 ```
-micrun/logger/
+micrun/internal/support/logger/
 ├── logger.go           # 公共接口和类型定义
 ├── logger_release.go   # release 版本实现（!debug build tag）
 └── logger_debug.go     # debug 版本实现（debug build tag）
@@ -49,6 +49,18 @@ micrun/logger/
 
 ## 3. 日志格式
 
+### 3.0 日志流向
+
+```mermaid
+flowchart LR
+    Code[MicRun runtime code] --> Hook[logger context hook]
+    Hook --> CD[containerd formatter]
+    CD --> FIFO[shim cwd log FIFO]
+    FIFO --> Journal[containerd journal]
+    Hook -->|debug build| FileFmt[debug file formatter]
+    FileFmt --> RuntimeLog[/var/log/mica/mica-runtime.log]
+```
+
 ### 3.1 输出到 containerd 的日志（`release` + `debug`）
 
 **格式**：`time="<timestamp>" level=<level> msg=<message> id=<id> namespace=<namespace>`
@@ -63,6 +75,7 @@ time="2026-01-09T15:04:05.123456789Z" level=info msg="Container created" id=test
 - 字段名：`time`, `level`, `msg`, `id`, `namespace`
 - 字段顺序：`id` 在前，`namespace` 在后
 - 时间戳加引号
+- `msg` 和字段值按 logfmt 风格输出；包含空白、引号、反斜杠或换行时使用 Go 字符串转义，保证单行可解析
 
 ### 3.2 输出到文件的日志（仅 `debug`）
 
@@ -70,7 +83,7 @@ time="2026-01-09T15:04:05.123456789Z" level=info msg="Container created" id=test
 
 **示例**：
 ```
-[default][test-container][2026-01-09T15:04:05.123456789Z]INFO pkg/shim/shimio.go:651 micrun/pkg/shim.copyStdin
+[default][test-container][2026-01-09T15:04:05.123456789Z]INFO internal/transport/shimv2/shimio.go:651 micrun/internal/transport/shimv2.copyStdin
 	Starting stdin copy
 ```
 
@@ -80,9 +93,27 @@ time="2026-01-09T15:04:05.123456789Z" level=info msg="Container created" id=test
 - LOGLEVEL：大写（`INFO`, `DEBUG`, `WARN`, `ERROR`）
 - 调用位置：指向实际源文件，非 `logger` 包装
 
+### 3.3 面向用户、开发者和 AI 的日志约定
+
+MicRun 的日志需要同时支持现场排障、自动化测试和 AI 维护。新增或修改日志时建议遵循：
+
+- `msg` 保持短句，描述发生了什么；把容器、namespace、阶段、结果等上下文放到字段或稳定前缀中。
+- 新增关键链路日志优先使用稳定字段，如 `component`, `event`, `action`, `result`, `reason`, `hint`。
+- 正常生命周期竞态不要使用 `error` 级别。例如用户输入 `exit` 后 guest 已自然退出，强制 stop 遇到 socket reset 应作为已退出状态处理。
+- `info` 可记录自动恢复成功的状态清理；`warn` 表示需要关注但系统仍能继续；`error` 表示用户或开发者需要介入。
+- 避免输出宿主机私有绝对路径、密钥、token、密码等信息。文档和测试记录中使用 `<workspace>`, `<build-dir>`, `<qemu-output>` 等泛化路径。
+- 错误日志尽量包含下一步排查提示，例如 `hint="check containerd journal and mica runtime log"`。
+
+推荐的 containerd 日志形态：
+
+```text
+time="2026-01-09T15:04:05.123456789Z" level=info msg="io session started" id=demo namespace=default component=io event=session.start result=ok
+time="2026-01-09T15:04:08.123456789Z" level=info msg="cleanup recovered stale state" id=demo namespace=default component=recovery event=cleanup.stale result=recovered
+```
+
 **TRACE 日志示例**（仅 debug 版本）：
 ```
-[default][test-container][2026-01-09T15:04:05.123456789Z]DEBUG pkg/io/copier.go:234 micrun/pkg/io.addFdToEpoll
+[default][test-container][2026-01-09T15:04:05.123456789Z]DEBUG internal/adapters/io/copier.go:234 micrun/internal/adapters/io.addFdToEpoll
 	[TRACE] epoll fd=5 added to interest list
 ```
 
@@ -93,7 +124,7 @@ time="2026-01-09T15:04:05.123456789Z" level=info msg="Container created" id=test
 - **输出目标**：仅输出到 `containerd`
 - **输出位置**：通过 `shim cwd` 下的 `log fifo`
 - **格式**：containerd 兼容格式（time="..." level=... msg=... id=... namespace=...）
-- **配置**：从 `/etc/mica/micrun/config.json` 读取（可选）
+- **配置**：从 `/etc/mica/micrun/config.json` 读取（可选），可通过 `MICRUN_LOG_CONFIG` 覆盖
 
 **构建**：
 ```bash
@@ -119,7 +150,7 @@ go build -tags=debug
 
 ### 5.1 配置文件
 
-配置文件路径：`/etc/mica/micrun/config.json`
+配置文件路径：`/etc/mica/micrun/config.json`（可通过 `MICRUN_LOG_CONFIG` 覆盖）
 
 ```json
 {
@@ -140,6 +171,14 @@ go build -tags=debug
 | `file` | `string` | `/var/log/mica/mica-runtime.log` | `debug` 版本日志文件路径 |
 | `color` | `boolean` | `false` | `debug` 版本是否显示颜色 |
 | `caller` | `boolean` | `true` | `debug` 版本是否显示调用栈信息 |
+
+### 5.2 环境变量
+
+| 环境变量 | 说明 | 默认值 |
+|----------|------|--------|
+| `MICRUN_LOG_CONFIG` | 覆盖日志配置文件路径 | `/etc/mica/micrun/config.json` |
+| `MICRUN_LOG_FILE` | 覆盖 debug 文件日志路径 | `/var/log/mica/mica-runtime.log` |
+| `MICRUN_CONTAINERD_LOG_PATH` | 覆盖 containerd 日志输出路径 | `./log` |
 
 ### 5.3 日志等级
 

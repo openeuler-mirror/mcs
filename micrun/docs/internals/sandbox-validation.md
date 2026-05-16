@@ -1,284 +1,225 @@
 # MicRun Sandbox 状态验证文档
 
-## 概述
+本文档描述 MicRun 当前的 sandbox 状态验证机制。这里说的“当前”是指以 `StateStore + runtime.json` 为主、legacy `state.json` 为兼容回退的实现。
 
-MicRun 通过持久化存储和状态验证机制确保 Sandbox 的状态一致性。当 shim 进程重启（如 containerd 重启）时，可以从存储中恢复 Sandbox 状态，避免状态不一致导致的问题。
+## 1. 目标
 
-## 状态存储
+状态验证的目标不是简单“把文件读出来”，而是回答三个问题：
 
-### 存储位置
+1. 这份持久化状态是不是当前 sandbox 的状态
+2. 这份状态是不是还能恢复
+3. 如果不能恢复，是应该拒绝恢复还是直接清理为 stale 状态
 
+## 2. 当前状态存储布局
+
+### 2.1 权威状态源
+
+MicRun 当前通过 `internal/adapters/state/file.Store` 把快照写到 `/run/micrun` 下：
+
+- sandbox snapshot: `/run/micrun/runtime/sandbox/<sandbox-id>/runtime.json`
+- container snapshot: `/run/micrun/runtime/container/<container-path-or-id>/runtime.json`
+
+这两类 `runtime.json` 是当前恢复链路的第一读取来源，也是新状态的唯一写入目标。
+
+### 2.2 legacy 兼容路径
+
+恢复时仍会兼容以下旧路径：
+
+- `/run/micrun/sandbox/<sandbox-id>/state.json`
+- `/run/micrun/<container-path>/state.json`
+- `/run/micrun/<container-id>/state.json`
+
+兼容策略如下：
+
+1. 优先读取 `runtime.json`
+2. `runtime.json` 不存在时再读 legacy `state.json`
+3. 如果成功从 legacy 文件恢复，会尝试迁移写回 `runtime.json`
+
+因此 legacy 文件已经不是权威状态源，只是历史数据入口。
+
+## 3. 恢复与验证链路
+
+![MicRun sandbox restore and validation](../assets/flowcharts/sandbox-validation-flow.png)
+
+下面的决策图用于快速区分“可以恢复”和“应该清理 stale 状态”的分支。
+
+![MicRun state recovery map](../assets/flowcharts/micrun-state-recovery-map.png)
+
+```mermaid
+flowchart TD
+  start["shim daemon starts"]
+  service["application/recovery.Service"]
+  backend["shimRecoveryBackend"]
+  loader["LoadSandboxWithDependencies"]
+  repo["stateRepository.LoadSandbox"]
+  runtime["runtime.json<br/>authoritative snapshot"]
+  legacy["state.json<br/>legacy fallback"]
+  validate["ValidateSandboxState"]
+  pid["ShimPID still alive?"]
+  guest["guest exists in micad?"]
+  rebuild["rebuild sandbox and task handles"]
+  cleanup["delete stale state"]
+
+  start --> service --> backend --> loader --> repo
+  repo --> runtime --> validate
+  repo --> legacy --> validate
+  validate --> pid
+  pid -->|yes| cleanup
+  pid -->|no| guest
+  guest -->|yes| rebuild
+  guest -->|no| cleanup
 ```
-/run/micrun/sandbox/<sandbox-id>/state.json
+
+当前恢复主链路为：
+
+```text
+shim daemon start
+  -> application/recovery.Service
+  -> shimRecoveryBackend.Restore
+  -> domain/container.LoadSandboxWithDependencies
+  -> stateRepository.LoadSandbox
+  -> ValidateSandboxState
+  -> createSandbox + loadContainersToSandbox
 ```
 
-### 存储结构
+职责划分如下：
 
-```go
-type SandboxStorage struct {
-    ID      string        `json:"id"`        // Sandbox ID
-    State   SandboxState  `json:"state"`     // 当前状态
-    Config  SandboxConfig `json:"config"`    // 配置
-    Network NetworkConfig `json:"network"`   // 网络配置
+- `shimRecoveryBackend.Restore`
+  - 把 shim 恢复请求翻译成领域恢复动作
+- `stateRepository.LoadSandbox`
+  - 优先从 `StateStore` 读取
+  - 必要时回退并迁移 legacy `state.json`
+- `ValidateSandboxState`
+  - 验证 shim PID
+  - 验证 guest 是否仍存在于 micad
+  - 验证状态是否 stale
+- `createSandbox` / `loadContainersToSandbox`
+  - 用恢复出的配置和依赖重建领域对象
 
-    // 状态验证元数据
-    CreatedAt int64 `json:"created_at,omitempty"` // 状态创建/更新时间戳
-    ShimPID   int   `json:"shim_pid,omitempty"`   // 创建此状态的 shim 进程 PID
-}
-```
+## 4. 当前验证规则
 
-### 状态写入时机
+### 4.1 快照级校验
 
-| 时机 | 说明 |
+从存储恢复 `SandboxStorage` 后，会先做以下校验：
+
+| 校验项 | 当前行为 |
 |------|------|
-| Sandbox 创建后 | 初始状态为 `StateReady` |
-| 启动容器后 | 状态变为 `StateRunning` |
-| 停止容器后 | 状态变为 `StateStopped` |
-| 更新容器后 | 保存更新的配置 |
-| 创建/删除容器后 | 更新容器列表 |
+| `storage == nil` | 直接报错 |
+| `storage.ID != sandboxID` | 拒绝恢复 |
+| `ShimPID` 仍存活 | 拒绝恢复，认为已有其他 shim 实例在工作 |
 
-## 状态定义
+`ShimPID` 的作用是避免两个 shim 同时接管同一份状态。
 
-### Sandbox 状态
+### 4.2 运行态校验
 
-| 状态 | 说明 | 允许的转换 |
-|------|------|-----------|
-| `StateCreating` | 创建中 | → `StateStopped` |
-| `StateReady` | 已就绪，容器已创建但未启动 | → `StateRunning`, `StateStopped` |
-| `StateRunning` | 运行中 | → `StatePaused`, `StateStopped` |
-| `StateStopped` | 已停止 | → `StateRunning` (恢复) |
-| `StatePaused` | 已暂停 | → `StateRunning`, `StateStopped` |
+`ValidateSandboxState()` 当前会进一步做 guest 侧校验：
 
-### 状态转换规则
+| 校验项 | 当前行为 |
+|------|------|
+| `guestCtl.Exists(ctx, id) == false` | 标记为 stale，删除持久化状态并返回 `SandboxNotFound` |
+| `guestCtl.Status()` 失败 | 记录告警，但允许继续恢复 |
+| 文件状态与 guest 实际状态不一致 | 记录告警，不立即拒绝恢复 |
 
-```
-Creating ──stop──► Stopped
-    │
-    ▼ (内部标准化)
-  Ready ──start──► Running ◄──resume── Paused
-              │         │                 ▲
-              │         └────pause────────┘
-              │
-              └────────stop──► Stopped ──resume──► Running
-```
+这说明当前策略是“先确保不是明显 stale，再允许恢复；状态不一致先告警，后续再由运行时操作收敛”。
 
-**注意**：`StateCreating` 是过渡状态，在恢复时会自动标准化为 `StateReady`。
+### 4.3 状态机保护
 
-## 状态恢复机制
+恢复只是入口，运行期状态转换仍由领域状态机兜底：
 
-### 恢复流程
+- `Start()` 会把 `StateCreating` 先收敛到 `StateReady`
+- `Stop()` 只允许合法迁移到 `StateStopped`
+- `Delete()` 只允许在 `Ready`、`Paused`、`Stopped` 下执行
 
-```go
-func (s *Sandbox) restore() error {
-    // 1. 从存储加载状态
-    ss, err := restoreSandbox(s.ctx, s.id)
-    if err != nil {
-        // 存储不存在，视为新 Sandbox
-        return nil
-    }
+因此状态验证和状态机保护是两层不同的防线：
 
-    // 2. 验证 Sandbox ID 匹配
-    if ss.ID != s.id {
-        return fmt.Errorf("sandbox ID mismatch")
-    }
+1. 恢复时验证“这份状态还能不能接管”
+2. 运行时验证“当前状态能不能执行这个动作”
 
-    // 3. 恢复状态
-    s.state.Ped = ss.State.Ped
-    s.state.Version = ss.State.Version
-    s.state.State = ss.State.State
-    s.config = &ss.Config
+## 5. 状态写入与删除时机
 
-    // 4. 恢复网络配置
-    s.network = &s.config.NetworkConfig
+### 5.1 Sandbox 写入
 
-    return nil
-}
-```
+`Sandbox.StoreSandbox()` 最终会调用 `stateRepository.SaveSandbox()`。当前写入内容包括：
 
-### 恢复时的状态处理
+- `ID`
+- `State`
+- `Config`
+- `Network`
+- `CreatedAt`
+- `ShimPID`
 
-| 加载的状态 | 处理方式 |
-|-----------|----------|
-| `StateCreating` | 标准化为 `StateReady` |
-| `StateReady` | 保持不变，可接受操作：Start, CreateContainer, Delete |
-| `StateRunning` | 保持不变，尝试启动所有容器 |
-| `StateStopped` | 保持不变，可恢复到 Running |
-| `StatePaused` | 保持不变，可恢复到 Running |
+常见触发点：
 
-## 状态验证
+- sandbox 创建完成后
+- sandbox 启动后
+- sandbox 停止后
+- 需要更新 sandbox 配置时
 
-### 验证触发条件
+### 5.2 Sandbox 删除
 
-1. **Shim 启动时**：从存储恢复状态后验证
-2. **状态转换前**：`state.Transition()` 验证转换是否合法
-3. **操作前**：如 Start, Stop, Delete 等操作前检查当前状态
+`DeleteSandbox()` 会同时：
 
-### 验证规则
+1. 删除 `runtime/sandbox/<id>/runtime.json`
+2. 删除 legacy `/run/micrun/sandbox/<id>/`
 
-```go
-func (s *StateString) transition(old StateString, new StateString) error {
-    if *s != old {
-        return fmt.Errorf("mismatched state: %s (expecting: %v)", *s, old)
-    }
+### 5.3 Container 写入
 
-    switch *s {
-    case StateCreating:
-        if new == StateStopped {
-            return nil
-        }
-    case StateReady:
-        if new == StateRunning || new == StateStopped {
-            return nil
-        }
-    case StateRunning:
-        if new == StatePaused || new == StateStopped {
-            return nil
-        }
-    case StatePaused:
-        if new == StateRunning || new == StateStopped {
-            return nil
-        }
-    case StateStopped:
-        if new == StateRunning {
-            return nil
-        }
-    }
-    return fmt.Errorf("cannot transition from state %v to %v", s, new)
-}
-```
+container 快照也会同步写入 `runtime/container/.../runtime.json`，恢复 sandbox 时再把 containers 一并装回领域对象。
 
-### Delete 前的状态检查
+## 6. 调试方法
 
-```go
-func (s *Sandbox) Delete(ctx context.Context) error {
-    // 只允许在 Ready/Paused/Stopped 状态下删除
-    if s.state.State != StateReady &&
-        s.state.State != StatePaused &&
-        s.state.State != StateStopped {
-        return fmt.Errorf("sandbox is not ready, paused, or stopped, cannot delete")
-    }
-    // ... 删除逻辑
-}
-```
-
-## 状态一致性保证
-
-### 关键设计
-
-1. **原子性写入**：状态文件在每次状态变更后立即写入
-2. **元数据记录**：`CreatedAt` 和 `ShimPID` 用于验证状态的有效性
-3. **状态机保护**：所有状态转换必须经过验证
-
-### Stop 操作的状态保护
-
-```go
-func (s *Sandbox) Stop(ctx context.Context, force bool) error {
-    if s.state.State == StateStopped {
-        return nil  // 幂等性
-    }
-
-    // 1. 先验证状态转换是否合法
-    originalState := s.state.State
-    if err := s.state.Transition(originalState, StateStopped); err != nil {
-        return err
-    }
-
-    // 2. 修改状态
-    s.state.State = StateStopped
-
-    // 3. 立即保存到磁盘
-    if err := s.StoreSandbox(ctx); err != nil {
-        log.Errorf("Failed to save sandbox state during Stop: %v", err)
-    }
-
-    // 4. 执行停止操作
-    for _, c := range s.containers {
-        if err := c.stop(ctx, force); err != nil {
-            return err
-        }
-    }
-
-    return nil
-}
-```
-
-## 故障恢复
-
-### Shim 崩溃恢复
-
-当 shim 进程崩溃后重启：
-
-```
-+---------------------------------------------------------------+
-|                    Shim Crash Recovery                        |
-|                                                               |
-|  1. Shim restarts                                            |
-|     |                                                        |
-|     v                                                        |
-|  2. Try to restore Sandbox state from storage                |
-|     |                                                        |
-|     +-> Storage not exist --> Create new Sandbox            |
-|     |                                                        |
-|     +-> Storage exists --> Verify Sandbox ID                 |
-|                     |                                        |
-|                     +-> ID mismatch --> Error exit           |
-|                     |                                        |
-|                     +-> ID match --> Restore state            |
-|                                   |                          |
-|                                   v                          |
-|                            Based on restored state:           |
-|                            - StateRunning: Try to start       |
-|                            - StateReady: Wait for start      |
-|                            - StateStopped: Wait for cleanup   |
-|                                                               |
-+---------------------------------------------------------------+
-```
-
-### 状态不一致处理
-
-| 场景 | 处理方式 |
-|------|----------|
-| 存储 Sandbox ID 与当前不匹配 | 返回错误，不恢复 |
-| 存储状态为 `StateCreating` | 标准化为 `StateReady` |
-| 存储状态为 `StateRunning` 但容器已退出 | 保持状态，允许操作恢复 |
-| 存储文件损坏 | 记录错误，尝试创建新 Sandbox |
-
-## 调试
-
-### 查看 Sandbox 状态文件
+### 6.1 查看当前权威快照
 
 ```bash
-# 查看所有 Sandbox
-ls -la /run/micrun/sandbox/
+# 查看所有 sandbox 快照
+ls -la /run/micrun/runtime/sandbox/
 
-# 查看特定 Sandbox 状态
+# 查看单个 sandbox 快照
+cat /run/micrun/runtime/sandbox/<sandbox-id>/runtime.json | jq
+
+# 查看 container 快照
+find /run/micrun/runtime/container -maxdepth 3 -name runtime.json | grep <container-id>
+```
+
+### 6.2 查看 legacy 回退文件
+
+```bash
 cat /run/micrun/sandbox/<sandbox-id>/state.json | jq
 ```
 
-### 日志标识
+只有在排查历史遗留问题时才建议看这里；正常情况下应先看 `runtime.json`。
 
-```
-[StoreSandbox] ...    # 状态保存日志
-[RESTORE] ...         # 状态恢复日志
-[STOP] State ...      # 状态转换日志
-SetSandboxState: ...  # 状态设置日志
-```
+### 6.3 常见日志线索
 
-### 常见问题
+常见关键日志包括：
 
-**Q: Shim 重启后容器状态显示错误？**
-A: 检查 `/run/micrun/sandbox/<id>/state.json` 是否存在且内容正确。
+- `[RESTORE]`
+- `Cleaning up stale sandbox state`
+- `shim PID ... is dead`
+- `RTOS client not found in micad`
+- `state mismatch, file=...`
 
-**Q: 无法删除 Sandbox？**
-A: 确保状态为 `Ready`/`Paused`/`Stopped`。如果状态为 `Running`，先执行 Stop 操作。
+## 7. 常见问题
 
-**Q: 状态文件损坏怎么办？**
-A: 删除 `/run/micrun/sandbox/<id>/` 目录，然后重新创建容器。
+**Q: shim 重启后恢复失败，但 `runtime.json` 还在？**
+A: 先检查 `ShimPID` 对应进程是否仍存活；如果旧 shim 没退出，当前恢复会被拒绝。
 
-## 相关代码
+**Q: 为什么快照存在却被清理掉了？**
+A: 当前实现把“micad 中 guest 已不存在”视为 stale 状态，会删除持久化状态并返回 `SandboxNotFound`。
+
+**Q: 文件状态是 `running`，但 guest 实际已经停了，为什么没有直接拒绝恢复？**
+A: 当前策略对这类不一致先告警、再允许恢复，便于后续清理或重新启动时继续收敛状态。
+
+**Q: 手工排查应该先看哪份文件？**
+A: 先看 `/run/micrun/runtime/sandbox/<sandbox-id>/runtime.json`，再看 legacy `/run/micrun/sandbox/<sandbox-id>/state.json`。
+
+## 8. 相关代码
 
 | 文件 | 说明 |
 |------|------|
-| `pkg/micantainer/sandbox.go` | Sandbox 状态管理和存储 |
-| `pkg/micantainer/interfaces.go` | SandboxTraits 接口定义 |
-| `definitions/paths.go` | 存储路径定义 |
+| `internal/domain/container/state_repository.go` | 运行时快照加载、保存、legacy 回退与迁移 |
+| `internal/domain/container/sandbox_loader.go` | sandbox 恢复与状态校验入口 |
+| `internal/domain/container/sandbox_state.go` | `Sandbox.StoreSandbox()` 与 restore |
+| `internal/domain/container/runtime_state.go` | runtime snapshot namespace 定义 |
+| `internal/transport/shimv2/recovery_backend.go` | shim 恢复后端实现 |
+| `definitions/paths.go` | 状态目录常量 |

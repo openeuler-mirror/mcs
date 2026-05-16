@@ -2,12 +2,24 @@
 
 ## 概述
 
-MicRun 支持多种配置方式，按优先级从高到低：
+MicRun 当前的运行时配置解析分成两步：
 
-1. **注解** (Pod/Container annotations) - 最高优先级
-2. **配置文件** (INI/TOML)
-3. **环境变量**
-4. **默认值** - 最低优先级
+1. **先决定读取哪份运行时配置**
+2. **再把 annotations 作为最终 overlay 叠加到解析结果上**
+
+以 `internal/adapters/config/runtimeconfig/resolver.go` 为准，当前实际顺序如下：
+
+1. 调用方已传入 `current *RuntimeConfig` 时，直接复用
+2. 注解里指定的 sandbox config path
+3. CRI runtime options 中的 `ConfigPath`
+4. 环境变量 `MICRUN_CONF_FILE`
+5. 自动发现配置文件集合
+   - `MICRUN_CONF_DIR`
+   - `/etc/mica/micrun/conf.d/*.conf|*.toml`
+   - `/etc/mica/micrun/micrun.conf`
+6. 最后统一叠加 annotations
+
+这里要特别注意：**环境变量主要用于选择配置文件来源，不是直接承载 workload 参数值。**
 
 ## 配置文件
 
@@ -15,10 +27,18 @@ MicRun 支持多种配置方式，按优先级从高到低：
 
 | 优先级 | 配置来源 |
 |--------|----------|
-| 1 | `MICRUN_CONF_FILE` 环境变量指定的文件 |
-| 2 | `MICRUN_CONF_DIR` 环境变量指定的目录（读取所有 .conf/.toml 文件） |
-| 3 | `/etc/mica/micrun/conf.d/*.conf` (drop-in 目录) |
-| 4 | `/etc/mica/micrun/micrun.conf` (默认配置文件) |
+| 1 | 注解指定的 config path |
+| 2 | CRI runtime options 中的 `ConfigPath` |
+| 3 | `MICRUN_CONF_FILE` 环境变量指定的文件 |
+| 4 | `MICRUN_CONF_DIR` 环境变量指定的目录（读取所有 `.conf`/`.toml` 文件） |
+| 5 | `/etc/mica/micrun/conf.d/*.conf` 或 `.toml` |
+| 6 | `/etc/mica/micrun/micrun.conf` |
+
+补充说明：
+
+- 当 `MICRUN_CONF_FILE` 指向的文件解析失败时，当前实现会记录告警并回退默认配置栈。
+- 当注解或 CRI options 指定的配置文件解析失败时，当前创建链路会直接报错返回。
+- 无论配置文件从哪里来，annotations 都会在最后一步覆盖最终值。
 
 ### 配置文件格式
 
@@ -105,9 +125,17 @@ aux_file_path = "/usr/local/share/mica/xen-aux.bin"
 
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
-| `MICRUN_CONF_FILE` | 指定配置文件路径 | - |
-| `MICRUN_CONF_DIR` | 指定配置目录路径 | - |
+| `MICRUN_CONF_FILE` | 指定单个运行时配置文件路径 | - |
+| `MICRUN_CONF_DIR` | 指定运行时配置目录路径 | - |
+| `MICRUN_LOG_CONFIG` | 指定日志配置文件路径（覆盖 `/etc/mica/micrun/config.json`） | `/etc/mica/micrun/config.json` |
+| `MICRUN_LOG_FILE` | 指定日志文件路径（仅 debug 版本） | `/var/log/mica/mica-runtime.log` |
+| `MICRUN_CONTAINERD_LOG_PATH` | 指定 containerd 日志输出路径（默认 shim 工作目录下 `log`） | `./log` |
 | `CONTAINERD_NAMESPACE` | 容器命名空间 | `default` |
+
+说明：
+
+- `MICRUN_CONF_FILE` 与 `MICRUN_CONF_DIR` 影响的是“加载哪份运行时配置”。
+- workload 级细项（如固件、pedestal、资源限制覆盖）仍以 annotations 和 OCI spec 为主。
 
 ## 配置项详解
 
@@ -156,7 +184,7 @@ aux_file_path = "/usr/local/share/mica/xen-aux.bin"
 
 ## 配置优先级示例
 
-### 示例 1：注解覆盖配置文件
+### 示例 1：注解覆盖最终配置值
 
 ```yaml
 # Pod 注解
@@ -165,16 +193,27 @@ metadata:
     org.openeuler.micrun.container.min_memory_mb: "64"  # 覆盖配置文件
 ```
 
-优先级：注解 (64 MiB) > 配置文件 (32 MiB) > 默认值 (16 MiB)
+优先级：注解最终 overlay > 已解析出的 `RuntimeConfig` > 默认值
 
-### 示例 2：环境变量指定配置文件
+### 示例 2：环境变量选择配置文件
 
 ```bash
 # 使用自定义配置文件
 export MICRUN_CONF_FILE=/etc/mica/micrun/custom.conf
 ```
 
-优先级：`$MICRUN_CONF_FILE` > `$MICRUN_CONF_DIR` > `/etc/mica/micrun/conf.d/` > `/etc/mica/micrun/micrun.conf`
+优先级：注解 config path > runtime options `ConfigPath` > `$MICRUN_CONF_FILE` > `$MICRUN_CONF_DIR` > `/etc/mica/micrun/conf.d/` > `/etc/mica/micrun/micrun.conf`
+
+### 示例 3：当前解析顺序
+
+```text
+current RuntimeConfig
+  -> annotation config path
+  -> CRI options ConfigPath
+  -> MICRUN_CONF_FILE
+  -> MICRUN_CONF_DIR / conf.d / default file
+  -> annotations overlay
+```
 
 ## Drop-in 目录
 
