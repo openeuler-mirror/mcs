@@ -1,0 +1,87 @@
+#!/usr/bin/expect -f
+
+set timeout 45
+log_user 1
+
+set host [expr {[info exists env(TEST_REMOTE_HOST)] ? $env(TEST_REMOTE_HOST) : "root@192.168.7.2"}]
+set port [expr {[info exists env(TEST_REMOTE_PORT)] ? $env(TEST_REMOTE_PORT) : ""}]
+set image [expr {[info exists env(TTY_TEST_IMAGE)] ? $env(TTY_TEST_IMAGE) : "localhost:5000/mica-uniproton-app:xen-0.1"}]
+set cid [expr {[info exists env(TTY_TEST_CONTAINER_NAME)] ? $env(TTY_TEST_CONTAINER_NAME) : "micrun-ctr-auto-[pid]"}]
+set password [expr {[info exists env(TEST_REMOTE_PASSWORD)] ? $env(TEST_REMOTE_PASSWORD) : ""}]
+set remote_prompt {MICRUN_REMOTE# $}
+
+proc fail {msg} {
+    puts $msg
+    exit 1
+}
+
+proc expect_remote_prompt {label} {
+    global remote_prompt
+    expect {
+        timeout { fail "CTR_AUTO_CLOSE_FAIL ${label}: remote prompt timeout" }
+        -re $remote_prompt {}
+    }
+}
+
+proc expect_zero_count {command label} {
+    global remote_prompt
+    send "count=\$($command); echo COUNT:$label:\$count\r"
+    expect {
+        timeout { fail "CTR_AUTO_CLOSE_FAIL ${label}: count timeout" }
+        -re "COUNT:${label}:0\r?\n" {}
+        -re "COUNT:${label}:\[1-9\]\[0-9\]*\r?\n" { fail "CTR_AUTO_CLOSE_FAIL ${label}: non-zero count" }
+    }
+    expect_remote_prompt $label
+}
+
+set ssh_base_opts [list -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR]
+if {$port ne ""} {
+    lappend ssh_base_opts -p $port
+}
+
+if {$password ne ""} {
+    spawn sshpass -p $password ssh {*}$ssh_base_opts -o PreferredAuthentications=keyboard-interactive,password -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=yes $host
+} else {
+    spawn ssh {*}$ssh_base_opts $host
+}
+
+expect {
+    timeout { fail "CTR_AUTO_CLOSE_FAIL ssh timeout" }
+    -re {# $} {}
+    -re {\$ $} {}
+}
+
+send "export PS1='MICRUN_REMOTE# '\r"
+expect_remote_prompt "prompt normalization"
+
+send "ctr task kill -s 9 $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean task kill"
+send "ctr task delete $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean task delete"
+send "ctr container delete $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean container delete"
+send "xl destroy $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean xen"
+
+send "ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micrun.container.auto_close=true --annotation org.openeuler.micrun.container.auto_close_timeout=5s $image $cid\r"
+expect_remote_prompt "container create"
+
+set timeout 25
+send "ctr task start $cid\r"
+expect {
+    timeout { fail "CTR_AUTO_CLOSE_FAIL task start did not auto-close" }
+    -re {failed to delete task|ttrpc: closed} { fail "CTR_AUTO_CLOSE_FAIL task start reported delete/ttrpc failure" }
+    -re $remote_prompt {}
+}
+set timeout 45
+
+expect_zero_count "ctr task ls | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "tasks"
+expect_zero_count "xl list | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "xen"
+
+send "ctr container delete $cid 2>/dev/null || true\r"
+expect_remote_prompt "container delete"
+expect_zero_count "ctr container ls | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "containers"
+
+puts "\nCTR_AUTO_CLOSE_PASS"
+send "exit\r"
+expect eof

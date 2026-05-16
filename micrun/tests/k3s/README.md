@@ -1,208 +1,100 @@
-# K3s 云化测试
+# MicRun K3s 测试
 
-## 测试概述
+K3s 测试验证 Kubernetes 通过 `RuntimeClass=micrun` 调度 RTOS Pod，并确认
+边侧 containerd、MicRun shim、micad 和 Xen 域状态一致。标准 QEMU 测试
+必须使用构建进 rootfs 的 K3s，例如 oEE 镜像中的 `/usr/bin/k3s`；不要在
+QEMU guest 内临时安装、复制或替换 K3s 二进制。
 
-本目录包含 MicRun 与 K3s/Kubernetes 云原生环境集成的测试用例，验证 RTOS 容器在云边协同场景下的功能。
-
-## 环境要求
-
-### 必需组件
-
-- **K3s 或 Kubernetes**: 1.28+ 版本
-- **kubectl**: 命令行工具（需在 K3s Master 节点上可用）
-- **containerd**: 带有 MicRun 运行时
-- **网络**: 节点间网络互通
-
-> **注意**: 默认测试环境（root@192.168.7.2）是单节点环境，不包含 K3s。运行 K3s 测试需要独立的 K3s 集群环境。
-
-### 环境配置
-
-编辑 `tests/test-env.sh` 配置 K3s 环境：
+## 测试入口
 
 ```bash
-# K3s Master 节点（控制平面）
-export K3S_MASTER_NODE="root@192.168.1.100"
-
-# K3s Worker 节点（可选，用于多节点测试）
-export K3S_WORKER_NODES="root@192.168.1.101,root@192.168.1.102"
-
-# K3s API URL
-export K3S_MASTER_URL="https://192.168.1.100:6443"
+micrun/tests/run_all_tests.sh k3s
+micrun/tests/bin/test-k3s-single-node
+micrun/tests/bin/test-k3s-cloud-edge
+micrun/tests/bin/test-k3s-interaction
 ```
 
-### 前置准备
+`run_all_tests.sh k3s` 是纳入项目测试体系的类别入口。默认会执行基础 K3s
+用例并包含 `K3S-008` 交互测试；也可以指定单项，例如
+`micrun/tests/run_all_tests.sh k3s K3S-008`。
+
+底层场景脚本仍保留在本目录：
 
 ```bash
-# 1. 准备测试镜像
-scp mica-uniproton-app-xen-0.1.tar.gz root@192.168.1.101:/tmp/
-ssh root@192.168.1.101 "ctr image import /tmp/mica-uniproton-app-xen-0.1.tar.gz"
-
-# 2. 验证 K3s 连接
-ssh root@192.168.1.100 "kubectl get nodes"
-
-# 3. 验证 containerd 和 MicRun
-ssh root@192.168.1.101 "ctr version"
-ssh root@192.168.1.101 "ls -l /usr/bin/containerd-shim-mica-v2"
+run_single_node_e2e.sh
+run_cloud_edge_e2e.sh
+run_interaction_e2e.sh
+prepare_edge_node.sh
+start_qemu_edge.sh
 ```
 
-## 测试用例
+## 前置条件
 
-| ID | 测试名称 | 说明 | 预期结果 |
-|----|----------|------|----------|
-| K3S-001 | RuntimeClass 创建 | 验证 RuntimeClass 资源创建 | RuntimeClass 存在 |
-| K3S-002 | Pod 启动/停止 | 验证 Pod 生命周期管理 | Pod 能正常启动和停止 |
-| K3S-003 | Deployment 扩缩容 | 验证副本扩缩容功能 | 副本能正常扩容和缩容 |
-| K3S-004 | Pod 日志获取 | 验证日志输出功能 | 能获取容器日志 |
-| K3S-005 | 资源限制 | 验证 CPU/内存限制 | 资源限制生效 |
-| K3S-006 | 多节点部署 | 验证云边协同 | Pod 能调度到不同节点 |
-| K3S-007 | 故障恢复 | 验证自愈能力 | Pod 删除后自动重建 |
-
-## 执行方式
-
-### 运行所有测试
+边侧节点可以是真实设备，也可以是通过 QEMU + Xen 启动的 guest。若使用 QEMU，
+推荐保留 tap 网络：
 
 ```bash
-cd tests/k3s
-./run_k3s_tests.sh
+export QEMU_OUTPUT_DIR="<path-to-qemu-output-test-dir>"
+export QEMU_NET_MODE=both
+export QEMU_LOCAL_SUDO_PASSWORD="<host-sudo-password-if-needed>"
+micrun/tests/k3s/start_qemu_edge.sh
 ```
 
-### 运行单个测试
+`QEMU_NET_MODE=both` 会保留 `tap0`，同时增加 usernet SSH 转发。K3s 云边测试
+依赖 `tap0` 上的 `192.168.7.0/24` 网络和 macvlan，因此不能只用 usernet。
+`start_qemu_edge.sh` 会在前台运行 QEMU，后续测试通常在另一个终端执行。
+
+仓库示例默认使用 `192.168.7.0/24`。如果你的实验网络不同，先统一下面这些
+变量，再传给准备脚本和 K3s 测试入口：
 
 ```bash
-cd tests/k3s
-./run_k3s_tests.sh K3S-001
+export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
+export EDGE_IFACE="${EDGE_IFACE:-enp0s1}"
+export EDGE_IP="${EDGE_IP:-192.168.7.2}"
+export HOST_TAP_IP="${HOST_TAP_IP:-192.168.7.1}"
+export CLOUD_IP="${CLOUD_IP:-192.168.7.10}"
+export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
+export TEST_REMOTE_PASSWORD="<guest-root-password-if-needed>"
 ```
 
-### 指定 K3s Master 节点
+提交文档、日志或 skill 时，不要写入真实宿主机绝对路径、sudo 密码或 guest
+密码；用变量或 `<...>` 占位符表达。
+
+guest 启动后，如需固定边侧 IP，可在 guest 内执行：
 
 ```bash
-export K3S_MASTER_NODE="root@192.168.1.100"
-./run_k3s_tests.sh
+IFACE="$EDGE_IFACE" \
+IP_ADDR="$EDGE_IP/24" \
+GATEWAY="$HOST_TAP_IP" \
+DNS_SERVER="$HOST_TAP_IP" \
+  sh <path-to-mcs-repo>/micrun/tests/k3s/prepare_edge_node.sh
 ```
 
-## 测试架构
+这一步只配置运行中的 guest 网络和可选 swap，不会修改 QEMU rootfs 产物。
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      K3s Control Plane                         │
-│                     (Master Node)                              │
-│  - API Server                                                  │
-│  - Scheduler                                                   │
-│  - Controller Manager                                          │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Edge Nodes                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│  │   Pod 1      │  │   Pod 2      │  │   Pod 3      │         │
-│  │   (RTOS)     │  │   (RTOS)     │  │   (RTOS)     │         │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │
-│         │                 │                 │                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│  │  MicRun      │  │  MicRun      │  │  MicRun      │         │
-│  │  (Shim v2)   │  │  (Shim v2)   │  │  (Shim v2)   │         │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## 典型测试场景
-
-### 场景 1: 单节点 RTOS Pod
+oEE/QEMU guest 的 cgroup 层级可能不足以支撑 kubelet 的 Pod QoS cgroup。
+测试脚本默认给 K3s 增加：
 
 ```bash
-# 创建 RuntimeClass
-kubectl apply -f - <<EOF
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: micrun
-handler: micrun
-EOF
-
-# 创建 Pod
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: rtos-pod
-spec:
-  runtimeClassName: micrun
-  containers:
-  - name: rtos
-    image: localhost:5000/mica-uniproton-app:xen-0.1
-    tty: true
-    stdin: true
-EOF
-
-# 查看状态
-kubectl get pods
-kubectl logs rtos-pod
-
-# 清理
-kubectl delete pod rtos-pod
+--kubelet-arg=cgroups-per-qos=false \
+  --kubelet-arg=enforce-node-allocatable= \
+  --kubelet-arg=fail-cgroupv1=false
 ```
 
-### 场景 2: 多副本 Deployment
+这样 kubelet 不会因为 Pod cgroup 不存在而在 RTOS domain 刚启动后立即
+`StopContainer`。较新的 kubelet 在 cgroup v1 guest 中可能还需要
+`fail-cgroupv1=false`；较旧版本如果提示 unknown flag，就通过
+`K3S_KUBELET_ARGS` 覆盖为本版本支持的参数。当前已验证的 oEE K3s
+v1.27 组合为：
 
 ```bash
-# 创建 Deployment
-kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: rtos-deployment
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: rtos-app
-  template:
-    metadata:
-      labels:
-        app: rtos-app
-    spec:
-      runtimeClassName: micrun
-      containers:
-      - name: rtos
-        image: localhost:5000/mica-uniproton-app:xen-0.1
-        tty: true
-        stdin: true
-EOF
-
-# 扩容
-kubectl scale deployment rtos-deployment --replicas=5
-
-# 缩容
-kubectl scale deployment rtos-deployment --replicas=2
-
-# 清理
-kubectl delete deployment rtos-deployment
+export K3S_KUBELET_ARGS="--kubelet-arg=cgroups-per-qos=false --kubelet-arg=enforce-node-allocatable="
 ```
 
-### 场景 3: 带资源限制
+如目标环境已经具备完整 cgroup 能力，可显式覆盖：
 
 ```bash
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: rtos-limited
-spec:
-  runtimeClassName: micrun
-  containers:
-  - name: rtos
-    image: localhost:5000/mica-uniproton-app:xen-0.1
-    tty: true
-    stdin: true
-    resources:
-      requests:
-        memory: "64Mi"
-        cpu: "250m"
-      limits:
-        memory: "128Mi"
-        cpu: "500m"
-EOF
+export K3S_KUBELET_ARGS=""
 ```
 
 ## 必要文件
@@ -411,42 +303,18 @@ K3s 场景需要清理和重建运行中边侧节点的 K3s 状态：
 
 ## 故障排查
 
-### 问题 1: Pod 一直处于 Pending 状态
+| 现象 | 优先检查 |
+|------|----------|
+| 边侧节点无法 SSH | `tap0`、guest IP、`TEST_REMOTE_PASSWORD`、首次登录改密 |
+| 云侧容器无法访问边侧 | Docker macvlan、`K3S_CLOUD_NETWORK_PARENT`、`192.168.7.0/24` 是否冲突 |
+| K3s containerd 未就绪 | CNI 配置、`/opt/cni/bin`、bundled containerd 日志或系统 `containerd` 状态 |
+| Pod 卡在 `ContainerCreating` | pause 镜像和 RTOS 镜像是否导入目标 containerd；external 模式还要检查 `/etc/containerd/config.toml` 的 `sandbox_image` |
+| RuntimeClass 不存在 | `config.toml.tmpl` 中的 `runtimes.micrun` 是否生成到最终配置 |
+| Pod 刚 Running 后立刻出现 `Killing`/`Stopping container` | kubelet 可能因 Pod cgroup 不存在执行 `killPod`；确认已设置 `cgroups-per-qos=false`、空 `enforce-node-allocatable` 和必要的 `fail-cgroupv1=false` |
+| K3s kubelet 拒绝 cgroup v1 | 较新 kubelet 可能需要 `--kubelet-arg=fail-cgroupv1=false`；旧版本如果提示 unknown flag，则通过 `K3S_KUBELET_ARGS` 移除 |
+| `kubectl attach` 无输出 | Pod 是否设置 `stdin: true`，以及 shim IO 是否已建立；K3s 交互脚本默认 `tty: false` |
+| Pod Running 但无 Xen domain | 边侧 `ctr` 容器 ID 与 `xl list`，以及 `journalctl -u micad` |
+| 删除 Pod 后仍有 Xen domain | 边侧 `ctr -a <containerd-sock> -n k8s.io tasks ls` 和 `xl list` 是否仍含同一 ID；QEMU 测试可启用 `K3S_INTERACTION_EDGE_DELETE_FALLBACK` |
+| 下一轮测试启动时出现旧 Pod 重建或 `mica daemon reported failure` | 先停止旧 K3s agent/server，再清理 MicRun/micad 运行态；测试脚本会清理 `/run/micrun` 临时目录、旧 shim、Xen domain 和 micad client |
 
-**原因**: 节点没有正确配置 MicRun 运行时
-
-**解决**:
-```bash
-# 检查节点状态
-kubectl get nodes -o wide
-
-# 检查 RuntimeClass
-kubectl get runtimeclass micrun -o yaml
-
-# 在 Worker 节点检查 containerd 配置
-ssh root@worker "cat /etc/containerd/config.toml | grep -A 5 micrun"
-```
-
-### 问题 2: Pod 启动失败
-
-**原因**: 镜像不存在或路径错误
-
-**解决**:
-```bash
-# 检查镜像
-ssh root@worker "ctr image ls | grep mica"
-
-# 导入镜像
-ctr image import mica-uniproton-app-xen-0.1.tar.gz
-```
-
-### 问题 3: 无法获取日志
-
-**原因**: RTOS 容器没有标准输出
-
-**解决**: 检查 shim 的日志转发配置
-
-## 参考资料
-
-- [Kubernetes 集成](../../docs/user/kubernetes.md)
-- [RuntimeClass 设计](https://kubernetes.io/docs/concepts/containers/runtime-class/)
+更多 Kubernetes 使用说明见 [Kubernetes 集成指南](../../docs/user/kubernetes.md)。

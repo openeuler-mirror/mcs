@@ -5,8 +5,8 @@
 ### 必需配置
 
 1. **远程主机访问**
-   - 默认主机: `root@192.168.7.2`
-   - 可通过环境变量配置: `export REMOTE_HOST=user@host`
+   - 仓库示例主机: `root@192.168.7.2`
+   - 可通过环境变量配置: `export TEST_REMOTE_HOST=user@host`
 
 2. **测试镜像**
    - 默认镜像: `localhost:5000/mica-uniproton-app:xen-0.1`
@@ -14,10 +14,14 @@
 
    ```bash
    # 在本地传输镜像 tarball 到远程主机
-   scp mica-uniproton-app-xen-0.1.tar.gz root@192.168.7.2:/tmp/
+   export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
+   export EDGE_IP="${EDGE_IP:-192.168.7.2}"
+   export TEST_REMOTE_HOST="${TEST_REMOTE_HOST:-${EDGE_SSH_USER}@${EDGE_IP}}"
+
+   scp mica-uniproton-app-xen-0.1.tar.gz "${TEST_REMOTE_HOST}:/tmp/"
 
    # 在远程主机导入镜像
-   ssh root@192.168.7.2
+   ssh "$TEST_REMOTE_HOST"
    ctr image import /tmp/mica-uniproton-app-xen-0.1.tar.gz
    ctr image tag localhost/mica-uniproton-app:xen-0.1 localhost:5000/mica-uniproton-app:xen-0.1
    ```
@@ -37,7 +41,9 @@
 ```bash
 #!/bin/bash
 # MicRun IO Test Environment Configuration
-export REMOTE_HOST="${REMOTE_HOST:-root@192.168.7.2}"
+export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
+export EDGE_IP="${EDGE_IP:-192.168.7.2}"
+export TEST_REMOTE_HOST="${TEST_REMOTE_HOST:-${EDGE_SSH_USER}@${EDGE_IP}}"
 export TEST_IMAGE="${TEST_IMAGE:-localhost:5000/mica-uniproton-app:xen-0.1}"
 ```
 
@@ -45,6 +51,33 @@ export TEST_IMAGE="${TEST_IMAGE:-localhost:5000/mica-uniproton-app:xen-0.1}"
 ```bash
 source tests/io/test-env.sh
 ./tests/io/run_all_io_tests.sh
+```
+
+### qemu 一键回归
+
+对于已经打通 `ssh "$TEST_REMOTE_HOST"` 的 qemu 环境，可直接运行：
+
+```bash
+cd micrun/tests/io
+./run_qemu_regression.sh
+```
+
+该脚本会自动：
+
+1. 构建当前工作区的 `arm64` 版本 `micrun`
+2. 部署到 qemu
+3. 导入 UniProton 镜像 tar
+4. 执行自适应 IO 回归
+
+推荐配套环境变量：
+
+```bash
+export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
+export EDGE_IP="${EDGE_IP:-192.168.7.2}"
+export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
+export TEST_IMAGE="localhost:5000/mica-uniproton-app:xen-0.1"
+export NERDCTL_NETWORK_MODE="none"
+export IMAGE_PROFILE="auto"
 ```
 
 ## 一键执行
@@ -113,7 +146,7 @@ cd micrun/tests/io
 
 ```bash
 # 测试 ctr 后台模式
-ssh root@192.168.7.2
+ssh "$TEST_REMOTE_HOST"
 ctr container create --runtime io.containerd.mica.v2 \
   localhost:5000/mica-uniproton-app:xen-0.1 test
 ctr task start -d test

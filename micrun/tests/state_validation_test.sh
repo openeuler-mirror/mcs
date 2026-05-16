@@ -120,7 +120,7 @@ cd "$MICRUN_ROOT"
 
 # 运行状态验证相关的单元测试
 echo "运行 processExists 测试..."
-if go test -v ./pkg/micantainer -run TestProcessExists -timeout 30s; then
+if go test -v ./internal/domain/container -run TestProcessExists -timeout 30s; then
     echo "✓ TestProcessExists 通过"
 else
     echo "✗ TestProcessExists 失败"
@@ -129,7 +129,7 @@ fi
 echo ""
 
 echo "运行 ValidateSandboxState 测试..."
-if go test -v ./pkg/micantainer -run TestValidateSandboxState -timeout 30s; then
+if go test -v ./internal/domain/container -run TestValidateSandboxState -timeout 30s; then
     echo "✓ TestValidateSandboxState 通过"
 else
     echo "✗ TestValidateSandboxState 失败"
@@ -138,7 +138,7 @@ fi
 echo ""
 
 echo "运行 loadSandbox 相关测试..."
-if go test -v ./pkg/micantainer -run TestLoadSandboxWithValidation -timeout 30s; then
+if go test -v ./internal/domain/container -run TestLoadSandboxWithValidation -timeout 30s; then
     echo "✓ TestLoadSandboxWithValidation 通过"
 else
     echo "✗ TestLoadSandboxWithValidation 失败"

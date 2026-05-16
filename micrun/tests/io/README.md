@@ -1,89 +1,111 @@
-# MicRun IO 测试
+# MicRun IO Tests
 
-本目录包含 MicRun 的 IO 系统测试用例，用于验证 RTOS 容器的标准输入输出功能。
+The maintained IO entrypoints are:
 
-## 环境要求
+- `micrun/tests/io/run_all_io_tests.sh`
+- `micrun/tests/bin/test-io-qemu`
 
-### 必需配置
+## Environment
 
-1. **远程主机访问**
-   - 默认主机: `root@192.168.7.2`
-   - 可通过环境变量配置: `export REMOTE_HOST=user@host`
-
-2. **测试镜像**
-   - 默认镜像: `localhost:5000/mica-uniproton-app:xen-0.1`
-   - 镜像需要预先导入到远程主机的 containerd
-
-3. **containerd 服务**
-   - 远程主机需运行 containerd
-   - micrun 运行时需部署到 `/usr/bin/containerd-shim-mica-v2`
-
-4. **expect 工具**
-   - 本地需要安装 expect: `sudo apt install expect`
-   - 用于交互式 TTY 测试
-
-## 快速开始
-
-### 环境配置
+Use the shared test environment variables:
 
 ```bash
-# 配置环境变量
-source tests/io/test-env.sh
-
-# 或手动设置
-export REMOTE_HOST="root@192.168.7.2"
+export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
+export EDGE_IP="${EDGE_IP:-192.168.7.2}"
+export TEST_REMOTE_HOST="${TEST_REMOTE_HOST:-${EDGE_SSH_USER}@${EDGE_IP}}"
+export TEST_REMOTE_PASSWORD="<guest-root-password-if-needed>"
 export TEST_IMAGE="localhost:5000/mica-uniproton-app:xen-0.1"
+export NERDCTL_NETWORK_MODE="none"
+export IMAGE_PROFILE="auto"
+export QEMU_SOURCE_IMAGE_REF="localhost:5000/mica-uniproton-app:xen-0.1"
+export QEMU_IMAGE_TAR="<path-to-stamped-output>/exports/local_mica-uniproton-app_xen-arm64-0.1.tar"
 ```
 
-### 运行所有测试
+Use `TEST_REMOTE_HOST=qemu-k3s` only when you want the QEMU helper to start or
+reuse the local QEMU guest through usernet SSH forwarding. Do not commit real
+host paths, passwords, or lab-only IP addresses into this file.
+
+## QEMU Regression
+
+Run:
 
 ```bash
-cd tests/io
-./run_all_io_tests.sh
+micrun/tests/bin/test-io-qemu
 ```
 
-## 测试用例
+This flow now:
 
-| ID | 测试名称 | 说明 |
-|----|----------|------|
-| 1 | ctr 后台模式 attach | 验证 `ctr task start -d` + `ctr task attach` |
-| 2 | ctr 前台模式 | 验证 `ctr task start` 交互式输出 |
-| 3 | nerdctl 非 TTY 模式 | 验证非 TTY 模式下的命令执行 |
-| 4 | 多命令执行 | 验证连续输入多个命令的响应 |
-| 5 | 退出命令检测 | 验证 `exit` 命令触发容器停止 |
-| 6 | 日志清洁度 | 验证无高频日志垃圾 |
-| 7 | TTY 回声抑制 | 验证无双重回显问题 |
+1. validates the QEMU guest is reachable
+2. rebuilds the current worktree shim
+3. deploys the shim to the guest
+4. imports the current RTOS image tar
+5. runs the adaptive IO suite
 
-## 测试文件说明
+The QEMU regression copies files into the running guest and replaces the shim
+inside that guest for validation. It must not unpack, patch, or repack the
+QEMU rootfs artifact produced by the build.
 
-| 文件 | 用途 |
-|------|------|
-| `run_all_io_tests.sh` | 主入口 - 一键执行所有 IO 测试 |
-| `test_ctr_foreground.exp` | ctr 前台模式 expect 测试脚本 |
-| `test_tty_echo.exp` | TTY 回声抑制测试脚本 |
-| `test_nerdctl_tty.exp` | nerdctl TTY 模式测试脚本（可选） |
-| `test-env.sh` | 环境配置文件 |
-| `IO_TEST_SUITE.md` | 详细测试套件文档 |
-| `UX_TEST_MANUAL.md` | 手动 UX 测试指南 |
+## Covered User Workflows
 
-## 手动测试
+The maintained adaptive suite now verifies user-facing `nerdctl` behavior in addition to `ctr`:
+
+- `hello`-style images:
+  - `nerdctl run -i --rm`
+  - `nerdctl create --name` + `nerdctl start`
+  - `nerdctl run -d --name`
+  - `nerdctl ps`
+  - `nerdctl rm -f`
+- `shell`-style images:
+  - `nerdctl run -it --rm`
+  - `nerdctl run -dt --name`
+  - `nerdctl create -i -t --name` + `nerdctl start`
+  - `nerdctl stop` + `nerdctl rm`
+  - `nerdctl attach`
+  - detach back to the remote shell
+  - foreground `nerdctl run -it` followed by repeated attach/detach
+  - empty input, invalid command input, pasted command bursts, and partial-line
+    detach recovery
+  - TTY `Ctrl-C` interrupt and post-interrupt cleanup
+  - `nerdctl ps`
+  - `nerdctl inspect` for the real containerd/Xen ID behind `--name`
+  - `nerdctl rm -f`
+  - `ctr container create` + `ctr task start -d`
+  - `ctr task ls`, `ctr containers info`, `xl list`, and runtime log diagnostics
+  - cleanup after timeout, `exit`, `stop`, `kill`, and `rm`
+
+When the current image only exposes a fixed startup banner such as `Hello, UniProton!`, the suite treats it as `hello` profile and only runs the commands that make sense for that runtime behavior.
+
+The K3s interaction test extends this user-facing coverage through Kubernetes:
+
+- `RuntimeClass micrun`
+- RTOS Pod with `stdin: true` and `tty: false`
+- `kubectl attach -i` command input
+- output markers from UniProton shell or hello workloads
+- K3s bundled containerd task lookup by Pod container ID
+- Xen domain lookup by the same container ID
+- Pod deletion cleanup for both task and Xen domain
+
+Run it after a single-node or cloud-edge K3s environment is ready:
 
 ```bash
-# 测试 ctr 后台模式
-ssh root@192.168.7.2
-ctr container create --runtime io.containerd.mica.v2 \
-  localhost:5000/mica-uniproton-app:xen-0.1 test-io
-ctr task start -d test-io
-ctr task attach test-io
-# 输入 help 命令，应该看到输出
-# 输入 exit 退出
-
-# 清理
-ctr task delete test-io
-ctr container delete test-io
+micrun/tests/bin/test-k3s-interaction
 ```
 
-## 相关文档
+## Adaptive Profile Detection
 
-- [IO 系统设计](../../docs/internals/io-system.md) - IO 系统架构设计文档
-- [测试指南](../README.md) - MicRun 测试总览
+The IO suite still distinguishes:
+
+- `shell` images
+- `hello` images
+
+But an unknown profile is now treated as a **failing regression**, not a silent skip. This is important because fresh qemu validation has already exposed a real runtime failure in the current shim startup path.
+
+## Notes
+
+- `tests/io/test_helpers.sh` now uses the shared password-aware remote contract.
+- Older `REMOTE_HOST`-only usage should be treated as legacy; prefer `TEST_REMOTE_HOST`.
+- The cleanup helper avoids `pkill -f containerd-shim-mica-v2` because it can
+  match its own remote shell command and abort cleanup before `xl destroy`.
+- For `nerdctl --name`, use `nerdctl inspect <name>` before checking `ctr` or
+  `xl`; containerd tasks and Xen domains use the inspected ID, not the display
+  name shown by `nerdctl ps`.

@@ -1,36 +1,57 @@
 #!/usr/bin/expect -f
-# Test nerdctl TTY mode using expect
-# Tests: nerdctl run -it interactive TTY session
+# Test nerdctl TTY attach/detach flow using expect
 
-set timeout 25
+set timeout 35
+set cid "nerdctl-tty-[pid]"
+set image "localhost:5000/mica-uniproton-app:xen-0.1"
+
+proc fail {msg} {
+    puts stderr $msg
+    exit 1
+}
 
 spawn ssh -tt root@192.168.7.2
 expect {
-    timeout { exit 1 }
-    -re "# $" {}
+    timeout { fail "ssh timeout" }
+    -re "qemu-aarch64.*#" {}
 }
 
-# Run nerdctl in TTY mode
-send "nerdctl run -it --rm --runtime io.containerd.mica.v2 localhost:5000/mica-uniproton-app:xen-0.1\r"
+send "rm -f /var/log/mica/mica-runtime.log\r"
+expect -re "qemu-aarch64.*#"
 
-# Wait for RTOS prompt - use timeout to capture any output
+send "nerdctl rm -f $cid 2>/dev/null || true\r"
+expect -re "qemu-aarch64.*#"
+send "ctr task kill -s SIGKILL $cid 2>/dev/null || true\r"
+expect -re "qemu-aarch64.*#"
+send "ctr task delete -f $cid 2>/dev/null || true\r"
+expect -re "qemu-aarch64.*#"
+send "ctr container delete $cid 2>/dev/null || true\r"
+expect -re "qemu-aarch64.*#"
+
+send "nerdctl run -dt --runtime io.containerd.mica.v2 --network=none -l org.openeuler.micrun.container.auto_close=false --name $cid $image\r"
 expect {
-    timeout { puts "\n✓ nerdctl TTY: Got RTOS prompt"; send "help\r" }
-    -re "UniProton|Hello|MainTCB|#" { send "help\r" }
+    timeout { fail "nerdctl run timeout" }
+    -re "FATA|ERRO" { fail "nerdctl run failed: $expect_out(buffer)" }
+    -re {[0-9a-f]{12,64}} {}
 }
+expect -re "qemu-aarch64.*#"
 
-# Wait for help output
-sleep 2
-
-# Send exit command
-send "exit\r"
-
-# Should return to shell
+send "nerdctl attach $cid\r"
+after 3000
+send "\020\021"
 expect {
-    timeout {
-        puts "\n✓ nerdctl TTY mode: PASS"
-    }
-    -re "# $" {
-        puts "\n✓ nerdctl TTY mode: PASS"
-    }
+    timeout { fail "detach timeout" }
+    -re "qemu-aarch64.*#" {}
 }
+
+send "nerdctl ps | grep $cid\r"
+expect {
+    timeout { fail "nerdctl ps timeout" }
+    -re "$cid" {}
+}
+expect -re "qemu-aarch64.*#"
+
+send "nerdctl rm -f $cid\r"
+expect -re "qemu-aarch64.*#"
+
+puts "\n✓ nerdctl TTY attach/detach: PASS"

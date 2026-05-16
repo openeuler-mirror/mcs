@@ -627,6 +627,14 @@ for pid in $(pgrep -f '[c]ontainerd-shim-mica-v2' 2>/dev/null || true); do
 done
 ```
 
+For repeated QEMU or K3s runs, also clear stale micad clients. Stop old K3s
+agent/server processes first, then remove MicRun runtime state by full
+container IDs from `/run/micrun/containers` and `/run/micrun/runtime/container`.
+If `mica status` still shows non-`qemu-*` clients after that, restart `micad`
+before starting the next validation. The repository test scripts perform this
+cleanup automatically; use the same ordering for manual recovery so kubelet
+does not recreate an old Pod while runtime state is being removed.
+
 ## Build Record Template
 
 ```markdown
