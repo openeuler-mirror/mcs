@@ -206,9 +206,9 @@ static int init_ivshmem_dev(const char *uio_dev, struct ivshmem_device *ivshmem_
 	}
 
 	ivshmem_dev->ivshm_regs = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, uio_fd, 0);
-	if (ivshmem_dev->ivshm_regs == NULL) {
+	if (ivshmem_dev->ivshm_regs == MAP_FAILED) {
 		syslog(LOG_ERR, "mmap of registers failed");
-		goto err;
+		goto err_close_fd;
 	}
 
 	uio_devname = strstr(uio_dev, "/uio");
@@ -250,6 +250,8 @@ static int init_ivshmem_dev(const char *uio_dev, struct ivshmem_device *ivshmem_
 
 	return 0;
 err:
+	munmap(ivshmem_dev->ivshm_regs, 4096);
+err_close_fd:
 	close(uio_fd);
 	return -1;
 }
