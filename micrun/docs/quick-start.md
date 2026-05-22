@@ -153,32 +153,61 @@ oebuild neo-generate -p qemu-aarch64 \
 
 ### 2.2 使用`QEMU`启动（开发测试）
 
-**启动示例**：
+**标准 Xen + tap 启动路径**：
+
+这条路径继续作为 MicRun 本地标准测试方式，适合原有 `192.168.7.0/24`
+测试网络、K3s 云边联调和需要 `tap0` 的场景。rootfs 应直接使用构建输出中的
+`openeuler-image-qemu-aarch64-*.rootfs.cpio.gz` 产物；测试过程不应重命名、
+解包或改写该 rootfs 产物。
+如果实验网络或构建目录不同，优先通过变量覆盖，不要在文档、skill 或提交记录中
+写入当前机器的真实绝对路径、密码或访问密钥。
 
 ```bash
-sudo <qemu_path>/qemu-system-aarch64 \
+cd <build_dir>/output/test
+ROOTFS="$(ls -t openeuler-image-qemu-aarch64-*.rootfs.cpio.gz | head -n1)"
+
+sudo qemu-system-aarch64 \
   -device virtio-net-pci,netdev=net0 \
   -netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup \
-  -initrd openeuler-image-*.cpio.gz \
+  -initrd "$ROOTFS" \
   -device loader,file=Image,addr=0x45000000 \
   -machine virt,gic-version=3 \
   -machine virtualization=true \
   -cpu cortex-a53 -smp 4 -m 4096 \
   -serial mon:stdio -nographic \
   -kernel xen-qemu-aarch64 \
-  -append 'root=/dev/ram0 rw debugshell mem=1024M console=ttyAMA0,115200' \
-  -dtb openeuler-image-mcs-qemu-aarch64-*.qemuboot.dtb
+  -append 'root=/dev/ram0 rw debugshell mem=1536M console=ttyAMA0,115200' \
+  -dtb openeuler-image-qemu-aarch64.qemuboot.dtb
 ```
+
+**可选 usernet 辅助 SSH**：
+
+如果只是做 smoke test，或希望在不依赖 guest 固定 IP 的情况下通过宿主端口
+访问 SSH，可以额外加一块 usernet 网卡。仓库里的 `tests/common/qemu.sh`
+默认 `QEMU_NET_MODE=both`，含义就是保留 tap 网卡，同时增加下面的 usernet
+端口转发；它不是替代 tap 的新标准路径。
+
+```bash
+sudo qemu-system-aarch64 \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup \
+  -device virtio-net-pci,netdev=net1 \
+  -netdev user,id=net1,hostfwd=tcp::10023-:22 \
+  ...
+```
+
+如果明确只想使用 usernet，可以把上面 tap 网卡去掉，但这种模式不会创建
+`tap0`，也不适合依赖固定边侧 IP 和 macvlan 的 K3s 云边测试。
 
 **参数说明**：
 | 参数 | 说明 |
 |------|------|
 | `-device virtio-net-pci,netdev=net0` | 添加`virtio`网卡设备 |
-| `-netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup` | 配置`TAP`网络设备 |
-| `-initrd openeuler-image-*.cpio.gz` | 指定`initrd`文件 |
+| `-netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup` | 使用宿主 `tap0`，保持原有 QEMU/K3s 测试网络 |
+| `-netdev user,id=net1,hostfwd=tcp::10023-:22` | 可选用户态网络，把客体 SSH 映射到宿主 `10023` 端口 |
+| `-initrd "$ROOTFS"` | 指定构建输出的 `openeuler-image-qemu-aarch64-*.rootfs.cpio.gz` 文件 |
 | `-device loader,file=Image,addr=0x45000000` | 加载内核镜像到指定地址 |
-| `-machine virt,gic-version=3` | 使用`virt`机器类型，`GIC`v3 |
-| `-machine virtualization=true` | 启用虚拟化支持 |
+| `-machine virt,gic-version=3` / `-machine virtualization=true` | 使用`virt`机器类型、`GIC`v3，并启用虚拟化支持 |
 | `-cpu cortex-a53 -smp 4 -m 4096` | `CPU`类型、核心数、内存大小 |
 | `-serial mon:stdio -nographic` | 串口输出到标准输出，无图形界面 |
 | `-kernel xen-qemu-aarch64` | 指定`Xen hypervisor` |
@@ -186,6 +215,8 @@ sudo <qemu_path>/qemu-system-aarch64 \
 | `-dtb *.qemuboot.dtb` | 指定设备树文件 |
 
 **`QEMU`注意事项**：
+- MicRun 的完整生命周期测试必须通过 Xen 启动路径执行。直接用 `-kernel Image -initrd "$ROOTFS"` 启动 Linux 只能验证 rootfs、containerd 和 shim 是否存在；此时 `/proc/xen/xenbus` 不存在，MicRun 默认会把宿主 pedestal 判定为 `unsupported`。只有明确设置 `MICRUN_ENABLE_BAREMETAL=1` 时，才会进入 baremetal pedestal 路径。
+- 标准化测试不得修改已经构建好的 QEMU rootfs 产物。若某次调试需要在运行中的 guest 里临时补齐目录或网络配置，必须把它记录为临时排障动作，不能把修改后的 rootfs 当作测试基线。
 - `QEMU`版本不宜过低，低版本存在影响`Xen`的`bug`
 - 确保`Xen DTS`为`Domain-0`预留足够内存（建议`1536M`）
 - 如需调整，在`conf/local.conf`中设置：
@@ -213,8 +244,8 @@ sudo <qemu_path>/qemu-system-aarch64 \
 ### 3.2 准备构建环境
 
 ```bash
-# 进入构建产物目录
-cd <build_dir>/output/micrun-files
+# 进入一次构建的时间戳产物目录；micrun-files 是其子目录
+cd <build_dir>/output/<timestamp>
 
 # 初始化 Python 环境
 uv init
@@ -222,20 +253,44 @@ uv venv
 source .venv/bin/activate
 
 # 安装依赖
-uv pip install -r requirements.txt
+uv pip install -r micrun-files/requirements.txt
 ```
 
 > **替代方案**：如果没有`uv`，可以用传统方式：
 > ```bash
-> pip install -r requirements.txt
-> python mica-image-builder.py
+> pip install -r micrun-files/requirements.txt
+> python3 micrun-files/mica-image-builder.py --help
 > ```
 
-### 3.3 交互式构建镜像
+### 3.3 使用 CLI 构建 UniProton 镜像
+
+```bash
+python3 micrun-files/mica-image-builder.py \
+  --pedestal xen \
+  --os uniproton \
+  --firmware micrun-files/uniproton.elf \
+  --xen-image micrun-files/uniproton.bin \
+  --image-name local/mica-uniproton-app:xen-arm64-0.1 \
+  --platform linux/arm64 \
+  --export ./exports
+```
+
+构建成功后，tarball 位于：
+
+```bash
+exports/local_mica-uniproton-app_xen-arm64-0.1.tar
+```
+
+说明：
+- 仅本地构建和导出时不需要本地 registry；只有使用 `--push` 时才需要 registry。
+- 没有 `docker buildx` 的环境会先用 legacy `docker build` 构建，再在导出的 OCI archive 中规范化单平台元数据，例如 `linux/arm64`。
+- 如果使用交互式模式并且不推送，请传 `--no-push --export <dir>`，脚本会生成 `local/...` 镜像名并导出 tarball。
+
+### 3.4 交互式构建镜像
 
 ```bash
 # 启动交互式构建工具
-uv run mica-image-builder.py
+uv run micrun-files/mica-image-builder.py --no-push --export ./exports
 ```
 
 根据提示选择：
@@ -244,14 +299,11 @@ uv run mica-image-builder.py
 3. **固件文件**：选择你的`<firmware>.elf`或`<firmware>.bin`文件
 4. **镜像名称**：使用默认或自定义名称
 
-### 3.4 导出镜像
+### 3.5 手动导出镜像
 
-构建完成后，将镜像导出为`tarball`：
+如果构建时没有传 `--export`，可以手动导出已构建镜像：
 
 ```bash
-# 构建时会提示是否导出，选择导出
-# 或手动导出已构建的镜像
-
 # 方法1: 使用 ctr 导出（推荐，在目标系统上可用）
 ctr image export <image_file>.tar <image_name>:<tag>
 # 例如：ctr image export my-rtos-image.tar localhost:5000/mica-uniproton-app:xen-0.1
@@ -279,13 +331,14 @@ version = 2
 
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.micrun]
   runtime_type = "io.containerd.mica.v2"
-  pod_annotations = ["org.openeuler.micrun."]
+  pod_annotations = ["org.openeuler.micrun.*"]
+  container_annotations = ["org.openeuler.micrun.*"]
 ```
 
 **配置说明**：
 - `version = 2`：显示声明配置文件格式版本。
 - `runtime_type`：指定运行时类型为 MicRun 的`shimv2`实现`io.containerd.mica.v2`。
-- `pod_annotations`：声明`MicRun`支持的注解前缀，用于接收来自`Kubernetes`/`Pod`的配置。
+- `pod_annotations` / `container_annotations`：声明 `MicRun` 支持的注解通配规则，用于接收来自 `Kubernetes` / `Pod` 的配置。containerd 使用通配匹配，需写成 `org.openeuler.micrun.*`。
 > `runc`这样的容器运行时不在此配置的原因：`runc`是`containerd`的默认运行时，由系统内置配置自动处理，无需手动添加。
 
 ### 4.2 重启`containerd`
@@ -488,15 +541,33 @@ nerdctl run -d -t \
   <image_name>:<tag>
 ```
 
-**退出容器**：
-- 在 TTY 中输入 `exit` 命令并回车，容器会停止（推荐方式）
-- 使用 `Ctrl+P` 然后 `Ctrl+Q` 可以**临时退出**容器（容器继续运行，仅 TTY 模式）
-- 外部终止：使用 `ctr task kill -s SIGTERM <容器名>` 或 `SIGKILL`
+**交互行为速记**：
 
-**Detach 和 Attach 功能说明**：
-- `Ctrl+P, Ctrl+Q` 序列可以让你临时退出容器 shell，容器在后台继续运行
-- 这是类似 Docker 的行为，方便你从交互式会话中临时脱离
-- 退出后容器继续运行，可以使用 `nerdctl attach <容器名>` 重新连接
+把 MicRun 的交互先按这四句话理解：
+
+1. 想让容器继续跑、自己先离开：在 TTY 会话里按 `Ctrl+P`，再按 `Ctrl+Q`。
+2. 想回到正在跑的容器：执行 `nerdctl attach <container_name>`。
+3. 想停止容器：TTY 会话里按 `Ctrl+C`，或在外部执行 `nerdctl stop <container_name>`；在 UniProton shell 内也可以输入 `exit` 作为兼容退出方式。
+4. 使用非 TTY 或管道输入时，把它当作普通字节流；不要依赖 `Ctrl+P Ctrl+Q` 或 `Ctrl+C` 这类终端按键。
+
+常见情况如下：
+
+| 你想做什么 | 推荐操作 | 容器状态 |
+|------------|----------|----------|
+| 暂时离开交互 shell | `Ctrl+P` 后 `Ctrl+Q` | 继续运行 |
+| 重新进入容器 | `nerdctl attach <container_name>` | 继续运行 |
+| 在 TTY 会话内停止容器 | `Ctrl+C` | 停止 |
+| 正常停止容器 | `nerdctl stop <container_name>` | 停止，之后可 `nerdctl rm` |
+| 强制清理容器 | `nerdctl rm -f <container_name>` | 停止并删除 |
+| 在 UniProton shell 内退出 | 输入 `exit` 并回车 | 停止 |
+| 管道输入命令 | `printf 'help\n' | nerdctl run -i ...` | 按输入和 auto-close 策略运行 |
+
+TTY detach 默认使用 `Ctrl+P Ctrl+Q`。如果通过 `--detach-keys` 配置自定义序列，
+MicRun 支持 `ctrl-a` 到 `ctrl-z`，也支持 `ctrl-@`、`ctrl-[`、`ctrl-\`、`ctrl-]`、
+`ctrl-^`、`ctrl-_`、`ctrl-?` 这些常见符号控制键。序列中只要有一个片段非法，整条
+自定义 detach 配置就不会生效。
+
+> `Ctrl+C` 只在 TTY 会话里表示停止容器。非 TTY 或管道输入中的 `0x03` 仍按普通输入字节处理，避免破坏脚本和二进制输入。
 
 **使用示例**：
 ```bash
@@ -610,6 +681,81 @@ nerdctl attach <container_id>
    kubectl apply -f rtos-pod.yaml
    ```
 
+**仓库测试入口**：
+
+```bash
+export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
+export EDGE_IP="${EDGE_IP:-192.168.7.2}"
+export HOST_TAP_IP="${HOST_TAP_IP:-192.168.7.1}"
+export CLOUD_IP="${CLOUD_IP:-192.168.7.10}"
+
+# 边侧节点已可通过 SSH 访问，且 rootfs 包含 server-capable K3s 时，
+# 可验证单节点 K3s + MicRun；只有 agent 子命令时跳过该项。
+export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
+micrun/tests/bin/test-k3s-single-node
+
+# 云侧在本机 Docker 中启动，边侧通过 tap0 加入集群
+export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
+export K3S_BIN="/usr/bin/k3s"
+export K3S_CLOUD_SERVER_IMAGE="<k3s-server-image-matching-edge-version>"
+export K3S_CLOUD_KUBECTL_BIN="k3s"
+export K3S_CLOUD_KUBECTL_SUBCOMMAND="kubectl"
+export K3S_CLOUD_NETWORK_PARENT="tap0"
+export K3S_CLOUD_NETWORK_GATEWAY="${HOST_TAP_IP}"
+export K3S_CLOUD_SERVER_IP="${CLOUD_IP}"
+export K3S_EDGE_NODE_IP="${EDGE_IP}"
+export K3S_EDGE_CONTAINERD_MODE="external"
+export K3S_CONTAINERD_ADDRESS="/run/containerd/containerd.sock"
+export K3S_EDGE_CTR_BIN="ctr"
+export K3S_EDGE_CTR_SUBCOMMAND=""
+export K3S_KUBELET_ARGS="--kubelet-arg=cgroups-per-qos=false --kubelet-arg=enforce-node-allocatable="
+micrun/tests/bin/test-k3s-cloud-edge
+
+# 云边用例默认会删除测试 Pod，并验证边侧 task/Xen domain 清理。
+# 如需保留现场调试，可临时设置 K3S_E2E_KEEP_POD=true。
+
+# 环境已经就绪后，验证 kubectl attach、边侧 task/Xen domain 和删除清理
+export K3S_INTERACTION_MODE="auto"
+micrun/tests/bin/test-k3s-interaction
+```
+
+`K3S_INTERACTION_MODE=auto` 会依次选择 Docker 云侧、已有本机控制面和边侧
+单节点 K3s。若本机已经启动 K3s server，可显式使用：
+
+```bash
+export K3S_INTERACTION_MODE="local"
+export K3S_LOCAL_KUBECONFIG="<path-to-local-kubeconfig>"
+export K3S_LOCAL_KUBECTL_BIN="<path-to-k3s-or-kubectl>"
+export K3S_LOCAL_KUBECTL_SUBCOMMAND="kubectl"
+micrun/tests/bin/test-k3s-interaction
+```
+
+K3s 测试必须使用 rootfs 中已经构建好的 `/usr/bin/k3s`。脚本会配置运行中的
+边侧节点上的 K3s service、CNI、RuntimeClass、containerd 和镜像导入；这些动作
+属于 guest 运行态测试准备，不应安装 K3s，也不应解包或改写已经构建好的 QEMU
+rootfs 产物。完整变量和约束见 [K3s 测试说明](../tests/k3s/README.md)。
+
+交互测试创建的 RTOS Pod 默认使用 `stdin: true` 和 `tty: false`，通过
+`kubectl attach -i` 发送 `help`、`uname` 来验证 UniProton shell。这样可避
+免 K3s/containerd 在 `tty=true` 且同时打开 stderr 时拒绝 attach。若
+oEE/QEMU guest 中 Kubernetes 删除等待超时，脚本默认只清理该 Pod 的运行态
+containerd task/container 和 Xen domain，并移除已经 Terminating 的 Pod API
+对象；不会修改构建产物中的 rootfs。
+
+在 oEE/QEMU guest 中，kubelet 的 Pod QoS cgroup 可能无法完整创建。仓库的
+K3s 脚本默认附加：
+
+```bash
+--kubelet-arg=cgroups-per-qos=false \
+  --kubelet-arg=enforce-node-allocatable= \
+  --kubelet-arg=fail-cgroupv1=false
+```
+
+这能避免 RTOS Pod 刚进入 Running 就被 kubelet 因 Pod cgroup 缺失而
+`Stopping container`。较新的 kubelet 可能还需要 `fail-cgroupv1=false`；
+较旧版本若提示 unknown flag，则通过 `K3S_KUBELET_ARGS` 移除该参数。这是
+K3s 运行态参数，不需要修改 QEMU rootfs 产物。
+
 ### 6.4 学习路径
 
 - **新手**：建议先完成步骤 1-5，熟悉 MicRun 基本用法后再尝试 Kubernetes 集成
@@ -619,7 +765,8 @@ nerdctl attach <container_id>
 ### 6.5 常见问题
 
 **Q：必须使用 K3s 吗？**
-A：不是必须的。MicRun 兼容标准 Kubernetes（1.28+），但 K3s 更轻量，适合边缘场景。
+A：不是必须的。MicRun 面向标准 Kubernetes CRI/RuntimeClass 集成；云侧和边侧
+Kubernetes/K3s 版本应保持兼容。K3s 更轻量，适合边缘场景。
 
 **Q：可以在单节点测试吗？**
 A：可以。K3s 支持单节点模式，云侧和边侧可以在同一台机器上运行（仅用于测试）。

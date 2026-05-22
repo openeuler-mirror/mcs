@@ -1,17 +1,24 @@
-# 参考文档
+# MicRun 参考文档
 
-本目录包含 MicRun 的技术参考文档。
+本目录提供“当前代码如何工作”的接口与配置说明。
 
 ## 文档列表
 
-| 文档 | 说明 |
-|------|------|
-| [annotations.md](./annotations.md) | 容器注解完整参考 |
-| [configuration.md](./configuration.md) | 运行时配置说明 |
-| [api-reference.md](./api-reference.md) | Containerd API 接口文档 |
-| [resources.md](./resources.md) | CPU/内存资源映射规范 |
+- [annotations.md](./annotations.md)
+  MicRun 支持的注解、优先级和使用方式。
 
-## 相关链接
+- [configuration.md](./configuration.md)
+  运行时配置来源、文件位置、主要键值。
 
-- [快速入门](../quick-start.md) - MicRun 快速入门教程
-- [用户文档](../user/) - 用户指南
+- [api-reference.md](./api-reference.md)
+  当前核心接口与主要调用链的代码落点。
+
+- [resources.md](./resources.md)
+  CPU / 内存映射、cpuset 归一化、VCPU 回退策略。
+
+## 使用建议
+
+- 想写 Pod/Container 清单：先看 `annotations.md`
+- 想调整默认值或 drop-in：看 `configuration.md`
+- 想从代码入口理解主要接口：看 `api-reference.md`
+- 想排资源行为：看 `resources.md`

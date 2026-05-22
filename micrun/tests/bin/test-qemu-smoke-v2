@@ -1,0 +1,96 @@
+#!/bin/bash
+# Simplified QEMU smoke test with enhanced reliability
+# Uses fixed v2 enhanced modules
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../common/env.sh"
+source "${SCRIPT_DIR}/../common/assert.sh"
+source "${SCRIPT_DIR}/../common/qemu_v2.sh"
+
+QEMU_SMOKE_LOG_FILE="${QEMU_SMOKE_LOG_FILE:-/tmp/micrun-qemu-smoke-v2.log}"
+QEMU_KEEP_RUNNING="${QEMU_KEEP_RUNNING:-false}"
+QEMU_AUTO_START="${QEMU_AUTO_START:-true}"
+
+cleanup() {
+    if [ "$QEMU_KEEP_RUNNING" != "true" ]; then
+        log_info "Cleaning up QEMU resources..."
+        qemu_cleanup_v2 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+log_test "Simplified QEMU smoke validation (v2)"
+
+# Resolve QEMU assets
+if ! qemu_resolve_assets; then
+    log_error "Failed to resolve QEMU assets"
+    exit 1
+fi
+
+log_info "QEMU assets resolved:"
+log_info "  Binary: $QEMU_RESOLVED_BIN"
+log_info "  Rootfs: $QEMU_RESOLVED_ROOTFS_IMAGE"
+log_info "  Kernel: $QEMU_RESOLVED_KERNEL_IMAGE"
+log_info "  Xen: $QEMU_RESOLVED_XEN_KERNEL"
+
+# Enhanced cleanup before starting
+if ! qemu_cleanup_v2; then
+    log_warn "Cleanup had issues, continuing..."
+fi
+
+# Start QEMU if needed
+if [ "$QEMU_AUTO_START" = "true" ]; then
+    log_info "Starting QEMU in background..."
+    qemu_start_background "$QEMU_SMOKE_LOG_FILE"
+
+    # Enhanced SSH wait with exponential backoff
+    if ! qemu_wait_for_ssh_v2 60; then
+        log_error "QEMU guest SSH did not become ready"
+        tail -n 50 "$QEMU_SMOKE_LOG_FILE" 2>/dev/null || true
+        qemu_get_diagnostics_v2 "/tmp/qemu-startup-diagnostics-v2.txt"
+        exit 1
+    fi
+
+    log_success "QEMU SSH connection established (with exponential backoff)"
+fi
+
+# Health check
+log_info "Performing QEMU health check..."
+if ! qemu_health_check_v2; then
+    log_error "QEMU health check failed"
+    qemu_get_diagnostics_v2 "/tmp/qemu-health-diagnostics-v2.txt"
+    exit 1
+fi
+
+log_success "QEMU health check passed"
+
+# Basic functionality tests
+log_info "Testing basic QEMU functionality..."
+
+if ! qemu_local_ssh "echo ok; uname -a; systemctl is-active containerd" 2>&1; then
+    log_error "QEMU basic command test failed"
+    exit 1
+fi
+
+log_success "Basic QEMU commands working"
+
+# Print summary
+echo ""
+echo "=== Test Summary ==="
+echo "Status: PASSED"
+echo "Enhancements used:"
+echo "  - Exponential backoff for SSH connection"
+echo "  - Health check verification"
+echo "  - Enhanced cleanup with verification"
+echo "  - Detailed diagnostics collection"
+echo ""
+
+if [ "${QEMU_DEBUG:-false}" = "true" ]; then
+    echo "=== Debug Info ==="
+    echo "QEMU binary: $QEMU_RESOLVED_BIN"
+    echo "Log file: $QEMU_SMOKE_LOG_FILE"
+    echo "SSH port: $QEMU_SSH_FWD_PORT"
+    echo ""
+fi

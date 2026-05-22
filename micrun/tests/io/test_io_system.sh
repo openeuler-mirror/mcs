@@ -124,7 +124,7 @@ test_4_attach() {
     log_info "Expected: Should attach to running container terminal"
 
     read -p "Press Enter to attach to the container..."
-    log_info "Attaching... (Type 'exit' to stop container, or Ctrl+C to disconnect)"
+    log_info "Attaching... (Type 'exit' for graceful stop, Ctrl+C to interrupt/stop, or Ctrl+P Ctrl+Q to detach)"
 
     timeout 30 ctr task attach ${CONTAINER_NAME} || true
 

@@ -1,0 +1,102 @@
+#!/usr/bin/expect -f
+
+set timeout 45
+log_user 1
+
+set host [expr {[info exists env(TEST_REMOTE_HOST)] ? $env(TEST_REMOTE_HOST) : "root@192.168.7.2"}]
+set port [expr {[info exists env(TEST_REMOTE_PORT)] ? $env(TEST_REMOTE_PORT) : ""}]
+set image [expr {[info exists env(TTY_TEST_IMAGE)] ? $env(TTY_TEST_IMAGE) : "localhost:5000/mica-uniproton-app:xen-0.1"}]
+set cid [expr {[info exists env(TTY_TEST_CONTAINER_NAME)] ? $env(TTY_TEST_CONTAINER_NAME) : "micrun-tty-[pid]"}]
+set network_mode [expr {[info exists env(NERDCTL_NETWORK_MODE)] ? $env(NERDCTL_NETWORK_MODE) : "none"}]
+set password [expr {[info exists env(TEST_REMOTE_PASSWORD)] ? $env(TEST_REMOTE_PASSWORD) : ""}]
+set remote_prompt {MICRUN_REMOTE# $}
+set shell_prompt {openEuler UniProton # ?}
+
+proc fail {msg} {
+    puts $msg
+    exit 1
+}
+
+proc expect_remote_prompt {label} {
+    global remote_prompt
+    expect {
+        timeout { fail "TTY_FAIL ${label}: remote prompt timeout" }
+        -re $remote_prompt {}
+    }
+}
+
+proc expect_shell_prompt {label} {
+    global shell_prompt
+    expect {
+        timeout { fail "TTY_FAIL ${label}: UniProton prompt timeout" }
+        -re $shell_prompt {}
+    }
+}
+
+proc wait_or_nudge_shell_prompt {label} {
+    global shell_prompt
+    global timeout
+    set saved_timeout $timeout
+    set timeout 2
+    expect {
+        timeout {
+            send "\r"
+            set timeout $saved_timeout
+            expect_shell_prompt $label
+        }
+        -re $shell_prompt {
+            set timeout $saved_timeout
+        }
+    }
+}
+
+proc send_shell_line_expect {line marker label} {
+    send "$line\r"
+    expect {
+        timeout { fail "TTY_FAIL ${label}: missing marker ${marker}" }
+        -re $marker {}
+    }
+    expect_shell_prompt $label
+}
+
+set ssh_base_opts [list -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR]
+if {$port ne ""} {
+    lappend ssh_base_opts -p $port
+}
+
+if {$password ne ""} {
+    spawn sshpass -p $password ssh {*}$ssh_base_opts -o PreferredAuthentications=keyboard-interactive,password -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=yes $host
+} else {
+    spawn ssh {*}$ssh_base_opts $host
+}
+
+expect {
+    timeout { fail "TTY_FAIL ssh timeout" }
+    -re {# $} {}
+    -re {\$ $} {}
+}
+
+send "export PS1='MICRUN_REMOTE# '\r"
+expect_remote_prompt "prompt normalization"
+
+send "nerdctl rm -f $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean nerdctl"
+send "ctr task kill -s 9 $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean task kill"
+send "ctr task delete $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean task delete"
+send "ctr container delete $cid 2>/dev/null || true\r"
+expect_remote_prompt "pre-clean container delete"
+
+send "nerdctl run -it --rm --name $cid --network=$network_mode --runtime io.containerd.mica.v2 -l org.openeuler.micrun.container.auto_close=false $image\r"
+wait_or_nudge_shell_prompt "foreground run"
+
+send_shell_line_expect "help" {support shell commond} "help command"
+send_shell_line_expect "uname" {UniProton 24\.03-LTS} "uname command"
+
+send "exit\r"
+expect_remote_prompt "exit command"
+
+puts "\nTTY_PASS"
+send "exit\r"
+expect eof

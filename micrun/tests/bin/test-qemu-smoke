@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../common/env.sh"
+source "${SCRIPT_DIR}/../common/assert.sh"
+source "${SCRIPT_DIR}/../common/qemu.sh"
+
+QEMU_SMOKE_LOG_FILE="${QEMU_SMOKE_LOG_FILE:-/tmp/micrun-qemu-smoke.log}"
+QEMU_KEEP_RUNNING="${QEMU_KEEP_RUNNING:-false}"
+QEMU_AUTO_START="${QEMU_AUTO_START:-true}"
+QEMU_SMOKE_XEN_CONFIGS="${QEMU_SMOKE_XEN_CONFIGS:-/etc/xen/qemu-uniproton-xen-xen.cfg /etc/xen/qemu-zephyr-xen-xen.cfg}"
+
+cleanup() {
+    if [ "$QEMU_KEEP_RUNNING" != "true" ]; then
+        qemu_stop_existing >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+log_test "QEMU smoke validation"
+
+qemu_resolve_assets
+
+if [ "$QEMU_AUTO_START" = "true" ]; then
+    qemu_stop_existing
+    qemu_start_background "$QEMU_SMOKE_LOG_FILE"
+fi
+
+qemu_wait_for_ssh 60 || {
+    log_error "qemu guest ssh did not become ready"
+    tail -n 200 "$QEMU_SMOKE_LOG_FILE" 2>/dev/null || true
+    exit 1
+}
+
+qemu_local_ssh "echo ok; uname -a; systemctl is-active containerd; xl list" || {
+    log_error "qemu smoke command failed"
+    tail -n 200 "$QEMU_SMOKE_LOG_FILE" 2>/dev/null || true
+    exit 1
+}
+
+qemu_local_ssh "xl cpupool-list" >/tmp/micrun-qemu-cpupool-probe.out 2>&1 || {
+    log_error "qemu xen cpupool probe failed"
+    cat /tmp/micrun-qemu-cpupool-probe.out 2>/dev/null || true
+    exit 1
+}
+
+if [ "${QEMU_SMOKE_SKIP_XEN_PROBE}" != "true" ]; then
+    qemu_local_ssh "
+        set -eu
+        probe_cfg=''
+        for cfg in ${QEMU_SMOKE_XEN_CONFIGS}; do
+            if [ -f \"\$cfg\" ]; then
+                probe_cfg=\"\$cfg\"
+                break
+            fi
+        done
+        [ -n \"\$probe_cfg\" ] || exit 0
+        dom_name=\$(sed -n 's/^name = \"\\(.*\\)\"/\\1/p' \"\$probe_cfg\" | head -1)
+        if xl create \"\$probe_cfg\" >/tmp/micrun-qemu-xen-probe.log 2>&1; then
+            [ -n \"\$dom_name\" ] && xl destroy \"\$dom_name\" >/dev/null 2>&1 || true
+            echo xen-probe-ok
+        else
+            cat /tmp/micrun-qemu-xen-probe.log
+            exit 1
+        fi
+    " >/tmp/micrun-qemu-xen-probe.out 2>&1 || {
+        log_error "qemu xen launch probe failed"
+        cat /tmp/micrun-qemu-xen-probe.out 2>/dev/null || true
+        exit 1
+    }
+fi
+
+log_success "QEMU guest ssh, containerd, and Xen are reachable"

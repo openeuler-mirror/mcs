@@ -6,11 +6,13 @@
 #   ./run_all_tests.sh              # 运行所有测试
 #   ./run_all_tests.sh io           # 运行 IO 测试
 #   ./run_all_tests.sh k3s          # 运行 K3s 测试
+#   ./run_all_tests.sh k3s K3S-008  # 运行 K3s 交互测试
 #   ./run_all_tests.sh io IO-001    # 运行指定测试
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/test-env.sh"
 
 # 颜色定义
@@ -52,21 +54,80 @@ MicRun 测试套件 - 全局入口
   $0                  # 运行所有测试
   $0 io               # 运行 IO 测试
   $0 k3s              # 运行 K3s 测试
+  $0 k3s K3S-008      # 运行 K3s 交互测试
   $0 io IO-001        # 运行指定测试
 
 测试类别:
   io         IO 测试 - 标准输入输出、TTY、回声抑制
-  k3s        K3s 云化测试 - Kubernetes 集成、Pod 生命周期
+  k3s        K3s 云化测试 - Kubernetes 集成、Pod 生命周期、kubectl attach 交互
   lifecycle  生命周期测试 - 容器创建、启动、停止、删除
   performance 性能测试 - 启动时间、资源占用、吞吐量
 
 环境变量:
   TEST_REMOTE_HOST    远程测试主机 (默认: root@192.168.7.2)
   TEST_IMAGE          测试镜像
+  NERDCTL_NETWORK_MODE nerdctl 网络模式 (qemu 推荐: none)
+  IMAGE_PROFILE       镜像能力类型 (auto/shell/hello)
+  QEMU_IMAGE_TAR      qemu 回归脚本使用的镜像 tar
   K3S_MASTER_NODE     K3s Master 节点
+  K3S_INCLUDE_INTERACTION  k3s 类别无 test_id 时是否包含 K3S-008 (默认: true)
   TEST_LOG_DIR        测试日志目录
+  PERF_BENCHTIME      performance 类别的 Go benchmark 时长 (默认: 100ms)
+  RUN_PERFORMANCE_TESTS=1  无参数运行全部测试时包含 performance 类别
 
 EOF
+}
+
+run_go_tests() {
+    local label="$1"
+    shift
+
+    echo "运行${label}..."
+    (
+        cd "${REPO_ROOT}"
+        go test "$@"
+    )
+}
+
+run_lifecycle_tests() {
+    local test_id="${1:-}"
+    local run_regex="${test_id:-Lifecycle|Create|Start|Stop|Delete|Kill|Wait|Pause|Resume|CloseIO|State}"
+
+    run_go_tests "生命周期测试" \
+        ./internal/application/lifecycle \
+        ./internal/application/task \
+        ./internal/domain/container \
+        ./internal/transport/shimv2 \
+        -run "${run_regex}"
+}
+
+run_performance_tests() {
+    local test_id="${1:-}"
+    local run_regex="${test_id:-Performance|^$}"
+    local bench_time="${PERF_BENCHTIME:-100ms}"
+
+    run_go_tests "性能测试" \
+        ./internal/adapters/io \
+        ./internal/support/parse \
+        -run "${run_regex}" \
+        -bench Benchmark \
+        -benchtime "${bench_time}"
+}
+
+run_k3s_tests() {
+    local test_id="${1:-}"
+
+    if [ ! -f "${SCRIPT_DIR}/k3s/run_k3s_tests.sh" ]; then
+        echo "K3s 测试脚本不存在: ${SCRIPT_DIR}/k3s/run_k3s_tests.sh"
+        return 1
+    fi
+
+    if [ -n "$test_id" ]; then
+        bash "${SCRIPT_DIR}/k3s/run_k3s_tests.sh" "$test_id"
+    else
+        K3S_INCLUDE_INTERACTION="${K3S_INCLUDE_INTERACTION:-true}" \
+            bash "${SCRIPT_DIR}/k3s/run_k3s_tests.sh"
+    fi
 }
 
 # ============================================
@@ -87,30 +148,13 @@ run_category() {
             fi
             ;;
         k3s)
-            if [ -f "${SCRIPT_DIR}/k3s/run_k3s_tests.sh" ]; then
-                bash "${SCRIPT_DIR}/k3s/run_k3s_tests.sh" "$test_id"
-            else
-                echo "K3s 测试脚本不存在: ${SCRIPT_DIR}/k3s/run_k3s_tests.sh"
-                return 1
-            fi
+            run_k3s_tests "$test_id"
             ;;
         lifecycle)
-            if [ -d "${SCRIPT_DIR}/lifecycle" ]; then
-                echo "运行生命周期测试..."
-                # TODO: 实现生命周期测试入口
-            else
-                echo "生命周期测试目录不存在"
-                return 1
-            fi
+            run_lifecycle_tests "$test_id"
             ;;
         performance)
-            if [ -d "${SCRIPT_DIR}/performance" ]; then
-                echo "运行性能测试..."
-                # TODO: 实现性能测试入口
-            else
-                echo "性能测试目录不存在"
-                return 1
-            fi
+            run_performance_tests "$test_id"
             ;;
         *)
             echo -e "${FAIL}未知的测试类别: $category"
@@ -145,7 +189,7 @@ run_all_tests() {
         echo -e "${INFO} Running IO Tests"
         echo -e "${INFO}═══════════════════════════════════════════════════"
         if bash "${SCRIPT_DIR}/io/run_all_io_tests.sh"; then
-            ((total_passed+=7))
+            ((total_passed+=1))
         else
             local failed=$?
             ((total_failed+=failed))
@@ -158,12 +202,42 @@ run_all_tests() {
         echo -e "${INFO}═══════════════════════════════════════════════════"
         echo -e "${INFO} Running K3s Cloud Tests"
         echo -e "${INFO}═══════════════════════════════════════════════════"
-        if bash "${SCRIPT_DIR}/k3s/run_k3s_tests.sh"; then
-            ((total_passed+=7))
+        if run_k3s_tests; then
+            ((total_passed+=1))
         else
             local failed=$?
             ((total_failed+=failed))
         fi
+    fi
+
+    # 生命周期测试
+    echo ""
+    echo -e "${INFO}═══════════════════════════════════════════════════"
+    echo -e "${INFO} Running Lifecycle Tests"
+    echo -e "${INFO}═══════════════════════════════════════════════════"
+    if run_lifecycle_tests; then
+        ((total_passed+=1))
+    else
+        local failed=$?
+        ((total_failed+=failed))
+    fi
+
+    # 性能测试默认不随全量入口执行，避免无意拉长常规回归。
+    if [ "${RUN_PERFORMANCE_TESTS:-0}" = "1" ]; then
+        echo ""
+        echo -e "${INFO}═══════════════════════════════════════════════════"
+        echo -e "${INFO} Running Performance Tests"
+        echo -e "${INFO}═══════════════════════════════════════════════════"
+        if run_performance_tests; then
+            ((total_passed+=1))
+        else
+            local failed=$?
+            ((total_failed+=failed))
+        fi
+    else
+        ((total_skipped+=1))
+        echo ""
+        echo -e "${INFO}Skipping Performance Tests (set RUN_PERFORMANCE_TESTS=1 to include)"
     fi
 
     # 汇总
@@ -172,10 +246,10 @@ run_all_tests() {
     echo "║                      Final Summary                                ║"
     echo "╚══════════════════════════════════════════════════════════════════════╝"
     echo ""
-    echo "Total Passed: $total_passed"
-    echo "Total Failed: $total_failed"
-    echo "Total Skipped: $total_skipped"
-    echo "Total: $((total_passed + total_failed + total_skipped))"
+    echo "Categories Passed: $total_passed"
+    echo "Categories Failed: $total_failed"
+    echo "Categories Skipped: $total_skipped"
+    echo "Categories Total: $((total_passed + total_failed + total_skipped))"
     echo ""
 
     if [ $total_failed -eq 0 ]; then

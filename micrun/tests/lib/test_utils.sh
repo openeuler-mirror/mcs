@@ -2,61 +2,9 @@
 # MicRun 测试工具函数库
 # 提供测试常用的辅助函数
 
-# ============================================
-# 颜色定义
-# ============================================
-readonly COLOR_RED='\033[0;31m'
-readonly COLOR_GREEN='\033[0;32m'
-readonly COLOR_YELLOW='\033[0;33m'
-readonly COLOR_BLUE='\033[0;34m'
-readonly COLOR_NC='\033[0m'
-
-readonly PASS="${COLOR_GREEN}✓ PASS${COLOR_NC}"
-readonly FAIL="${COLOR_RED}✗ FAIL${COLOR_NC}"
-readonly SKIP="${COLOR_YELLOW}○ SKIP${COLOR_NC}"
-readonly INFO="${COLOR_BLUE}[INFO]${COLOR_NC}"
-
-# ============================================
-# 日志函数
-# ============================================
-
-log_info() {
-    echo -e "${INFO} $1"
-}
-
-log_test() {
-    echo -e "\n${INFO}▶ Testing:${COLOR_NC} $1"
-}
-
-log_success() {
-    echo -e "${COLOR_GREEN}✓${COLOR_NC} $1"
-}
-
-log_error() {
-    echo -e "${COLOR_RED}✗${COLOR_NC} $1"
-}
-
-log_warn() {
-    echo -e "${COLOR_YELLOW}⚠${COLOR_NC} $1"
-}
-
-# ============================================
-# 远程执行函数
-# ============================================
-
-# 远程执行命令（默认使用 TEST_REMOTE_HOST）
-remote() {
-    local host="${1:-$TEST_REMOTE_HOST}"
-    local command="$2"
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$host" "$command" 2>/dev/null
-}
-
-# 远程执行并返回输出
-remote_output() {
-    local host="${1:-$TEST_REMOTE_HOST}"
-    local command="$2"
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$host" "$command" 2>&1
-}
+_MICRUN_TEST_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_MICRUN_TEST_UTILS_DIR}/../common/assert.sh"
+source "${_MICRUN_TEST_UTILS_DIR}/../common/remote.sh"
 
 # ============================================
 # Container 操作
@@ -88,6 +36,79 @@ cleanup_all_containers() {
             ctr container delete \$c 2>/dev/null || true
         done
     " >/dev/null 2>&1
+}
+
+# 清理 MicRun/micad 临时运行态
+cleanup_micrun_runtime_state() {
+    local host="${1:-$TEST_REMOTE_HOST}"
+
+    remote "$host" '
+        set +e
+        cleanup_ctr_namespace() {
+            ns="$1"
+            command -v ctr >/dev/null 2>&1 || return 0
+
+            for id in $(ctr -n "$ns" tasks ls -q 2>/dev/null); do
+                if command -v mica >/dev/null 2>&1; then
+                    mica stop "$id" 2>/dev/null || true
+                    mica rm "$id" 2>/dev/null || true
+                fi
+                ctr -n "$ns" tasks kill -s 9 "$id" 2>/dev/null || true
+                ctr -n "$ns" tasks delete --force "$id" 2>/dev/null || true
+                ctr -n "$ns" tasks rm --force "$id" 2>/dev/null || true
+                xl destroy "$id" 2>/dev/null || true
+            done
+
+            for id in $(ctr -n "$ns" containers ls -q 2>/dev/null); do
+                if command -v mica >/dev/null 2>&1; then
+                    mica rm "$id" 2>/dev/null || true
+                fi
+                ctr -n "$ns" containers delete "$id" 2>/dev/null || true
+            done
+        }
+
+        cleanup_ctr_namespace default
+        cleanup_ctr_namespace k8s.io
+
+        if command -v mica >/dev/null 2>&1; then
+            for path in /run/micrun/containers/* /run/micrun/runtime/container/*; do
+                [ -e "$path" ] || continue
+                id="${path##*/}"
+                case "$id" in
+                    ""|qemu-*) continue ;;
+                esac
+                mica stop "$id" 2>/dev/null || true
+                mica rm "$id" 2>/dev/null || true
+            done
+
+            if mica status 2>/dev/null |
+                awk '\''NR > 1 && $1 !~ /^qemu-/ { found=1 } END { exit found ? 0 : 1 }'\''; then
+                systemctl restart micad >/dev/null 2>&1 || true
+            fi
+        fi
+
+        pkill -9 -f "[c]ontainerd-shim-mica-v2" 2>/dev/null || true
+
+        xl list 2>/dev/null | awk '\''NR > 1 && $1 != "Domain-0" { print $1 }'\'' | while read -r id; do
+            [ -n "$id" ] && xl destroy "$id" 2>/dev/null || true
+        done
+
+        rm -rf /run/micrun/containers/* \
+               /run/micrun/runtime/container/* \
+               /run/micrun/runtime/sandbox/* 2>/dev/null || true
+
+        if command -v ctr >/dev/null 2>&1; then
+            for ns in default k8s.io; do
+                if ctr -n "$ns" tasks ls -q 2>/dev/null | grep -q .; then
+                    systemctl restart containerd >/dev/null 2>&1 || true
+                    break
+                fi
+            done
+            sleep 1
+            cleanup_ctr_namespace default
+            cleanup_ctr_namespace k8s.io
+        fi
+    ' >/dev/null 2>&1 || true
 }
 
 # 获取容器状态
@@ -140,7 +161,7 @@ kubectl_cmd() {
     local args="$@"
 
     if [ -n "$node" ]; then
-        ssh -o StrictHostKeyChecking=no "$node" "kubectl $args" 2>/dev/null
+        remote "$node" "kubectl $args"
     else
         kubectl $args 2>/dev/null
     fi
@@ -188,83 +209,6 @@ get_pod_status() {
     kubectl_cmd "$node" "get pod $pod_name -n $namespace -o jsonpath='{.status.phase}'" 2>/dev/null
 }
 
-# ============================================
-# 断言函数
-# ============================================
-
-# 断言相等
-assert_equals() {
-    local expected="$1"
-    local actual="$2"
-    local message="${3:-Assertion failed}"
-
-    if [ "$expected" != "$actual" ]; then
-        log_error "$message"
-        log_error "  Expected: $expected"
-        log_error "  Actual: $actual"
-        return 1
-    fi
-    return 0
-}
-
-# 断言包含
-assert_contains() {
-    local haystack="$1"
-    local needle="$2"
-    local message="${3:-Assertion failed: '$needle' not found in '$haystack'}"
-
-    if echo "$haystack" | grep -q "$needle"; then
-        return 0
-    fi
-
-    log_error "$message"
-    return 1
-}
-
-# 断言非空
-assert_not_empty() {
-    local value="$1"
-    local message="${2:-Assertion failed: value is empty}"
-
-    if [ -z "$value" ]; then
-        log_error "$message"
-        return 1
-    fi
-    return 0
-}
-
-# 断言成功
-assert_success() {
-    local exit_code="$1"
-    local message="${2:-Command failed}"
-
-    if [ "$exit_code" -ne 0 ]; then
-        log_error "$message (exit code: $exit_code)"
-        return 1
-    fi
-    return 0
-}
-
-# ============================================
-# 时间测量
-# ============================================
-
-# 开始计时
-timer_start() {
-    echo $(date +%s)
-}
-
-# 结束计时并返回耗时（秒）
-timer_end() {
-    local start_time="$1"
-    local end_time=$(date +%s)
-    echo $((end_time - start_time))
-}
-
-# ============================================
-# 镜像操作
-# ============================================
-
 # 检查镜像是否存在
 image_exists() {
     local image="$1"
@@ -288,7 +232,7 @@ import_image() {
     local remote_path="/tmp/$filename"
 
     # 上传 tarball
-    scp "$tarball" "$host:$remote_path" >/dev/null 2>&1
+    copy_to_remote "$tarball" "$host" "$remote_path"
 
     # 导入镜像
     remote "$host" "ctr image import $remote_path" >/dev/null 2>&1
@@ -375,17 +319,7 @@ print_table_row() {
     local time="$3"
     local result="$4"
 
-    # 根据结果设置颜色
-    local result_colored
-    if [ "$result" = "PASS" ]; then
-        result_colored="\e[32m✓ PASS\e[0m"
-    elif [ "$result" = "SKIP" ]; then
-        result_colored="\e[33m○ SKIP\e[0m"
-    else
-        result_colored="\e[31m✗ FAIL\e[0m"
-    fi
-
-    printf "| %-2s | %-58s | %-4s | %-6s |\n" "$num" "$name" "$time" "$result_colored"
+    printf "| %-2s | %-58s | %-4s | %-6s |\n" "$num" "$name" "$time" "$result"
 }
 
 # 打印表格尾
@@ -395,11 +329,11 @@ print_table_footer() {
 
 # 导出所有函数供子脚本使用
 export -f log_info log_test log_success log_error log_warn
-export -f remote remote_output
-export -f cleanup_container cleanup_all_containers
+export -f remote remote_output copy_to_remote copy_from_remote remote_can_connect forget_known_host
+export -f cleanup_container cleanup_all_containers cleanup_micrun_runtime_state
 export -f get_container_status wait_for_container_status container_exists
 export -f kubectl_cmd wait_for_pod delete_pod get_pod_status
-export -f assert_equals assert_contains assert_not_empty assert_success
+export -f assert_equals assert_contains assert_not_empty assert_success wait_until
 export -f timer_start timer_end
 export -f image_exists import_image
 export -f get_log_dir create_log_file

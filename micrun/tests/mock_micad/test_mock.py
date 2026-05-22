@@ -13,14 +13,16 @@ import sys
 import time
 from pathlib import Path
 
-# Constants from mock_micad.c
-MAX_NAME_LEN = 32
-MAX_FIRMWARE_PATH_LEN = 128
+# Constants from mocker.py / mica.py pack() layout
+MAX_NAME_LEN = 66
+MAX_FIRMWARE_PATH_LEN = 256
 MAX_CPUSTR_LEN = 128
+MAX_PED_LEN = 16
 MAX_IOMEM_LEN = 512
 MAX_NETWORK_LEN = 512
 MICA_SOCKET_DIR = "/tmp/mica"
 MICA_CREATE_SOCKET = f"{MICA_SOCKET_DIR}/mica-create.socket"
+MOCK_PIDFILE = f"{MICA_SOCKET_DIR}/micad.pid"
 
 # Create message format
 class CreateMessage:
@@ -44,10 +46,11 @@ class CreateMessage:
 
     def pack(self):
         """Pack message into binary format matching struct create_msg"""
-        # Create format string matching the C struct from mock_micad.c
+        # Match mocker.py's CREATE_MSG_FORMAT:
+        # 66s256s16s256s?128siiiiii512s512s
         fmt = f"{MAX_NAME_LEN}s"  # name
         fmt += f"{MAX_FIRMWARE_PATH_LEN}s"  # path
-        fmt += f"{MAX_NAME_LEN}s"  # ped
+        fmt += f"{MAX_PED_LEN}s"  # ped
         fmt += f"{MAX_FIRMWARE_PATH_LEN}s"  # ped_cfg
         fmt += "?"  # debug (bool)
         fmt += f"{MAX_CPUSTR_LEN}s"  # cpu_str
@@ -63,7 +66,7 @@ class CreateMessage:
         return struct.pack(fmt,
                           self.name.ljust(MAX_NAME_LEN, '\0').encode(),
                           self.path.ljust(MAX_FIRMWARE_PATH_LEN, '\0').encode(),
-                          self.ped.ljust(MAX_NAME_LEN, '\0').encode(),
+                          self.ped.ljust(MAX_PED_LEN, '\0').encode(),
                           self.ped_cfg.ljust(MAX_FIRMWARE_PATH_LEN, '\0').encode(),
                           self.debug,
                           self.cpu_str.ljust(MAX_CPUSTR_LEN, '\0').encode(),
@@ -90,6 +93,15 @@ def send_to_socket(socket_path, data):
     except Exception as e:
         print(f"Error sending to socket: {e}")
         return False
+
+def sanitize_name(name: str) -> str:
+    sanitized = []
+    for c in name:
+        if c.isalnum() or c in ('_', '-'):
+            sanitized.append(c)
+        else:
+            sanitized.append('_')
+    return ''.join(sanitized)
 
 def test_create_client(client_name="test-client"):
     """Test creating a client"""
@@ -128,7 +140,7 @@ def test_create_client(client_name="test-client"):
             return False
 
         # Check if PTY symlink was created
-        pty_symlink = f"/tmp/mica/ttyRPMSG_{client_name}"
+        pty_symlink = f"/tmp/mica/ttyRPMSG_{sanitize_name(client_name)}_0"
         if os.path.exists(pty_symlink):
             print(f"✓ PTY symlink created: {pty_symlink}")
             # Check where it points
@@ -192,16 +204,19 @@ def cleanup_existing():
     print("Cleaning up existing resources...")
 
     # Kill existing mock_micad processes
-    subprocess.run(["pkill", "-f", "mock_micad"], capture_output=True)
+    subprocess.run(["pkill", "-f", "mocker.py"], capture_output=True)
     time.sleep(0.5)
 
     # Remove socket directory
     if os.path.exists(MICA_SOCKET_DIR):
         for item in os.listdir(MICA_SOCKET_DIR):
             path = os.path.join(MICA_SOCKET_DIR, item)
-            if os.path.isfile(path) or os.path.islink(path):
+            if not os.path.isdir(path):
                 os.unlink(path)
-        os.rmdir(MICA_SOCKET_DIR)
+        try:
+            os.rmdir(MICA_SOCKET_DIR)
+        except OSError:
+            pass
         print(f"Removed socket directory: {MICA_SOCKET_DIR}")
 
 def proc_running(pid):
@@ -232,19 +247,33 @@ def start_mock_micad():
     # Wait for startup
     time.sleep(2)
 
-    # Check if it's running
-    result = subprocess.run(["pgrep", "-f", "mock_micad"], capture_output=True)
-    if result.returncode == 0:
-        print("✓ mock_micad started successfully")
+    mock_pidf = Path(MOCK_PIDFILE)
+    if proc.poll() is None and Path(MICA_CREATE_SOCKET).exists():
+        if mock_pidf.exists():
+            print(f"✓ mock_micad started successfully (PID file: {mock_pidf})")
+        else:
+            print("✓ mock_micad started successfully")
         return proc
-    else:
-        print("✗ Failed to start mock_micad")
-        return None
+
+    print("✗ Failed to start mock_micad")
+    try:
+        if proc.stdout:
+            print(proc.stdout.read())
+    except Exception:
+        pass
+    return None
 
 def stop_mock_micad(proc):
     """Stop mock_micad process"""
     if not proc:
-        subprocess.run(["pkill", "-f", "mock_micad"], capture_output=True)
+        mock_pidf = Path(MOCK_PIDFILE)
+        if mock_pidf.exists():
+            try:
+                pid = int(mock_pidf.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+        subprocess.run(["pkill", "-f", "mocker.py"], capture_output=True)
         return
 
     print("\nStopping mock_micad...")
