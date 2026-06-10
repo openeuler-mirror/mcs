@@ -86,6 +86,12 @@ interaction_uses_direct_control_plane() {
     local test_id="$1"
     local mode="${K3S_INTERACTION_MODE:-auto}"
 
+    if [ "$test_id" = "K3S-009" ]; then
+        command -v docker >/dev/null 2>&1 &&
+            [ "$(docker inspect -f '{{.State.Running}}' "$K3S_CLOUD_SERVER_CONTAINER" 2>/dev/null || true)" = "true" ]
+        return
+    fi
+
     [ "$test_id" = "K3S-008" ] || return 1
 
     case "$mode" in
@@ -556,6 +562,29 @@ test_k3s_008_interaction() {
     echo -e "$FAIL"
 }
 
+# K3S-009: Deployment OTA 滚动升级
+test_k3s_009_ota() {
+    log_test "K3S-009: Deployment OTA 滚动升级"
+    local start
+    local end
+    local time
+    local out
+
+    start=$(date +%s)
+    out="$(bash "${SCRIPT_DIR}/run_ota_e2e.sh" 2>&1)" && {
+        end=$(date +%s)
+        time=$((end - start))
+        record_result "K3S-009: Deployment OTA 滚动升级" "PASS" "v1->v2 rollout、edge task、Xen domain、kubectl attach 与清理通过" "$time"
+        echo -e "$PASS"
+        return
+    }
+
+    end=$(date +%s)
+    time=$((end - start))
+    record_result "K3S-009: Deployment OTA 滚动升级" "FAIL" "$(printf '%s\n' "$out" | tail -n 20)" "$time"
+    echo -e "$FAIL"
+}
+
 # ============================================
 # 结果输出
 # ============================================
@@ -645,7 +674,7 @@ main() {
         cleanup_k3s
         sleep 2
     else
-        log_info "K3S-008 使用 ${K3S_INTERACTION_MODE} 控制面，跳过远端 master 预检"
+        log_info "${test_id} 使用本机/云端控制面，跳过远端 master 预检"
         echo ""
     fi
 
@@ -666,6 +695,7 @@ main() {
             K3S-006) test_k3s_006_multi_node ;;
             K3S-007) test_k3s_007_self_healing ;;
             K3S-008) test_k3s_008_interaction ;;
+            K3S-009) test_k3s_009_ota ;;
             *)
                 echo "Unknown test ID: $test_id"
                 exit 1
@@ -695,6 +725,10 @@ main() {
         if [ "${K3S_INCLUDE_INTERACTION:-false}" = "true" ]; then
             sleep 1
             test_k3s_008_interaction
+        fi
+        if [ "${K3S_INCLUDE_OTA:-false}" = "true" ]; then
+            sleep 1
+            test_k3s_009_ota
         fi
     fi
 
