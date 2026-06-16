@@ -7,6 +7,7 @@
 #   ./run_all_tests.sh io           # 运行 IO 测试
 #   ./run_all_tests.sh k3s          # 运行 K3s 测试
 #   ./run_all_tests.sh k3s K3S-008  # 运行 K3s 交互测试
+#   ./run_all_tests.sh k3s K3S-009  # 运行 K3s OTA 测试
 #   ./run_all_tests.sh io IO-001    # 运行指定测试
 
 set -e
@@ -55,6 +56,7 @@ MicRun 测试套件 - 全局入口
   $0 io               # 运行 IO 测试
   $0 k3s              # 运行 K3s 测试
   $0 k3s K3S-008      # 运行 K3s 交互测试
+  $0 k3s K3S-009      # 运行 K3s OTA 滚动升级测试
   $0 io IO-001        # 运行指定测试
 
 测试类别:
@@ -71,6 +73,7 @@ MicRun 测试套件 - 全局入口
   QEMU_IMAGE_TAR      qemu 回归脚本使用的镜像 tar
   K3S_MASTER_NODE     K3s Master 节点
   K3S_INCLUDE_INTERACTION  k3s 类别无 test_id 时是否包含 K3S-008 (默认: true)
+  K3S_INCLUDE_OTA     k3s 类别无 test_id 时是否包含 K3S-009 OTA (默认: false)
   TEST_LOG_DIR        测试日志目录
   PERF_BENCHTIME      performance 类别的 Go benchmark 时长 (默认: 100ms)
   RUN_PERFORMANCE_TESTS=1  无参数运行全部测试时包含 performance 类别

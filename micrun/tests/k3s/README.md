@@ -12,11 +12,14 @@ micrun/tests/run_all_tests.sh k3s
 micrun/tests/bin/test-k3s-single-node
 micrun/tests/bin/test-k3s-cloud-edge
 micrun/tests/bin/test-k3s-interaction
+micrun/tests/bin/test-k3s-ota
 ```
 
 `run_all_tests.sh k3s` 是纳入项目测试体系的类别入口。默认会执行基础 K3s
 用例并包含 `K3S-008` 交互测试；也可以指定单项，例如
-`micrun/tests/run_all_tests.sh k3s K3S-008`。
+`micrun/tests/run_all_tests.sh k3s K3S-008`。OTA 用例是 `K3S-009`，需要准备
+v2 RTOS 镜像，因此默认不随无 `test_id` 的 K3s 类别运行；如需纳入默认类别，
+设置 `K3S_INCLUDE_OTA=true`。
 
 底层场景脚本仍保留在本目录：
 
@@ -24,6 +27,7 @@ micrun/tests/bin/test-k3s-interaction
 run_single_node_e2e.sh
 run_cloud_edge_e2e.sh
 run_interaction_e2e.sh
+run_ota_e2e.sh
 prepare_edge_node.sh
 start_qemu_edge.sh
 ```
@@ -247,6 +251,60 @@ StopContainer/StopPodSandbox 超时。交互测试会先执行 Kubernetes 正常
 export K3S_INTERACTION_KEEP_POD=true
 ```
 
+## OTA 模式
+
+OTA 模式用于验证云端 Deployment 镜像更新能驱动边侧 RTOS workload 从 v1
+滚动升级到 v2。它不启动新的 K3s server/agent，而是要求云边模式已经就绪：
+本机 Docker 中存在运行中的 `$K3S_CLOUD_SERVER_CONTAINER`，并且边侧节点
+`$K3S_EDGE_NODE_NAME` 已经 Ready。通常先运行一次：
+
+```bash
+micrun/tests/bin/test-k3s-cloud-edge
+```
+
+再准备 v2 RTOS OCI tar，并复制到边侧默认路径：
+
+```bash
+export K3S_OTA_V2_IMAGE="localhost:5000/mica-uniproton-app:xen-0.2"
+export K3S_OTA_V2_IMAGE_TAR="/tmp/localhost_5000_mica-uniproton-app_xen-0.2.tar"
+```
+
+然后运行：
+
+```bash
+export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
+export TEST_REMOTE_PASSWORD="<guest-root-password-if-needed>"
+export TEST_IMAGE="localhost:5000/mica-uniproton-app:xen-0.1"
+export K3S_OTA_V1_IMAGE="$TEST_IMAGE"
+export K3S_OTA_V2_IMAGE="localhost:5000/mica-uniproton-app:xen-0.2"
+export K3S_OTA_V1_IMAGE_TAR="/tmp/localhost_5000_mica-uniproton-app_xen-0.1.tar"
+export K3S_OTA_V2_IMAGE_TAR="/tmp/localhost_5000_mica-uniproton-app_xen-0.2.tar"
+
+micrun/tests/bin/test-k3s-ota
+```
+
+也可以通过统一入口指定用例：
+
+```bash
+micrun/tests/run_all_tests.sh k3s K3S-009
+```
+
+验证内容：
+
+- 在边侧 `k8s.io` namespace 导入或确认 v1/v2 RTOS 镜像
+- 创建 `RuntimeClass micrun` 和 v1 Deployment
+- 等待 v1 Pod Running，并确认边侧 task 与 Xen domain 存在
+- patch Deployment 镜像为 v2，等待 rollout 完成
+- 验证新旧 container ID 不同，v2 Pod 使用新镜像
+- 验证旧 v1 Xen domain 被清理，新 v2 Xen domain 启动
+- 对 v2 Pod 执行 `kubectl attach -i` 并匹配 UniProton shell/hello 标记
+- 删除 Deployment 后确认边侧 task 和 Xen domain 清理完成
+
+在 oEE/QEMU guest 中，旧 Pod 删除路径偶发会留下 STOPPED containerd task。
+OTA 脚本会先等待 Kubernetes 正常回收；若超时，会限定到旧 Pod 名称执行 edge
+fallback cleanup，清理对应 task/container、MicRun 临时目录和 Xen domain。
+该 fallback 只作用于运行中 guest，不会解包、修改或重打包 QEMU rootfs。
+
 ## 运行态修改范围
 
 K3s 场景需要清理和重建运行中边侧节点的 K3s 状态：
@@ -290,6 +348,15 @@ K3s 场景需要清理和重建运行中边侧节点的 K3s 状态：
 | `K3S_INTERACTION_KEEP_POD` | `false` | 交互测试后是否保留 Pod |
 | `K3S_INTERACTION_TTY` | `false` | 交互测试 Pod 是否启用 TTY |
 | `K3S_INTERACTION_EDGE_DELETE_FALLBACK` | `true` | Kubernetes 删除超时时是否清理边侧运行时对象 |
+| `K3S_INCLUDE_OTA` | `false` | K3s 类别无 `test_id` 时是否包含 `K3S-009` |
+| `K3S_OTA_V1_IMAGE` | `$TEST_IMAGE` | OTA Deployment 初始 RTOS 镜像 |
+| `K3S_OTA_V2_IMAGE` | `localhost:5000/mica-uniproton-app:xen-0.2` | OTA Deployment 目标 RTOS 镜像 |
+| `K3S_OTA_V1_IMAGE_TAR` | `$K3S_IMAGE_TAR` | v1 RTOS 镜像 tar 在边侧的路径 |
+| `K3S_OTA_V2_IMAGE_TAR` | `/tmp/localhost_5000_mica-uniproton-app_xen-0.2.tar` | v2 RTOS 镜像 tar 在边侧的路径 |
+| `K3S_OTA_V1_SOURCE_IMAGE_REF` | `$K3S_SOURCE_IMAGE_REF` | v1 tar 内源镜像引用 |
+| `K3S_OTA_V2_SOURCE_IMAGE_REF` | `$K3S_OTA_V2_IMAGE` | v2 tar 内源镜像引用 |
+| `K3S_OTA_IMPORT_IMAGES` | `true` | OTA 前是否导入 v1/v2 镜像 |
+| `K3S_OTA_KEEP_DEPLOYMENT` | `false` | OTA 测试后是否保留 Deployment |
 | `K3S_LOCAL_KUBECONFIG` | 空 | `local` 模式使用的本机 kubeconfig |
 | `K3S_LOCAL_KUBECTL_BIN` | `$K3S_LOCAL_SERVER_BIN` | `local` 模式使用的 kubectl 或 k3s 二进制 |
 | `K3S_LOCAL_KUBECTL_SUBCOMMAND` | `kubectl` | 当二进制是 k3s 时附加的子命令；使用独立 kubectl 时设为空 |

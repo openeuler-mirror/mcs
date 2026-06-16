@@ -11,13 +11,16 @@ micrun/tests/bin/test-io-qemu
 micrun/tests/bin/test-k3s-single-node
 micrun/tests/bin/test-k3s-cloud-edge
 micrun/tests/bin/test-k3s-interaction
+micrun/tests/bin/test-k3s-ota
 micrun/tests/run_all_tests.sh
 ```
 
 `micrun/tests/run_all_tests.sh k3s` 是 K3s 类别的统一入口。无 `test_id` 时默认
 包含 `K3S-008` 交互测试，即会覆盖 `RuntimeClass=micrun` Pod 创建、
 `kubectl attach`、边侧 containerd task、Xen domain 和删除清理。若只想跑
-某个场景，可以传入 `K3S-000` 到 `K3S-008`。
+某个场景，可以传入 `K3S-000` 到 `K3S-009`。`K3S-009` 是 OTA 滚动升级测试，
+默认不随 K3s 类别全量执行；如需纳入默认 K3s 类别，设置
+`K3S_INCLUDE_OTA=true`。
 
 ## 目录结构
 
@@ -115,6 +118,24 @@ micrun/tests/bin/test-k3s-interaction
 该入口会创建 `RuntimeClass=micrun` 的 RTOS Pod，使用 `kubectl attach` 发送
 `help`、`uname`，验证边侧 containerd task、Xen domain
 和 Pod 删除后的资源清理。
+
+K3s OTA 测试要求云边环境已经就绪，并且边侧 containerd 能访问 v1/v2 RTOS
+镜像。默认会把 `/tmp/localhost_5000_mica-uniproton-app_xen-0.1.tar` 和
+`/tmp/localhost_5000_mica-uniproton-app_xen-0.2.tar` 导入边侧 `k8s.io`
+namespace，再把 Deployment 从 v1 patch 到 v2：
+
+```bash
+export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
+export K3S_OTA_V1_IMAGE="localhost:5000/mica-uniproton-app:xen-0.1"
+export K3S_OTA_V2_IMAGE="localhost:5000/mica-uniproton-app:xen-0.2"
+export K3S_OTA_V2_IMAGE_TAR="/tmp/localhost_5000_mica-uniproton-app_xen-0.2.tar"
+micrun/tests/bin/test-k3s-ota
+```
+
+该入口验证 Deployment rollout、新旧 container ID 切换、旧 Xen domain 清理、
+新 v2 Xen domain 启动、`kubectl attach` 交互和最终清理。若 kubelet 对
+MicRun stopped task 的回收超时，脚本会限定到该测试 Pod 做 edge fallback
+cleanup，不会修改 QEMU rootfs 产物。
 
 K3s 脚本会修改运行中边侧节点上的 K3s 状态，例如
 `/var/lib/rancher/k3s`、`/run/k3s`、CNI 配置、agent systemd service、

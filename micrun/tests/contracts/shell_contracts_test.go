@@ -232,6 +232,7 @@ func TestRunAllTestsIncludesK3sInteractionByDefault(t *testing.T) {
 	for _, marker := range []string{
 		"run_k3s_tests",
 		"K3S_INCLUDE_INTERACTION=\"${K3S_INCLUDE_INTERACTION:-true}\"",
+		"K3S_INCLUDE_OTA",
 		"run_k3s_tests \"$test_id\"",
 		"run_k3s_tests;",
 		"kubectl attach 交互",
@@ -245,6 +246,9 @@ func TestRunAllTestsIncludesK3sInteractionByDefault(t *testing.T) {
 		"K3S-008",
 		"test_k3s_008_interaction",
 		"run_interaction_e2e.sh",
+		"K3S-009",
+		"test_k3s_009_ota",
+		"run_ota_e2e.sh",
 	} {
 		if !strings.Contains(k3sSuite, marker) {
 			t.Fatalf("K3s suite does not include interaction marker %q", marker)
@@ -256,12 +260,14 @@ func TestPublicK3sEntrypointsStayRegistered(t *testing.T) {
 	readFile(t, "tests/bin/test-k3s-single-node")
 	readFile(t, "tests/bin/test-k3s-cloud-edge")
 	readFile(t, "tests/bin/test-k3s-interaction")
+	readFile(t, "tests/bin/test-k3s-ota")
 
 	readme := readFile(t, "tests/README.md")
 	for _, marker := range []string{
 		"micrun/tests/bin/test-k3s-single-node",
 		"micrun/tests/bin/test-k3s-cloud-edge",
 		"micrun/tests/bin/test-k3s-interaction",
+		"micrun/tests/bin/test-k3s-ota",
 		"micrun/tests/run_all_tests.sh",
 	} {
 		if !strings.Contains(readme, marker) {
