@@ -548,10 +548,15 @@ static void get_rpmsg_tty_dev(char *str, size_t size, void *priv)
 	struct rpmsg_tty_service *tty_svc;
 	struct metal_list *node;
 	struct metal_list *tty_dev_list = priv;
+	size_t len;
 
 	metal_list_for_each(tty_dev_list, node) {
 		tty_svc = metal_container_of(node, struct rpmsg_tty_service, node);
-		snprintf(str + strlen(str), size - strlen(str), "%s(%s) ",
+		len = strlen(str);
+		if (len >= size)
+			break;
+
+		snprintf(str + len, size - len, "%s(%s) ",
 			 tty_svc->ept.name, tty_svc->tty_dev);
 	}
 }
