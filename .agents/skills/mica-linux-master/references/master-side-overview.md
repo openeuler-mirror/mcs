@@ -104,6 +104,9 @@ Linux/master 侧的服务“可见”通常依赖两个层面：
 - `master-status-management.md`
   - `mica status`、服务列表与 Linux/master 可见面的组织逻辑
 
+- `master-build-deploy.md`
+  - Linux/master 侧 `micad`、`mica`、KO、依赖库的构建与部署规则
+
 ## 8. 阅读分流
 
 如果问题更偏具体机制，建议直接进入对应专题：
@@ -111,6 +114,7 @@ Linux/master 侧的服务“可见”通常依赖两个层面：
 - `master` 侧模块交互：`master-module-interaction.md`
 - 生命周期问题：`../../mica-lifecycle/references/lifecycle-overview.md`
 - 状态与服务展示逻辑：`master-status-management.md`
+- master 侧构建与部署：`master-build-deploy.md`
 - service 注册与绑定语义：`../../mica-communication/references/openamp-rpmsg.md`
 - pedestal / backend 细节：`../../mica-pedestals/references/*.md`
 
@@ -118,5 +122,6 @@ Linux/master 侧的服务“可见”通常依赖两个层面：
 
 - `master-module-interaction.md`
 - `master-status-management.md`
+- `master-build-deploy.md`
 - `../../mica-lifecycle/references/lifecycle-overview.md`
 - `../../mica-communication/references/openamp-rpmsg.md`

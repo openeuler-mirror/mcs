@@ -28,12 +28,14 @@ description: 当需要从 Linux/master 侧理解 MICA 时使用，包括控制�
 - `references/master-side-overview.md`
 - `references/master-module-interaction.md`
 - `references/master-status-management.md`
+- `references/master-build-deploy.md`
 
 ## 阅读指导
 
 - 如果只知道问题在 Linux/master 侧，但还不知道归属组件，先读 `master-side-overview.md`
 - 如果需要追踪 Linux/master 侧模块交互和控制流，读 `master-module-interaction.md`
 - 如果主要症状是可见状态、服务列表或 Linux/master 侧状态展示，读 `master-status-management.md`
+- 如果需要编译或部署 `micad`、`mica`、KO 或目标侧依赖库，读 `master-build-deploy.md`
 
 ## 常见误区
 

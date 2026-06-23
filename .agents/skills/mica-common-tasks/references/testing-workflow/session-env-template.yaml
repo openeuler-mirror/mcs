@@ -1,0 +1,53 @@
+# Local MICA test/debug session state.
+# Materialize as .agents/env/mica-session.yaml. Keep credentials out of committed files;
+# prefer key_path or password_env over plaintext passwords.
+
+session:
+  name: ""
+  purpose: "smoke"        # smoke | debug | development | review | board-test | custom
+  notes: ""
+
+cache_root: "~/.mica"
+
+target:
+  kind: "qemu"            # qemu | board | compile-only
+  pedestal: "baremetal"   # baremetal | xen | jailhouse | hetero | custom
+  arch: "aarch64"
+  host: "127.0.0.1"
+  port: 2222
+  user: "root"
+  key_path: ""
+  password_env: ""
+  deploy_dir: "/tmp/mica-deploy"
+  keep_running: false
+
+qemu:
+  archive: ""
+  package_dir: ""
+  work_dir: ""
+  append: "root=/dev/ram0 rw maxcpus=3 console=ttyAMA0 ramdisk_size=524288"
+
+sdk:
+  dir: ""
+  setup: ""
+  kernel_src: ""
+  validated: false
+  notes: "SDK install path must be short enough for Yocto SDK native ELF PT_INTERP relocation. Prefer <cache_root>/<timestamp>."
+
+artifacts:
+  micad: ""
+  mica: ""
+  ko: ""
+  rtos_image: ""
+  mica_conf: "/etc/mica/qemu-zephyr-rproc.conf"
+  keep_target_rtos: true
+
+validation:
+  mode: "smoke"           # smoke | adaptation | custom
+  instance: "qemu-zephyr"
+  tty: ""                 # leave empty to select from mica status
+  result: ""
+  logs:
+    smoke: ""
+    serial: ""
+    dmesg: ""
