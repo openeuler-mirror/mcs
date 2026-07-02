@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <netdb.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/select.h>
 #include <syscall.h>
 
@@ -237,6 +238,16 @@ static struct rpc_service service_table[] = {
 
 static int lfd;
 static FILE *fp;
+/*
+ * lfd and fp are process-wide singletons shared by every baremetal client's
+ * RPC service. Each client calls rpmsg_rpc_service_init()/terminate() once, so
+ * without reference counting the second client's terminate would fclose()/
+ * close() handles already released by the first one, corrupting the heap
+ * (double-free) and aborting micad. Track how many clients hold these handles
+ * and only open on the first init and close on the last terminate.
+ */
+static int rpc_log_refcount;
+static pthread_mutex_t rpc_log_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int __lprintf(const char *fmt, va_list list)
 {
@@ -369,6 +380,23 @@ int rpmsg_rpc_service_init(void)
 	int ret;
 	unsigned int n_services = sizeof(service_table) / sizeof(service_table[0]);
 
+	pthread_mutex_lock(&rpc_log_lock);
+
+	/*
+	 * The log handles are shared across clients. Only the first client opens
+	 * them; subsequent clients reuse the existing handles. This avoids leaking
+	 * the previous fp/lfd and keeps terminate() symmetric via the refcount.
+	 */
+	if (rpc_log_refcount > 0) {
+		rpc_log_refcount++;
+		ret = rpmsg_init_rpc_server(&service_inst, service_table, n_services);
+#ifdef MULTI_WORKERS
+		workers_init();
+#endif
+		pthread_mutex_unlock(&rpc_log_lock);
+		return ret;
+	}
+
 	lfd = open(LOG_PATH, O_CREAT | O_RDWR | O_APPEND, 0600);
 	if (lfd < 0) {
 		lfd = STDOUT_FILENO;
@@ -379,28 +407,52 @@ int rpmsg_rpc_service_init(void)
 		if (lfd != STDOUT_FILENO) {
 			lprintf("Failed to open or create file");
 			close(lfd);
+			lfd = STDOUT_FILENO;
 		}
+		pthread_mutex_unlock(&rpc_log_lock);
 		return -ENOMEM;
 	}
 
+	rpc_log_refcount++;
 	lprintf("number of services: %d, %p\n", n_services, service_table);
 	ret = rpmsg_init_rpc_server(&service_inst, service_table, n_services);
 #ifdef MULTI_WORKERS
 	workers_init();
 #endif
+	pthread_mutex_unlock(&rpc_log_lock);
 	return ret;
 }
 
 void rpmsg_rpc_service_terminate(void)
 {
-	if (fp != NULL) {
-		fclose(fp);
+	pthread_mutex_lock(&rpc_log_lock);
+
+	/*
+	 * Only release the shared log handles when the last client that holds
+	 * them is being removed. Reset the handles after closing so a stale
+	 * pointer/fd can never be closed twice (the double-free that aborted
+	 * micad when two baremetal clients were removed).
+	 */
+	if (rpc_log_refcount > 0)
+		rpc_log_refcount--;
+
+	if (rpc_log_refcount > 0) {
+		pthread_mutex_unlock(&rpc_log_lock);
+		return;
 	}
 
 	if (lfd != STDOUT_FILENO) {
 		lprintf("Destroying endpoint.\r\n");
 		close(lfd);
+		lfd = STDOUT_FILENO;
 	}
+
+	if (fp != NULL) {
+		fclose(fp);
+		fp = NULL;
+	}
+
+	pthread_mutex_unlock(&rpc_log_lock);
 }
 
 #define STDFILE_BASE 1
