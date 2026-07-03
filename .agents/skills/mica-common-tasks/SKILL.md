@@ -49,6 +49,13 @@ description: 当需要面向任务的 MICA 工作流时使用，包括使用、�
 - PR 或 patch 评审从 `references/review-workflow/review-overview.md` 开始
 - 当请求精确匹配 start 失败、service 开发、层级分类或配置到代码解释时，使用各目录内的聚焦 workflow 文件
 
+## 提交与 PR 规则
+
+- 涉及 MICA 代码或文档提交时，commit 必须包含 `Signed-off-by`；优先使用 `git commit -s`，amend 时使用 `git commit --amend -s`。
+- commit message 不能只有标题；正文应说明背景、变更内容、验证结果或影响范围，至少覆盖与该提交相关的关键信息。
+- 创建或更新 AtomGit/GitCode PR 时，PR 标题和正文必须使用中文，除非 maintainer 明确要求英文。
+- PR 正文应至少包含背景、变更内容、影响范围和验证结果；验证结果应写清环境、关键命令或场景、通过标准。
+
 ## 常见误区
 
 1. 把这些任务参考文档当成 subsystem 文档的替代品。
