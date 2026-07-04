@@ -26,3 +26,5 @@ build/
 
 .cache/
 __pycache__/
+.agents/env/*
+!.agents/env/.gitkeep

@@ -137,6 +137,16 @@ agent 的职责是提出可审查的问题和依据；是否采纳、如何回�
 - 是否需要更新 `.agents/skills/**` 中的相关文档
 - 是否影响现有用户可见行为或兼容性
 
+### 9.1 基础验证策略
+
+PR 或 patch 的基础验证进入 `../testing-workflow/testing-overview.md`。测试工作流统一负责构建部署分流、环境准备、基础 smoke 和专项验证选择。
+
+未指定目标 pedestal 时，基础 smoke test 默认覆盖当前 CI 使用的 baremetal 场景。涉及 xen、jailhouse、hetero、真实硬件、shared memory、IRQ、notify、resource table 或 KO 的改动，即使 smoke test 通过，也应在评审结论中说明剩余平台覆盖风险，并由 maintainer 决定是否扩展到开发板或指定 pedestal 环境。
+
+### 9.2 验证环境释放策略
+
+评审类任务应说明验证目标是一次性 smoke，还是需要保留环境继续查证。具体 QEMU 保留或释放规则由 `../testing-workflow/testing-overview.md` 进入 `../testing-workflow/test-env.md` 后统一判断。
+
 ## 10. 评审类输出要求
 
 评审类输出应以 findings 为主，按严重程度排序，并包含：

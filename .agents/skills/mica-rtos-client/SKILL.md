@@ -28,11 +28,13 @@ description: 当需要从 RTOS/client 侧理解 MICA 时使用，包括 libmica 
 从这里开始：
 - `references/client-side-overview.md`
 - `references/client-module-interaction.md`
+- `references/client-build-deploy.md`
 
 ## 阅读指导
 
 - 如果只知道问题在“对端”，但还不知道归属子领域，先读 `client-side-overview.md`
 - 如果关键问题是 `mica_init()`、pedestal hooks、receiver 和 service threads 如何连接，读 `client-module-interaction.md`
+- 如果需要确认 RTOS/client image 来源、构建入口或配置匹配关系，读 `client-build-deploy.md`
 - 具体归属明确后，再进入 lifecycle、communication 或 pedestal 参考文档
 
 ## 常见误区
