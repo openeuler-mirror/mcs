@@ -42,8 +42,7 @@ debugging, but sanitize them before committing or sharing.
 
 Current OEBuild validates that `BUILD_DIR` is under the project's managed
 `build/` root. Older notes may place it under `$OEE_ROOT/work_test/build`; move
-that path under `$PROJECT_DIR/build/` before running `generate` or
-`neo-generate`.
+that path under `$PROJECT_DIR/build/` before running `generate`.
 
 ```bash
 BUILD_BASE=$PROJECT_DIR/build/work_test
@@ -98,35 +97,22 @@ Then apply the manifest override described above.
 
 Generate qemu-aarch64 with k3s-agent and MicRun features.
 
-Prefer `neo-generate` when it is available because MicRun is modeled under
-`nightly-features` as `mcs/micrun`. Pass each feature with a separate `-f`
-because current OEBuild uses an append-style option. For docker builds, do not
-pass `--toolchain_dir`; the openEuler container provides the configured
-`EXTERNAL_TOOLCHAIN_aarch64`. Only pass `-t/--toolchain_dir` for a host build
-with a verified local toolchain.
-
-```bash
-cd "$PROJECT_DIR"
-oebuild neo-generate \
-  -p qemu-aarch64 \
-  -d "$BUILD_DIR" \
-  -f mcs/xen \
-  -f mcs/micrun \
-  -f containers/k3s/k3s-agent \
-  -y
-```
-
-Fallback for older workspaces that do not support `neo-generate`:
+Current OEBuild unifies feature selection under a single `generate` command
+(the legacy `neo-generate` alias was removed). Features are organized as
+categorized YAML with automatic dependency resolution, so nested IDs such as
+`mcs/micrun` resolve their own dependencies. Pass each feature with a separate
+`-f`. For docker builds, do not pass `--toolchain_dir`; the openEuler container
+provides the configured `EXTERNAL_TOOLCHAIN_aarch64`. Only pass
+`-t/--toolchain_dir` for a host build with a verified local toolchain.
 
 ```bash
 cd "$PROJECT_DIR"
 oebuild generate \
   -p qemu-aarch64 \
   -d "$BUILD_DIR" \
-  -f mcs \
-  -f xen \
-  -f containerd \
-  -f k3s \
+  -f mcs/xen \
+  -f mcs/micrun \
+  -f containers/k3s/k3s-agent \
   -y
 ```
 
