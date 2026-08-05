@@ -13,7 +13,7 @@ version = version.group(1)
 
 setup(
     name='mica',
-    url='https://gitee.com/openeuler/mcs',
+    url='https://atomgit.com/openeuler/mcs',
     description='command line client for mica',
     license='MulanPSL-2.0',
     py_modules=['mica'],
