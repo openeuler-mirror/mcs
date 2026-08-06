@@ -47,7 +47,5 @@ func deleteContainer(ctx context.Context, s *shimService, c *shimContainer) erro
 		c.mounted = false
 	}
 
-	s.deleteShimTask(c.id)
-
 	return nil
 }
