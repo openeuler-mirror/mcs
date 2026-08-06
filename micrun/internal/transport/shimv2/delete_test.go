@@ -33,8 +33,11 @@ func TestDeleteContainerIgnoresWrappedContainerNotFound(t *testing.T) {
 	if err := deleteContainer(context.Background(), service, container); err != nil {
 		t.Fatalf("deleteContainer() error = %v", err)
 	}
-	if _, ok := service.containers[container.id]; ok {
-		t.Fatalf("container was not removed from shim state")
+	// deleteContainer only tears down the sandbox/rootfs; removing the task
+	// from shim state is handled by DeleteTask under withTaskLock in the
+	// application layer.
+	if _, ok := service.containers[container.id]; !ok {
+		t.Fatalf("container should remain in shim state after deleteContainer")
 	}
 	if sandbox.stops != 1 {
 		t.Fatalf("StopContainer calls = %d, want 1", sandbox.stops)
@@ -60,8 +63,11 @@ func TestDeleteContainerSkipsTypedNilSandbox(t *testing.T) {
 	if err := deleteContainer(context.Background(), service, container); err != nil {
 		t.Fatalf("deleteContainer() error = %v", err)
 	}
-	if _, ok := service.containers[container.id]; ok {
-		t.Fatal("container was not removed from shim state")
+	// deleteContainer only tears down the sandbox/rootfs; removing the task
+	// from shim state is handled by DeleteTask under withTaskLock in the
+	// application layer.
+	if _, ok := service.containers[container.id]; !ok {
+		t.Fatal("container should remain in shim state after deleteContainer")
 	}
 }
 
