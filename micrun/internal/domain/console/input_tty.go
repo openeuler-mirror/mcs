@@ -36,7 +36,11 @@ func (i *InputInterpreter) interpretTTYByteWithoutDetach(ch byte) []Action {
 }
 
 func (i *InputInterpreter) handleBackspace(ch byte) []Action {
-	actions := []Action{writeTTY([]byte{ch})}
+	// Pair the TTY write with trackEchoByte so the EchoSuppressor can suppress
+	// the RTOS's own backspace echo — every other TTY write path
+	// (acceptTTYByte) does this. localEcho is the shim's own stdout echo and
+	// must NOT be tracked.
+	actions := []Action{writeTTY([]byte{ch}), trackEchoByte(ch)}
 	if i.ttyLine.backspace() {
 		actions = append(actions, localEcho([]byte{'\b', ' ', '\b'}))
 	}
@@ -73,7 +77,10 @@ func (i *InputInterpreter) consumeDetach(ch byte) ([]Action, bool) {
 	if len(result.flushed) > 0 || result.hasReplay {
 		actions := make([]Action, 0, 1+3)
 		if len(result.flushed) > 0 {
-			actions = append(actions, writeTTY(result.flushed))
+			// Track the flushed detach-prefix bytes so an RTOS that echoes
+			// control bytes does not produce a double echo (same invariant as
+			// acceptTTYByte/handleBackspace).
+			actions = append(actions, writeTTY(result.flushed), trackEcho(result.flushed))
 		}
 		if result.hasReplay {
 			actions = append(actions, i.interpretTTYByteWithoutDetach(result.replay)...)

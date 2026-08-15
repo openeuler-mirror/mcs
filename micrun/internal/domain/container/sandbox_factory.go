@@ -21,6 +21,12 @@ func CreateSandbox(ctx context.Context, cfg *SandboxConfig) (*Sandbox, error) {
 
 func newSandbox(ctx context.Context, config SandboxConfig) (sb *Sandbox, retErr error) {
 	if !config.valid() {
+		// Repeat the dominant cause so a non-Xen host surfaces "requires a
+		// Xen host" to the user instead of a bare "invalid configuration"
+		// that needs shim-log digging (spec constraint #1).
+		if config.PedConfig.PedType == PedestalUnsupported && !config.InfraOnly {
+			return nil, fmt.Errorf("invalid sandbox configuration: pedestal/hypervisor unsupported (this build requires a Xen host; verify the host booted under Xen)")
+		}
 		return nil, fmt.Errorf("invalid sandbox configuration")
 	}
 	if config.Dependencies == nil {
@@ -78,8 +84,18 @@ func createSandbox(ctx context.Context, config *SandboxConfig) (*Sandbox, error)
 		return nil, err
 	}
 
-	if s.state.State == StateReady || s.state.State == StateRunning {
-		log.Debugf("sandbox already in ready/running state, creation finished.")
+	if cur := s.GetState(); cur == StateReady || cur == StateRunning || cur == StateStopped {
+		// StateStopped is the recovery path: the sandbox was stopped and its
+		// persisted document still says so (Remove has not arrived yet).
+		// Falling through to StateReady here would overwrite the persisted
+		// state and permanently hide the stopped semantics (same-id recreate
+		// then fails with AlreadyExists instead of deleting the stale entry).
+		log.Debugf("sandbox already in ready/running/stopped state, creation finished.")
+		// setupNetNS may have spawned an ephemeral holder before restore
+		// replaced NetworkConfig with the persisted one. Reclaim releases
+		// that ephemeral entry (replaceHolder) and registers the disk PID;
+		// for a stopped sandbox with no persisted holder it is a no-op.
+		reclaimPersistedNetnsHolder(ctx, s)
 		return s, nil
 	}
 
@@ -106,7 +122,11 @@ func createSandboxFromConfig(ctx context.Context, config *SandboxConfig) (_ *San
 		if err != nil {
 			log.Debugf("hooked delete sandbox!")
 			if s != nil {
-				if deleteErr := s.Delete(ctx); deleteErr != nil {
+				// Detach from RPC cancellation: if the Create client timed
+				// out mid-init, teardown must still run to completion or the
+				// partially created sandbox leaks (same contract as
+				// stopLifecycleTask).
+				if deleteErr := s.Delete(context.WithoutCancel(ctx)); deleteErr != nil {
 					log.Warnf("failed to delete sandbox during cleanup: %v", deleteErr)
 				}
 			}

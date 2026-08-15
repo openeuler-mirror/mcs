@@ -24,7 +24,12 @@
 # no build artifacts
 build/
 
+# repo-local default for micrun/qemu oebuild workspace when the user
+# does not specify one. This matches ./tmp in the repo, not system /tmp.
+/tmp/
+
 .cache/
 __pycache__/
 .agents/env/*
 !.agents/env/.gitkeep
+.zcode/

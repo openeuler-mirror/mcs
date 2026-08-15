@@ -57,8 +57,31 @@ func (r stateRepository) SaveSandbox(ctx context.Context, sandbox *Sandbox) erro
 		return err
 	}
 
+	// Serialize snapshot+write: without this, a snapshot taken before a
+	// structural change (e.g. container removal) can land after the change's
+	// own write, resurrecting the deleted container in the persisted document.
+	sandbox.persistMu.Lock()
+	defer sandbox.persistMu.Unlock()
+
+	// Re-check inside the critical section: a caller that passed the
+	// unlocked checks in StoreSandbox can be queued here behind the final
+	// Delete persist; without this check its write would resurrect the state
+	// file after cleanSandboxStorage already removed it.
+	if sandbox.storageRemoved.Load() {
+		return nil
+	}
+
 	serializable := sandboxStorageFromSandbox(sandbox, timex.Now(r.now).Unix(), r.currentProcessID())
 	return saveStateSnapshot(ctx, r.store, runtimeStateNamespaceSandbox, sandboxSnapshotID(sandbox.id), serializable)
+}
+
+// SaveSandboxStorage persists a SandboxStorage snapshot directly, used during
+// recovery to write back a state correction before rebuildSandbox re-reads it.
+func (r stateRepository) SaveSandboxStorage(ctx context.Context, ss *SandboxStorage) error {
+	if ss == nil || ss.ID == "" {
+		return er.EmptySandboxID
+	}
+	return saveStateSnapshot(ctx, r.store, runtimeStateNamespaceSandbox, sandboxSnapshotID(ss.ID), ss)
 }
 
 func (r stateRepository) currentProcessID() int {
@@ -94,20 +117,11 @@ func (r stateRepository) DeleteSandbox(ctx context.Context, id string) error {
 	return r.legacy.removeSandboxState(id)
 }
 
-func (r stateRepository) SaveContainer(ctx context.Context, container *Container) error {
-	if err := r.validateContainerForSave(container); err != nil {
-		return err
-	}
-
-	return saveStateSnapshot(
-		ctx,
-		r.store,
-		runtimeStateNamespaceContainer,
-		containerSnapshotID(container.containerPath, container.id),
-		containerStorageFromContainer(container),
-	)
-}
-
+// LoadContainer reads a pre-combined-format per-container snapshot (or its
+// legacy state.json locations). There is deliberately no SaveContainer
+// counterpart any more: container runtime state persists only inside the
+// combined sandbox document (SaveSandbox), and adding a second write point
+// would reintroduce the dual-write divergence this design eliminated.
 func (r stateRepository) LoadContainer(ctx context.Context, id, containerPath string, extraLegacyPaths ...string) (*ContainerStorage, error) {
 	if id == "" {
 		return nil, er.EmptyContainerID

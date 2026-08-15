@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	log "micrun/internal/support/logger"
+
 	"micrun/internal/ports"
 	"micrun/internal/support/validation"
 )
@@ -31,23 +33,33 @@ func (s *Service) restartOrBootstrapSession(request sessionRestartRequest) error
 		return nil
 	}
 
+	// Subscribe to the NEW event bus BEFORE the copier starts publishing,
+	// closing the window in which a self-stopping control event (detach/exit)
+	// could be permanently lost. The hook fires after renewContext creates
+	// the new bus but before copier.Start.
+	subscribe := func(stream ports.IOEventStream) {
+		if err := s.startSessionEventHandler(
+			attachSessionContext(request.ctx, request.runtime),
+			request.runtime,
+			request.taskHandle,
+			stream,
+		); err != nil {
+			// The hook runs inside Session's lock; we cannot return an error
+			// from here, but subscribeSessionEvents only fails on nil stream
+			// which cannot happen post-renew. Log as a safety net.
+			log.Warnf("[ATTACH] subscribe hook failed for %s: %v", request.taskHandle.ID(), err)
+		}
+	}
+
 	if hasFreshTTY {
-		if err := request.manager.RestartWithTTYs(request.freshTTY.stdin, request.freshTTY.stdout); err != nil {
+		if err := request.manager.RestartWithSubscriber(request.freshTTY.stdin, request.freshTTY.stdout, subscribe); err != nil {
 			request.freshTTY.close()
 			return request.wrapError("restart IO manager", err)
 		}
-	} else if err := request.manager.Restart(); err != nil {
-		return request.wrapError("restart IO manager", err)
-	}
-
-	if err := s.startSessionEventHandler(
-		attachSessionContext(request.ctx, request.runtime),
-		request.runtime,
-		request.taskHandle,
-		request.manager.EventStream(),
-	); err != nil {
-		request.manager.Stop()
-		return request.wrapError("subscribe restarted IO session events", err)
+	} else {
+		if err := request.manager.RestartWithSubscriber(nil, nil, subscribe); err != nil {
+			return request.wrapError("restart IO manager", err)
+		}
 	}
 
 	withTaskLock(request.runtime, func() {

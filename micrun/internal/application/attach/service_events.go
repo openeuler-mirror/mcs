@@ -10,13 +10,16 @@ import (
 	"github.com/containerd/containerd/api/types/task"
 )
 
-func (s *Service) CloseIO(ctx context.Context, taskHandle ports.Task, closeStdin bool) error {
+func (s *Service) CloseIO(ctx context.Context, runtime ports.TaskAttachRuntime, taskHandle ports.Task, closeStdin bool) error {
 	if err := requireTask(taskHandle); err != nil {
 		return err
 	}
 	ctx = contextx.OrBackground(ctx)
 
-	wasAttached := taskHandle.SetAttached(false)
+	var wasAttached bool
+	withTaskLock(runtime, func() {
+		wasAttached = taskHandle.SetAttached(false)
+	})
 
 	if wasAttached {
 		log.Infof("[ATTACH] Container %s detached, isAttached cleared", taskHandle.ID())
@@ -25,7 +28,7 @@ func (s *Service) CloseIO(ctx context.Context, taskHandle ports.Task, closeStdin
 	if !closeStdin {
 		return nil
 	}
-	return closeTaskStdin(ctx, taskHandle)
+	return closeTaskStdin(ctx, runtime, taskHandle)
 }
 
 func (s *Service) handleIOEvents(
@@ -120,6 +123,20 @@ func handleIOEventReportError(ctx ioEventContext) {
 	log.Warnf("[EVENTS] IOError event received for %s: %v", ctx.task.ID(), ctx.event.Err)
 }
 
+func handleIOEventClientAttached(ctx ioEventContext) {
+	withTaskLockIfAvailable(ctx.runtime, func() {
+		ctx.task.SetAttached(true)
+	})
+	log.Infof("[ATTACH] Live client attached for %s", ctx.task.ID())
+}
+
+func handleIOEventClientDetached(ctx ioEventContext) {
+	withTaskLockIfAvailable(ctx.runtime, func() {
+		ctx.task.SetAttached(false)
+	})
+	log.Infof("[ATTACH] No live stdin writer for %s", ctx.task.ID())
+}
+
 func (s *Service) stopFromIOEvent(runtime ports.TaskAttachRuntime, taskHandle ports.Task, reason ioStopReason) {
 	var manager ports.IOManager
 	var shouldStop bool
@@ -128,7 +145,12 @@ func (s *Service) stopFromIOEvent(runtime ports.TaskAttachRuntime, taskHandle po
 		alreadyStopped := taskHandle.Status() == task.Status_STOPPED
 		if !alreadyStopped {
 			taskHandle.SetStatus(task.Status_STOPPED)
-			taskHandle.SetExitInfo(reason.exitStatus, s.clockNow())
+			// Preserve Kill pre-writes (SetExitInfo without Status=STOPPED).
+			// Overwriting them with an IO-fabricated 0/130 would disagree
+			// with the signal the API requested (e.g. 137 for SIGKILL).
+			if taskHandle.ExitTime().IsZero() {
+				taskHandle.SetExitInfo(reason.exitStatus, s.clockNow())
+			}
 			manager, _ = loadIOManager(taskHandle)
 			taskHandle.SetIOManager(nil)
 		}

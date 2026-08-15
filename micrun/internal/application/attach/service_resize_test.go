@@ -43,11 +43,11 @@ func TestShouldRestartAttachForResize(t *testing.T) {
 			want:         false,
 		},
 		{
-			name:         "restart for non-tty real attach",
+			name:         "keep running non-tty manager (Restart rejects already-started)",
 			manager:      &fakeIOManager{isRunning: true},
 			terminal:     false,
 			isRealAttach: true,
-			want:         true,
+			want:         false,
 		},
 		{
 			name:         "keep manager for non-tty detached attach",

@@ -127,7 +127,10 @@ func (r legacyStateRepository) loadContainerState(paths []string) (*ContainerSto
 			return storage, path, nil
 		}
 		if !os.IsNotExist(err) {
-			return nil, path, fmt.Errorf("failed to restore legacy container state from %s: %w", path, err)
+			// A corrupt candidate must not abort the search: the next
+			// candidate may hold a perfectly readable copy.
+			log.Warnf("skipping unreadable legacy container state %s: %v", path, err)
+			continue
 		}
 	}
 	return nil, "", os.ErrNotExist

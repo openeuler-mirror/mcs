@@ -11,6 +11,8 @@ func mustBuildDefaultIOEventPolicySet() ioEventPolicySet {
 		mustMakeIOEventPolicy(ports.IOEventStdinClosed, handleIOEventStdinClosed),
 		mustMakeIOEventPolicy(ports.IOEventDetach, handleIOEventDetach),
 		mustMakeIOEventPolicy(ports.IOEventError, handleIOEventReportError),
+		mustMakeIOEventPolicy(ports.IOEventClientAttached, handleIOEventClientAttached),
+		mustMakeIOEventPolicy(ports.IOEventClientDetached, handleIOEventClientDetached),
 	})
 	if err != nil {
 		panic(err)

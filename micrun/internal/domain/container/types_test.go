@@ -11,13 +11,13 @@ func TestShareToWeight(t *testing.T) {
 		want   uint32
 	}{
 		{"zero shares returns default 256", 0, 256},
-		{"1024 shares maps to 100", 1024, 100},
-		{"512 shares maps to 50", 512, 50},
-		{"2048 shares maps to 200", 2048, 200},
+		{"1024 shares maps to 256 (default Xen weight)", 1024, 256},
+		{"512 shares maps to 128", 512, 128},
+		{"2048 shares maps to 512", 2048, 512},
 		{"very small shares (1) returns minimum 1", 1, 1},
-		{"small shares (10) returns minimum 1", 10, 1},
-		{"shares=10 yields weight < 1 so clamped to 1", 10, 1},
-		{"large shares (10240) maps to 1000", 10240, 1000},
+		{"small shares (3) returns minimum 1 (3/4=0)", 3, 1},
+		{"shares=4 yields weight 1", 4, 1},
+		{"large shares (10240) maps to 2560", 10240, 2560},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -110,8 +110,5 @@ func TestNewResourceChangesDefaults(t *testing.T) {
 	}
 	if rc.MemoryMaxMB != nil {
 		t.Errorf("NewResourceChanges().MemoryMaxMB = %v, want nil", rc.MemoryMaxMB)
-	}
-	if rc.MemoryMinMB != 0 {
-		t.Errorf("NewResourceChanges().MemoryMinMB = %d, want 0", rc.MemoryMinMB)
 	}
 }

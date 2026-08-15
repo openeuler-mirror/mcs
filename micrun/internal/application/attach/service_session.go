@@ -9,6 +9,7 @@ import (
 	"micrun/internal/support/contextx"
 	er "micrun/internal/support/errors"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/panicsafe"
 	"micrun/internal/support/validation"
 
 	"github.com/containerd/containerd/api/types/task"
@@ -48,8 +49,15 @@ func (s *Service) EnsureAttach(runtime ports.TaskAttachRuntime, taskHandle ports
 		return err
 	}
 	snapshot := snapshotAttachSessionState(runtime, taskHandle)
-	log.Infof("[ATTACH] Checking attach scenario for %s: attachInfo=%v, ioManager=%v",
-		taskHandle.ID(), snapshot.attachInfo != nil, !validation.IsNil(snapshot.manager))
+	log.Infof("[ATTACH] Checking attach scenario for %s: attachInfo=%v, ioManager=%v, status=%s",
+		taskHandle.ID(), snapshot.attachInfo != nil, !validation.IsNil(snapshot.manager), snapshot.status)
+
+	// Reject attach to a task that is already STOPPED/PAUSED/CREATED: Kill can
+	// race a reattach Start, and installing IO on a terminal task makes Start
+	// report success after the guest is gone.
+	if snapshot.status != task.Status_RUNNING {
+		return er.Wrapf(er.InvalidState, "cannot attach to task %s in state %s", taskHandle.ID(), snapshot.status)
+	}
 
 	if snapshot.attachInfo == nil {
 		return er.Wrap(er.InvalidAttachInfo, "missing attach info for "+taskHandle.ID())
@@ -62,13 +70,26 @@ func (s *Service) EnsureAttach(runtime ports.TaskAttachRuntime, taskHandle ports
 	log.Infof("[ATTACH] IsRunning check for %s: ioManager=%v, isRunning=%v",
 		taskHandle.ID(), !validation.IsNil(snapshot.manager), isRunning)
 	if !validation.IsNil(snapshot.manager) && isRunning {
+		// Manager already pumping: still restore attached so auto-close does
+		// not kill a client that returned via CloseIO(stdin=false) without
+		// stopping the session (restart path already SetAttached below).
+		withTaskLockIfAvailable(runtime, func() {
+			taskHandle.SetAttached(true)
+		})
 		return nil
 	}
 
 	log.Infof("[ATTACH] Restarting IO session for %s", taskHandle.ID())
 
+	// Mark attached before the slow restart (open TTY, start copier) so the
+	// auto-close timer resets during reattach instead of racing internalKill.
+	withTaskLockIfAvailable(runtime, func() {
+		taskHandle.SetAttached(true)
+	})
+
 	factory, err := s.requireFactory()
 	if err != nil {
+		clearAttachedUnlessLive(runtime, taskHandle)
 		return err
 	}
 
@@ -79,31 +100,39 @@ func (s *Service) EnsureAttach(runtime ports.TaskAttachRuntime, taskHandle ports
 		terminal:   snapshot.terminal,
 		attachInfo: snapshot.attachInfo,
 	}
+
+	sessionCtx := attachSessionContext(context.Background(), runtime)
+	// Re-open the TTY for BOTH terminal and non-terminal sessions: a
+	// non-terminal disconnect goes through the full stop path, which closes
+	// the TTY fds; reattaching with the stale handles (session.ttys) would
+	// wire a closed fd into the new copier and the session would die on
+	// first I/O. Fresh handles are safe because the old session is fully
+	// stopped before the restart.
+	if validation.IsNil(snapshot.sandbox) {
+		clearAttachedUnlessLive(runtime, taskHandle)
+		return er.Wrap(er.SandboxNotFound, "sandbox not found for "+taskHandle.ID())
+	}
+	ttyHandles, ttyErr := openFreshTTYHandles(sessionCtx, snapshot.sandbox, taskHandle.ID())
+	if ttyErr != nil {
+		clearAttachedUnlessLive(runtime, taskHandle)
+		return ttyErr
+	}
+	infoRequest.freshTTY = ttyHandles
 	updatedAttachInfo := buildAttachSessionInfo(infoRequest)
 
-	sessionCtx := attachSessionContext(nil, runtime)
-	var ttyHandles freshTTYHandles
-	if updatedAttachInfo.Terminal {
-		if validation.IsNil(snapshot.sandbox) {
-			return er.Wrap(er.SandboxNotFound, "sandbox not found for "+taskHandle.ID())
-		}
-		var ttyErr error
-		ttyHandles, ttyErr = openFreshTTYHandles(sessionCtx, snapshot.sandbox, taskHandle.ID())
-		if ttyErr != nil {
-			return ttyErr
-		}
-		infoRequest.freshTTY = ttyHandles
-		updatedAttachInfo = buildAttachSessionInfo(infoRequest)
-	}
-
-	return s.restartOrBootstrapSession(sessionRestartRequest{
+	if err := s.restartOrBootstrapSession(sessionRestartRequest{
 		ctx:        sessionCtx,
 		runtime:    runtime,
 		taskHandle: taskHandle,
 		manager:    snapshot.manager,
 		attachInfo: updatedAttachInfo,
 		freshTTY:   ttyHandles,
-	})
+	}); err != nil {
+		clearAttachedUnlessLive(runtime, taskHandle)
+		return err
+	}
+	// Attached was set before restart; keep true on success.
+	return nil
 }
 
 type attachTaskSnapshot struct {
@@ -213,10 +242,15 @@ func (s *Service) startManagedSession(
 	withTaskLock(runtime, func() {
 		taskHandle.SetIOManager(manager)
 		taskHandle.SetAttachInfo(attachInfo)
+		// nerdctl run -i is a live client from Start, but may not open the
+		// stdin FIFO until the first byte. Mark attached now so default
+		// auto-close cannot kill it during that wait. start -d has no
+		// writer: the copier publishes ClientDetached on the first EOF.
+		taskHandle.SetAttached(true)
 	})
 	cleanupManager = nil
 
-	go s.handleIOEvents(sessionCtx, runtime, taskHandle, events)
+	panicsafe.Go("attach io event handler", func() { s.handleIOEvents(sessionCtx, runtime, taskHandle, events) })
 	log.Infof("[ATTACH] Saved attach info for %s: terminal=%v", taskHandle.ID(), attachInfo.Terminal)
 	return nil
 }

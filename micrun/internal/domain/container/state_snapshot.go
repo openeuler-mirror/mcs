@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"micrun/internal/ports"
 	"micrun/internal/support/contextx"
+	log "micrun/internal/support/logger"
 	"micrun/internal/support/statekey"
 	"micrun/internal/support/validation"
 )
@@ -56,7 +58,48 @@ func loadStateSnapshot[T any](ctx context.Context, store ports.StateStore, names
 	}
 	var out T
 	if err := json.Unmarshal(snapshot.Data, &out); err != nil {
-		return nil, fmt.Errorf("unmarshal snapshot %s/%s: %w", namespace, taskID, err)
+		// A snapshot that cannot be unmarshalled (truncated write left by a
+		// pre-atomic-write shim, bit rot, manual edits) used to fail recovery
+		// forever: every shim restart re-read the same bytes and died, so the
+		// node stayed down until someone deleted the file by hand. Quarantine
+		// it and report not-found instead — the stale-state machinery then
+		// probes micad/Xen and decides whether anything must be cleaned up.
+		type quarantiner interface {
+			Quarantine(ctx context.Context, namespace, taskID string) error
+		}
+		if namespace == runtimeStateNamespaceSandbox {
+			// Quarantining a SANDBOX document destroys the only record of
+			// which guest ids existed: the stale-state probes cannot run
+			// without it, so a still-running Xen domain would be orphaned
+			// silently. Best-effort salvage the container ids for the log
+			// so an operator can reconcile manually.
+			var salvage struct {
+				Config struct {
+					ContainerConfigs map[string]struct {
+						ID string `json:"ID"`
+					} `json:"ContainerConfigs"`
+				} `json:"Config"`
+			}
+			ids := []string{}
+			if json.Unmarshal(snapshot.Data, &salvage) == nil {
+				for _, cc := range salvage.Config.ContainerConfigs {
+					if cc.ID != "" {
+						ids = append(ids, cc.ID)
+					}
+				}
+			}
+			log.Warnf("corrupt sandbox snapshot %s/%s; salvaged container ids (may need manual xl destroy): %v (unmarshal: %v)", namespace, taskID, ids, err)
+		}
+		if q, ok := store.(quarantiner); ok {
+			if qErr := q.Quarantine(ctx, namespace, taskID); qErr != nil {
+				log.Warnf("failed to quarantine corrupt snapshot %s/%s: %v", namespace, taskID, qErr)
+			} else {
+				log.Warnf("quarantined corrupt snapshot %s/%s; treating as absent", namespace, taskID)
+			}
+		} else {
+			log.Warnf("corrupt snapshot %s/%s cannot be quarantined by this store; treating as absent", namespace, taskID)
+		}
+		return nil, os.ErrNotExist
 	}
 	return &out, nil
 }

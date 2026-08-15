@@ -35,8 +35,15 @@ func TestSandboxStorageFromSandboxFallsBackToConfigNetwork(t *testing.T) {
 	}
 }
 
-func TestContainerStorageFromContainerCopiesPersistenceFields(t *testing.T) {
-	sandbox := &Sandbox{id: "sandbox1"}
+// The combined sandbox document embeds each container's runtime record; this
+// covers the same persistence fields the removed per-container writer used to
+// carry (state, mounts, container path) plus the config via ContainerConfigs.
+func TestSandboxStorageFromSandboxEmbedsContainerRecords(t *testing.T) {
+	sandbox := &Sandbox{
+		id:     "sandbox1",
+		config: &SandboxConfig{ID: "sandbox1"},
+		state:  SandboxState{State: StateRunning},
+	}
 	container := &Container{
 		id:            "container1",
 		sandbox:       sandbox,
@@ -45,16 +52,18 @@ func TestContainerStorageFromContainerCopiesPersistenceFields(t *testing.T) {
 		mounts:        []Mount{{Target: "/data"}},
 		containerPath: "sandbox1/container1",
 	}
+	sandbox.containers = map[string]*Container{container.id: container}
 
-	got := containerStorageFromContainer(container)
+	got := sandboxStorageFromSandbox(sandbox, 0, 0)
 
-	if got.ID != container.id || got.SandboxID != sandbox.id || got.ContainerPath != container.containerPath {
-		t.Fatalf("container storage identity = %+v", got)
+	record, ok := got.Containers[container.id]
+	if !ok {
+		t.Fatalf("container record missing from sandbox storage: %+v", got.Containers)
 	}
-	if got.Config.ID != container.config.ID || got.State.State != container.state.State {
-		t.Fatalf("container storage state/config = %+v", got)
+	if record.State.State != StateReady || record.ContainerPath != container.containerPath {
+		t.Fatalf("container record = %+v", record)
 	}
-	if len(got.Mounts) != 1 || got.Mounts[0].Target != "/data" {
-		t.Fatalf("container storage mounts = %+v", got.Mounts)
+	if len(record.Mounts) != 1 || record.Mounts[0].Target != "/data" {
+		t.Fatalf("container record mounts = %+v", record.Mounts)
 	}
 }

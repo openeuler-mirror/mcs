@@ -46,6 +46,7 @@ func TestSetVcpuAffinityUpdatesContainerConfig(t *testing.T) {
 		id:        "container1",
 		config:    &ContainerConfig{ID: "container1"},
 		guestExec: exec,
+		sandbox:   &Sandbox{},
 	}
 
 	if err := container.setVcpuAffinity(context.Background(), cpuset.NewCPUSet(2, 0)); err != nil {
@@ -77,6 +78,7 @@ func TestSetVcpuAffinityDoesNotUpdateConfigOnPinFailure(t *testing.T) {
 			PCPUNum: 1,
 		},
 		guestExec: exec,
+		sandbox:   &Sandbox{},
 	}
 
 	if err := container.setVcpuAffinity(context.Background(), cpuset.NewCPUSet(0, 2)); !errors.Is(err, pinErr) {

@@ -19,22 +19,6 @@ func (r stateRepository) validateSandboxForSave(sandbox *Sandbox) error {
 	return r.validateStore()
 }
 
-func (r stateRepository) validateContainerForSave(container *Container) error {
-	if container == nil {
-		return fmt.Errorf("container is nil")
-	}
-	if container.sandbox == nil {
-		return fmt.Errorf("container sandbox is nil")
-	}
-	if container.config == nil {
-		return fmt.Errorf("container config is nil")
-	}
-	if container.id == "" {
-		return er.EmptyContainerID
-	}
-	return r.validateStore()
-}
-
 func (r stateRepository) validateStore() error {
 	if r.store == nil {
 		return fmt.Errorf("state store is nil")

@@ -103,6 +103,12 @@ func createSandbox(ctx context.Context, ocispec *specs.Spec,
 	log.Debugf("Sandbox <%s> created.", sandbox.SandboxID())
 	containers := sandbox.GetAllContainers()
 	if len(containers) != 1 {
+		// Mirror the persistence-failure cleanup above: by now the guest
+		// domain, micad registration, netns holder, and persisted state all
+		// exist; returning without Delete would leak them all.
+		if cleanupErr := sandbox.Delete(context.WithoutCancel(ctx)); cleanupErr != nil {
+			log.Warnf("failed to cleanup sandbox %s after container-list invariant violation: %v", sandbox.SandboxID(), cleanupErr)
+		}
 		return nil, fmt.Errorf("container list from sandbox is wrong, expecting only one container, got %d", len(containers))
 	}
 	return sandbox, nil

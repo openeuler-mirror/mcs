@@ -79,6 +79,22 @@ func (s *Store) snapshotPath(namespace, taskID string) string {
 	return filepath.Join(s.snapshotDir(namespace, taskID), "runtime.json")
 }
 
+// Quarantine renames an unreadable snapshot to <path>.corrupt so recovery
+// can treat it as absent (and let the stale-state machinery decide about
+// the workload) while preserving the bytes for post-mortem inspection.
+func (s *Store) Quarantine(ctx context.Context, namespace, taskID string) error {
+	location, err := s.snapshotLocationFor(ctx, namespace, taskID)
+	if err != nil {
+		return err
+	}
+	corrupt := location.path + ".corrupt"
+	_ = os.Remove(corrupt)
+	if err := os.Rename(location.path, corrupt); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) snapshotDir(namespace, taskID string) string {
 	return filepath.Join(s.root, namespace, taskID)
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"micrun/internal/application/exitstatus"
 	"micrun/internal/ports"
 	er "micrun/internal/support/errors"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/panicsafe"
 	"micrun/internal/support/validation"
 )
 
@@ -36,12 +38,27 @@ func (s *Service) Start(ctx context.Context, runtime ports.TaskLifecycleRuntime,
 		return err
 	}
 
-	markTaskRunning(runtime, taskHandle)
+	if !markTaskRunning(runtime, taskHandle) {
+		// Concurrent Kill/Delete or a State-refresh-driven status change
+		// (e.g. external xl pause writing PAUSED) made markTaskRunning
+		// reject the transition. Tear down the domain/IO we just started.
+		cleanupTaskIOAfterStartFailure(runtime, taskHandle)
+		stopTaskAfterFailedStart(ctx, runtime, sandbox, taskHandle)
+		// Finalize the task so Wait/Delete do not block: stopTaskAfterFailedStart
+		// only stops the guest domain but does not close the exit channel or
+		// write terminal status. Without this, a task that reached PAUSED
+		// (via a concurrent refresh) or any non-CREATED status stays with an
+		// open exit channel and no exit watcher — Wait hangs indefinitely.
+		withTaskLock(runtime, func() {
+			ports.FinalizeTaskStopped(taskHandle, exitstatus.Interrupt(), s.clockNow())
+		})
+		return er.Wrapf(er.InvalidState, "task %s was stopped during start", taskHandle.ID())
+	}
 
 	eventCtx := lifecycleEventContext(ctx, runtime)
-	go func() {
+	panicsafe.Go("task exit watcher", func() {
 		_ = s.waitForExit(newTaskContext(eventCtx, runtime, taskHandle))
-	}()
+	})
 	return nil
 }
 
@@ -84,7 +101,13 @@ func (s *Service) setupIO(tc *taskContext, sandbox ports.Sandbox) error {
 		return nil
 	}
 
-	recordTaskStdin(tc.Runtime, tc.Task, streams.stdin)
+	// The no-attach path has no IO session to consume the streams, so close
+	// them all — leaving them open leaks TTY fds. Stdin is NOT recorded via
+	// recordTaskStdin here: no copier exists to consume it, and a recorded
+	// handle is never closed on this path (CloseIO only unsets the
+	// reference, which is correct only when the copier owns the fd).
+	closeTaskIO(tc.Task.ID(), "stdin", streams.stdin)
+	closeTaskIOReaders(tc.Task.ID(), streams.stdout, streams.stderr)
 	completeTaskWithoutAttach(tc.Task)
 	return nil
 }

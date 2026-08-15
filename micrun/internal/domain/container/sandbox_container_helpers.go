@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	er "micrun/internal/support/errors"
+	"micrun/internal/support/lockutil"
 )
 
 type sandboxContainerEntry struct {
@@ -26,6 +27,8 @@ func (s *Sandbox) containerByID(id string) (*Container, error) {
 	if id == "" {
 		return nil, er.EmptyContainerID
 	}
+	s.containersLock.RLock()
+	defer s.containersLock.RUnlock()
 	c, ok := s.containers[id]
 	if !ok || c == nil {
 		return nil, er.ContainerNotFound
@@ -33,25 +36,33 @@ func (s *Sandbox) containerByID(id string) (*Container, error) {
 	return c, nil
 }
 
+// containerCount returns the number of containers under containersLock.
+func (s *Sandbox) containerCount() int {
+	if s == nil {
+		return 0
+	}
+	s.containersLock.RLock()
+	defer s.containersLock.RUnlock()
+	return len(s.containers)
+}
+
 func (s *Sandbox) containerEntries() ([]sandboxContainerEntry, error) {
 	if s == nil {
 		return nil, er.SandboxNotFound
 	}
 
-	ids := make([]string, 0, len(s.containers))
-	for id := range s.containers {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
-	entries := make([]sandboxContainerEntry, 0, len(ids))
-	for _, id := range ids {
-		c, err := s.containerByID(id)
-		if err != nil {
-			return nil, fmt.Errorf("sandbox %s container %q: %w", s.id, id, err)
+	s.containersLock.RLock()
+	defer s.containersLock.RUnlock()
+	entries := make([]sandboxContainerEntry, 0, len(s.containers))
+	for id, c := range s.containers {
+		if c == nil {
+			return nil, fmt.Errorf("sandbox %s container %q: %w", s.id, id, er.ContainerNotFound)
 		}
 		entries = append(entries, sandboxContainerEntry{id: id, container: c})
 	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].id < entries[j].id
+	})
 	return entries, nil
 }
 
@@ -63,12 +74,12 @@ func (s *Sandbox) containerConfigEntries() ([]sandboxContainerConfigEntry, error
 		return nil, fmt.Errorf("sandbox config is nil")
 	}
 
+	s.containersLock.RLock()
+	defer s.containersLock.RUnlock()
 	keys := make([]string, 0, len(s.config.ContainerConfigs))
 	for key := range s.config.ContainerConfigs {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
-
 	seenIDs := make(map[string]string, len(keys))
 	entries := make([]sandboxContainerConfigEntry, 0, len(keys))
 	for _, key := range keys {
@@ -102,6 +113,8 @@ func (s *Sandbox) addContainer(c *Container) error {
 	if c.id == "" {
 		return er.EmptyContainerID
 	}
+	s.containersLock.Lock()
+	defer s.containersLock.Unlock()
 	if s.containers == nil {
 		s.containers = make(map[string]*Container)
 	}
@@ -120,23 +133,66 @@ func (s *Sandbox) removeContainer(containerID string) error {
 		return fmt.Errorf("container %q not found in sandbox %q: %w", containerID, s.id, er.ContainerNotFound)
 	}
 
+	s.containersLock.Lock()
+	defer s.containersLock.Unlock()
 	delete(s.containers, containerID)
 	return nil
+}
+
+// removeContainerConfig removes only the ContainerConfigs entry under
+// containersLock. It is a subset of removeContainerResources used by
+// cleanupAfterDelete to ensure the persisted sandbox snapshot does not
+// reference a container whose state is being deleted.
+func (s *Sandbox) removeContainerConfig(containerID string) {
+	s.containersLock.Lock()
+	if s.config != nil {
+		delete(s.config.ContainerConfigs, containerID)
+	}
+	s.containersLock.Unlock()
+}
+
+// restoreContainerConfig re-adds a ContainerConfigs entry that was removed by
+// removeContainerConfig, used when rolling back a failed StoreSandbox during
+// delete so the containers map and ContainerConfigs stay in sync. An existing
+// entry is left untouched: it belongs to a newer same-ID Create that slipped
+// in after removeContainer, and overwriting it would pair the new container
+// with the deleted one's stale config.
+func (s *Sandbox) restoreContainerConfig(containerID string, cfg *ContainerConfig) {
+	if cfg == nil {
+		return
+	}
+	s.containersLock.Lock()
+	if s.config != nil {
+		if s.config.ContainerConfigs == nil {
+			s.config.ContainerConfigs = make(map[string]*ContainerConfig)
+		}
+		if _, ok := s.config.ContainerConfigs[containerID]; !ok {
+			s.config.ContainerConfigs[containerID] = cfg
+		}
+	}
+	s.containersLock.Unlock()
 }
 
 func (s *Sandbox) removeContainerResources(id string) {
 	if s == nil || id == "" {
 		return
 	}
+	// ContainerConfigs is protected by containersLock; resManager maps by resMu.
+	// Acquire in a fixed order (containersLock then resMu) to avoid deadlock.
+	s.containersLock.Lock()
 	if s.config != nil {
 		delete(s.config.ContainerConfigs, id)
 	}
-	if s.resManager.ContainerCPUSet != nil {
-		delete(s.resManager.ContainerCPUSet, id)
-	}
-	if s.resManager.ContainerVCPUs != nil {
-		delete(s.resManager.ContainerVCPUs, id)
-	}
+	s.containersLock.Unlock()
+
+	lockutil.WithLock(&s.resMu, func() {
+		if s.resManager.ContainerCPUSet != nil {
+			delete(s.resManager.ContainerCPUSet, id)
+		}
+		if s.resManager.ContainerVCPUs != nil {
+			delete(s.resManager.ContainerVCPUs, id)
+		}
+	})
 }
 
 func (s *Sandbox) persistSandboxState(ctx context.Context) error {

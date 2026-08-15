@@ -52,7 +52,6 @@ type ResourceChanges struct {
 	ClientCPUSet string
 	VCPU         *uint32
 	MemoryMaxMB  *uint32
-	MemoryMinMB  uint32
 }
 
 // NewResourceChanges returns zero resource changes with sensible defaults,
@@ -78,14 +77,25 @@ type VCPUUsageInfo struct {
 	DomainVCPUMap map[string][]VCPUUsageEntry
 }
 
-// ShareToWeight converts CPU shares to a weight value.
+// ShareToWeight converts cgroup CPU shares to a Xen credit2 weight.
+// The ratio must match pedestal.ShareToWeight (DefaultCgroupShare /
+// DefaultXenWeight = 1024 / 256 = 4): a prior implementation used
+// shares*100/1024 which mapped the default 1024 shares to 100 instead of
+// 256, under-weighting every container by 2.56x.
 func ShareToWeight(shares uint64) uint32 {
+	const (
+		defaultXenWeight = 256
+		shareWeightRatio = 4 // 1024 / 256
+	)
 	if shares == 0 {
-		return 256
+		return defaultXenWeight
 	}
-	weight := shares * 100 / 1024
+	weight := shares / shareWeightRatio
 	if weight == 0 {
 		return 1
+	}
+	if weight > 65535 {
+		return 65535
 	}
 	return uint32(weight)
 }

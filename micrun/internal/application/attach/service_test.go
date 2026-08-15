@@ -63,6 +63,13 @@ func (f *fakeIOManager) RestartWithTTYs(ttyIn io.WriteCloser, ttyOut io.Reader) 
 	f.restartTTYOut = ttyOut
 	return f.restartWithTTYsErr
 }
+func (f *fakeIOManager) RestartWithSubscriber(ttyIn io.WriteCloser, ttyOut io.Reader, onNewBus func(ports.IOEventStream)) error {
+	err := f.RestartWithTTYs(ttyIn, ttyOut)
+	if err == nil && onNewBus != nil && f.eventStream != nil {
+		onNewBus(f.eventStream)
+	}
+	return err
+}
 func (f *fakeIOManager) IsRunning() bool { return f.isRunning }
 func (f *fakeIOManager) EventStream() ports.IOEventStream {
 	if f.eventStream != nil {
@@ -160,6 +167,7 @@ func (f *fakeTask) ExitChan() chan struct{}              { return f.exitCh }
 func (f *fakeTask) IOExit()                              { f.ioExit = true }
 func (f *fakeTask) CanBeSandbox() bool                   { return false }
 func (f *fakeTask) IsCriSandbox() bool                   { return false }
+func (f *fakeTask) IsRecovered() bool                    { return false }
 func (f *fakeTask) Annotations() map[string]string       { return nil }
 func (f *fakeTask) IOManager() ports.IOManager           { return f.ioMgr }
 func (f *fakeTask) SetIOManager(m ports.IOManager)       { f.ioMgr = m }
@@ -170,6 +178,9 @@ func (f *fakeTask) SetAttached(attached bool) (previous bool) {
 	previous = f.attached
 	f.attached = attached
 	return previous
+}
+func (f *fakeTask) IsAttached() bool {
+	return f.attached
 }
 
 type attachTrackingWriteCloser struct {
@@ -202,7 +213,7 @@ func TestServiceEntryPointsRequireInputs(t *testing.T) {
 		call func() error
 	}{
 		{name: "CloseIO task", call: func() error {
-			return svc.CloseIO(ctx, nil, false)
+			return svc.CloseIO(ctx, runtime, nil, false)
 		}},
 		{name: "StartInitialSession runtime", call: func() error {
 			return svc.StartInitialSession(ctx, nil, taskHandle, nil, nil, nil)
@@ -468,6 +479,9 @@ func (f *fakeSandbox) OpenTTYs(ctx context.Context, containerID string) (stdin, 
 func (f *fakeSandbox) UpdateContainer(ctx context.Context, id string, resources specs.LinuxResources) error {
 	return nil
 }
+func (f *fakeSandbox) WaitContainerExit(ctx context.Context, containerID string) (int32, error) {
+	return 0, nil
+}
 
 func newTempTTYFile(t *testing.T) *os.File {
 	t.Helper()
@@ -521,6 +535,24 @@ func TestEnsureAttachRestartsTerminalManagerWithFreshTTYs(t *testing.T) {
 	}
 }
 
+func TestEnsureAttachRejectsNonRunningTask(t *testing.T) {
+	svc := NewService(&fakeIOFactory{})
+	runtime := &fakeRuntime{sandbox: &fakeSandbox{}}
+	taskHandle := &fakeTask{
+		id:     "task1",
+		status: task.Status_STOPPED,
+		attachInfo: &ports.AttachInfo{
+			Stdin:  "stdin",
+			Stdout: "stdout",
+		},
+	}
+
+	err := svc.EnsureAttach(runtime, taskHandle)
+	if !errors.Is(err, er.InvalidState) {
+		t.Fatalf("EnsureAttach error = %v, want InvalidState", err)
+	}
+}
+
 func TestEnsureAttachRestartsIOEventHandlerForExistingManager(t *testing.T) {
 	stream := &fakeEventStream{events: make(chan ports.IOEvent, 1)}
 	stopCh := make(chan struct{})
@@ -537,12 +569,17 @@ func TestEnsureAttachRestartsIOEventHandlerForExistingManager(t *testing.T) {
 			Stdout: "stdout",
 		},
 	}
+	ttyIn := newTempTTYFile(t)
+	ttyOut := newTempTTYFile(t)
+	runtime := &fakeRuntime{
+		sandbox: &fakeSandbox{ttyIn: ttyIn, ttyOut: ttyOut},
+	}
 
-	if err := svc.EnsureAttach(&fakeRuntime{}, taskHandle); err != nil {
+	if err := svc.EnsureAttach(runtime, taskHandle); err != nil {
 		t.Fatalf("EnsureAttach returned error: %v", err)
 	}
-	if !manager.restartCalled {
-		t.Fatal("expected existing manager to restart")
+	if !manager.restartWithTTYsCalled {
+		t.Fatal("expected existing manager to restart with fresh TTY handles")
 	}
 	if stream.subscribeCount == 0 {
 		t.Fatal("expected restarted manager event stream to be subscribed")
@@ -886,6 +923,9 @@ func TestStartManagedSessionSubscribesBeforeStart(t *testing.T) {
 	if !manager.startCalled {
 		t.Fatal("expected manager Start to be called")
 	}
+	if !taskHandle.IsAttached() {
+		t.Fatal("StartInitialSession should mark a live start client attached")
+	}
 }
 
 func TestStartInitialSessionStopsManagerWhenEventStreamMissing(t *testing.T) {
@@ -990,6 +1030,49 @@ func TestResolveFIFOPathsCompletesNonTerminalOutputPaths(t *testing.T) {
 	}
 }
 
+func TestClientAttachedEventSetsAttached(t *testing.T) {
+	taskHandle := &fakeTask{id: "live-client"}
+	handleIOEventClientAttached(newIOEventContext(
+		NewService(nil),
+		&fakeRuntime{},
+		taskHandle,
+		ports.IOEvent{Type: ports.IOEventClientAttached, ContainerID: taskHandle.id},
+		ioEventPlan{},
+	))
+	if !taskHandle.IsAttached() {
+		t.Fatal("ClientAttached should mark a live FIFO client attached")
+	}
+
+	handleIOEventClientDetached(newIOEventContext(
+		NewService(nil),
+		&fakeRuntime{},
+		taskHandle,
+		ports.IOEvent{Type: ports.IOEventClientDetached, ContainerID: taskHandle.id},
+		ioEventPlan{},
+	))
+	if taskHandle.IsAttached() {
+		t.Fatal("ClientDetached should clear attached so start -d can auto-close")
+	}
+
+	handleIOEventClientAttached(newIOEventContext(
+		NewService(nil),
+		&fakeRuntime{},
+		taskHandle,
+		ports.IOEvent{Type: ports.IOEventClientAttached, ContainerID: taskHandle.id},
+		ioEventPlan{},
+	))
+	if !taskHandle.IsAttached() {
+		t.Fatal("ClientAttached should restore attached after detach")
+	}
+
+	if err := NewService(nil).CloseIO(context.Background(), &fakeRuntime{}, taskHandle, false); err != nil {
+		t.Fatalf("CloseIO: %v", err)
+	}
+	if taskHandle.IsAttached() {
+		t.Fatal("CloseIO should clear attached so start -d can auto-close")
+	}
+}
+
 func TestCloseIOToleratesMissingStdinResources(t *testing.T) {
 	svc := NewService(nil)
 	taskHandle := &fakeTask{
@@ -998,7 +1081,7 @@ func TestCloseIOToleratesMissingStdinResources(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- svc.CloseIO(context.Background(), taskHandle, true)
+		done <- svc.CloseIO(context.Background(), &fakeRuntime{}, taskHandle, true)
 	}()
 
 	select {
@@ -1011,36 +1094,31 @@ func TestCloseIOToleratesMissingStdinResources(t *testing.T) {
 	}
 }
 
-func TestCloseIOHonorsContextWhileWaitingForStdinCloser(t *testing.T) {
+func TestCloseIOUnsetsStdinWithoutClosingTTYFd(t *testing.T) {
 	svc := NewService(nil)
 	stdinClosed := make(chan struct{})
+	stdinPipe := &attachTrackingWriteCloser{closed: stdinClosed}
 	taskHandle := &fakeTask{
-		id:         "closeio-cancel",
-		stdinPipe:  &attachTrackingWriteCloser{closed: stdinClosed},
+		id:         "closeio-return",
+		stdinPipe:  stdinPipe,
 		stdinClose: make(chan struct{}),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan error, 1)
-	go func() {
-		done <- svc.CloseIO(ctx, taskHandle, true)
-	}()
-
+	err := svc.CloseIO(context.Background(), &fakeRuntime{}, taskHandle, true)
+	if err != nil {
+		t.Fatalf("CloseIO error = %v, want nil", err)
+	}
+	// The recorded StdinPipe is the guest TTY fd the copier still uses;
+	// CloseIO must NOT close it (that would break the output path and
+	// double-close on teardown). It only unsets the reference — the copier
+	// observes stdin EOF via the FIFO that containerd already closed.
 	select {
 	case <-stdinClosed:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not close stdin pipe")
+		t.Fatal("CloseIO closed the TTY fd; it must be left to the copier")
+	default:
 	}
-
-	cancel()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("CloseIO error = %v, want context canceled", err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not return after context cancellation")
+	if taskHandle.StdinPipe() != nil {
+		t.Fatal("CloseIO did not unset the stdin handle")
 	}
 }
 
@@ -1380,6 +1458,9 @@ func TestPrepareResizeBootstrapsManagedSessionWhenManagerMissing(t *testing.T) {
 		t.Fatalf("PrepareResize returned error: %v", err)
 	}
 
+	if !taskHandle.attached {
+		t.Fatal("PrepareResize restart must mark attached before session bring-up completes")
+	}
 	if !manager.startCalled {
 		t.Fatal("expected IO session start to be called")
 	}
@@ -1435,6 +1516,9 @@ func TestPrepareResizeRequiresFactoryBeforeOpeningTTYWhenManagerMissing(t *testi
 	if sandbox.openTTYsCalled {
 		t.Fatal("OpenTTYs should not run before session factory is available")
 	}
+	if taskHandle.attached {
+		t.Fatal("failed PrepareResize restart must clear attached")
+	}
 }
 
 func TestPrepareResizeReturnsFreshTTYError(t *testing.T) {
@@ -1461,6 +1545,9 @@ func TestPrepareResizeReturnsFreshTTYError(t *testing.T) {
 	}
 	if !sandbox.openTTYsCalled {
 		t.Fatal("expected sandbox OpenTTYs to be called")
+	}
+	if taskHandle.attached {
+		t.Fatal("failed PrepareResize restart must clear attached")
 	}
 	if sandbox.winResizeCalled {
 		t.Fatal("WinResize should not run after fresh TTY open failure")

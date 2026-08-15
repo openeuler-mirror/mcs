@@ -29,26 +29,3 @@ func (e *inputLineEnding) consume(ch byte) lineEndingResult {
 func (e *inputLineEnding) reset() {
 	e.prevWasCR = false
 }
-
-func convertLFToCRLF(data []byte) []byte {
-	needsConversion := false
-	for idx, ch := range data {
-		if ch == '\n' && (idx == 0 || data[idx-1] != '\r') {
-			needsConversion = true
-			break
-		}
-	}
-	if !needsConversion {
-		return data
-	}
-
-	result := make([]byte, 0, len(data)*2)
-	for idx, ch := range data {
-		if ch == '\n' && (idx == 0 || data[idx-1] != '\r') {
-			result = append(result, '\r', '\n')
-			continue
-		}
-		result = append(result, ch)
-	}
-	return result
-}

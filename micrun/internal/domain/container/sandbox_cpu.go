@@ -7,6 +7,7 @@ import (
 
 	"micrun/internal/support/cpuset"
 	er "micrun/internal/support/errors"
+	"micrun/internal/support/lockutil"
 	log "micrun/internal/support/logger"
 
 	"github.com/hashicorp/go-multierror"
@@ -47,18 +48,23 @@ func (s *Sandbox) checkVCPUsPinning(ctx context.Context) error {
 	}
 
 	if s.config.SharedCPUPool {
-		numVCPUs, numCPUs := int(s.resManager.VCPUCount), len(cpuList)
-		if numCPUs != numVCPUs {
+		// In shared-pool mode, currentVCPUCount() returns the SUM of all
+		// active containers' VCPUNum (= N * poolSize), while len(cpuList)
+		// is the pool size. The comparison is only meaningful with a single
+		// active container; otherwise N*poolSize != poolSize and the check
+		// always reports a spurious mismatch (harmless — pinVCPU runs
+		// unconditionally — but floods the trace log).
+		numVCPUs, numCPUs := int(s.currentVCPUCount()), len(cpuList)
+		if numVCPUs > 0 && numCPUs > numVCPUs {
+			// Only flag a real under-provisioning: pool size exceeds the
+			// sandbox total, meaning at least one container is under-pinned.
 			match = false
-			log.Tracef("the number of cpusets %d is not equal to the number of vcpus %d", numCPUs, numVCPUs)
+			log.Tracef("the number of cpusets %d exceeds the total vcpus %d", numCPUs, numVCPUs)
 		}
 	}
 
 	if !match {
-		if s.vcpuAlreadyPinned {
-			s.vcpuAlreadyPinned = false
-			log.Tracef("the sandbox is already pinned to cpusets")
-		}
+		log.Tracef("cpuset does not match current vcpu configuration, will re-pin")
 	}
 
 	if err := s.pinVCPU(ctx, cpuSet); err != nil {
@@ -66,7 +72,6 @@ func (s *Sandbox) checkVCPUsPinning(ctx context.Context) error {
 		return err
 	}
 
-	s.vcpuAlreadyPinned = true
 	return nil
 }
 
@@ -78,6 +83,8 @@ func (s *Sandbox) getSandboxCpusetStr() (string, string, error) {
 		return "", "", nil
 	}
 
+	s.containersLock.RLock()
+	defer s.containersLock.RUnlock()
 	cpuResult := cpuset.NewCPUSet()
 	memResult := cpuset.NewCPUSet()
 	for id, cfg := range s.config.ContainerConfigs {
@@ -124,7 +131,7 @@ func (s *Sandbox) pinVCPU(ctx context.Context, cpuSet cpuset.CPUSet) error {
 	if s.config == nil {
 		return fmt.Errorf("sandbox config is nil")
 	}
-	s.resManager.ensureMaps()
+	lockutil.WithLock(&s.resMu, func() { s.resManager.ensureMaps() })
 
 	entries, err := s.containerEntries()
 	if err != nil {
@@ -132,26 +139,45 @@ func (s *Sandbox) pinVCPU(ctx context.Context, cpuSet cpuset.CPUSet) error {
 	}
 
 	var result *multierror.Error
+	// pinned collects successful (containerID -> cpuset) pairs; we apply them
+	// to resManager under resMu after the potentially-blocking guest calls.
+	pinned := make(map[string]cpuset.CPUSet)
 
 	if s.config.SharedCPUPool {
+		// If no container specifies a CPU set, there is no shared pool to
+		// pin to. Skip pinning rather than calling VCPUPin with an empty
+		// list, which the guest executor rejects.
+		if cpuSet.Size() == 0 {
+			return nil
+		}
 		pcpuList := cpuSet.ToSlice()
 		for _, entry := range entries {
 			cid, c := entry.id, entry.container
+			pinnable, pinErr := s.pinnableContainer(ctx, c)
+			if pinErr != nil {
+				result = multierror.Append(result, pinErr)
+				continue
+			}
+			if !pinnable {
+				continue
+			}
 			log.Infof("try to pin container %s vcpu affinity to shared cpuset %v", cid, pcpuList)
 			if err := c.setVcpuAffinity(ctx, cpuSet); err != nil {
 				result = multierror.Append(result, err)
 			} else {
-				s.resManager.ContainerCPUSet[cid] = cpuSet
+				pinned[cid] = cpuSet
 			}
 		}
 
 		ret := result.ErrorOrNil()
 		if ret == nil {
-			if total, err := calculateSandboxVCPUs(ctx, s); err == nil {
-				s.resManager.VCPUCount = total
+			var total uint32
+			if calculated, err := calculateSandboxVCPUs(ctx, s); err == nil {
+				total = calculated
 			} else {
-				s.resManager.VCPUCount = uint32(cpuSet.Size())
+				total = uint32(cpuSet.Size())
 			}
+			s.applyPinnedCPUSet(pinned, total)
 		}
 		return ret
 	}
@@ -159,9 +185,19 @@ func (s *Sandbox) pinVCPU(ctx context.Context, cpuSet cpuset.CPUSet) error {
 	allContainerCPUs := cpuset.NewCPUSet()
 	for _, entry := range entries {
 		cid, c := entry.id, entry.container
+		// Snapshot the cpuset string under containersLock so a concurrent
+		// UpdateContainer/setVcpuAffinity cannot tear the string read (Cpus
+		// is a non-atomic pointer+length pair).
+		cpuStr := ""
+		s.containersLock.RLock()
+		if c.config != nil && c.config.Resources != nil && c.config.Resources.CPU != nil {
+			cpuStr = c.config.Resources.CPU.Cpus
+		}
+		s.containersLock.RUnlock()
+		cpuStr = strings.TrimSpace(cpuStr)
 		var containerCPUSet cpuset.CPUSet
-		if c.config != nil && c.config.Resources != nil && c.config.Resources.CPU != nil && c.config.Resources.CPU.Cpus != "" {
-			parsed, err := cpuset.Parse(c.config.Resources.CPU.Cpus)
+		if cpuStr != "" {
+			parsed, err := cpuset.Parse(cpuStr)
 			if err != nil {
 				result = multierror.Append(result, fmt.Errorf("failed to parse cpuset for container %s: %w", cid, err))
 				continue
@@ -172,24 +208,81 @@ func (s *Sandbox) pinVCPU(ctx context.Context, cpuSet cpuset.CPUSet) error {
 			continue
 		}
 
+		pinnable, pinErr := s.pinnableContainer(ctx, c)
+		if pinErr != nil {
+			result = multierror.Append(result, pinErr)
+			continue
+		}
+		if !pinnable {
+			continue
+		}
+
 		log.Tracef("try to pin container %s vcpu affinity to its own cpuset %v", cid, containerCPUSet.ToSlice())
 		if err := c.setVcpuAffinity(ctx, containerCPUSet); err != nil {
 			result = multierror.Append(result, err)
 		} else {
-			s.resManager.ContainerCPUSet[cid] = containerCPUSet
+			pinned[cid] = containerCPUSet
 			allContainerCPUs = allContainerCPUs.Union(containerCPUSet)
 		}
 	}
 
 	ret := result.ErrorOrNil()
 	if ret == nil {
-		if total, err := calculateSandboxVCPUs(ctx, s); err == nil {
-			s.resManager.VCPUCount = total
+		var total uint32
+		if calculated, err := calculateSandboxVCPUs(ctx, s); err == nil {
+			total = calculated
 		} else {
-			s.resManager.VCPUCount = uint32(allContainerCPUs.Size())
+			total = uint32(allContainerCPUs.Size())
 		}
+		s.applyPinnedCPUSet(pinned, total)
 	}
 	return ret
+}
+
+// pinnableContainer reports whether a container should receive a vCPU
+// affinity pin. Infra (pause) containers never register a mica client, so
+// pinning one always fails on the missing control socket; stopped/down
+// containers have no live domain, so micad's underlying xl vcpu-pin always
+// fails. Either failure would poison the aggregated pin result and fail the
+// triggering sibling's Create/Start/Update — kubelet's standard container
+// restart leaves the old stopped container registered until GC deletes it,
+// so the very next CreateContainer in the pod would fail on the dead
+// sibling. Mirrors the infra filter in getSandboxCpusetStr and the
+// activeContainer filter in calculateSandboxVCPUs. A nil container is
+// reported pinnable so setVcpuAffinity keeps returning ContainerNotFound.
+func (s *Sandbox) pinnableContainer(ctx context.Context, c *Container) (bool, error) {
+	if c == nil {
+		return true, nil
+	}
+	if c.isInfra() {
+		return false, nil
+	}
+	return s.activeContainer(ctx, c.ID())
+}
+
+// applyPinnedCPUSet writes the successfully-pinned container→cpuset pairs
+// into resManager under resMu, skipping any container that was deleted
+// while the blocking Xen affinity calls were in flight. Without this
+// re-check, a concurrent DeleteContainer would leave a stale entry in
+// ContainerCPUSet that never gets cleaned up.
+func (s *Sandbox) applyPinnedCPUSet(pinned map[string]cpuset.CPUSet, total uint32) {
+	// Check container existence under containersLock first (matching the
+	// documented lock order: containersLock → resMu), then apply under resMu.
+	s.containersLock.RLock()
+	live := make(map[string]cpuset.CPUSet, len(pinned))
+	for cid, set := range pinned {
+		if _, ok := s.containers[cid]; ok {
+			live[cid] = set
+		}
+	}
+	s.containersLock.RUnlock()
+
+	lockutil.WithLock(&s.resMu, func() {
+		for cid, set := range live {
+			s.resManager.ContainerCPUSet[cid] = set
+		}
+		s.resManager.VCPUCount = total
+	})
 }
 
 func (s *Sandbox) updateResources(ctx context.Context) error {
@@ -201,7 +294,14 @@ func (s *Sandbox) updateResources(ctx context.Context) error {
 		return fmt.Errorf("sandbox config is nil")
 	}
 
-	if s.config.InfraOnly {
+	// Read InfraOnly under containersLock: CreateContainer flips it (with
+	// the lock held) once a non-infra container joins the sandbox; an
+	// unsynchronized read races with that write and can make this function
+	// skip resource accounting with stale state.
+	infraOnly := lockutil.WithReadLockValue(&s.containersLock, func() bool {
+		return s.config.InfraOnly
+	})
+	if infraOnly {
 		return nil
 	}
 
@@ -222,15 +322,25 @@ func (s *Sandbox) updateResources(ctx context.Context) error {
 		return err
 	}
 
-	oldVCPUs, newVCPUs := s.resManager.resizeVCPUs(sandboxVCPUs)
+	var oldVCPUs, newVCPUs uint32
+	var oldMemBytes, newMemBytes uint64
+	lockutil.WithLock(&s.resMu, func() {
+		oldVCPUs, newVCPUs = s.resManager.resizeVCPUs(sandboxVCPUs)
+		oldMemBytes, newMemBytes = s.resManager.resizeMemory(newSandboxMemoryMB)
+	})
 	if oldVCPUs != newVCPUs {
 		log.Infof("sandbox total vcpu number from %d to %d", oldVCPUs, newVCPUs)
 	}
-
-	oldMemBytes, newMemBytes := s.resManager.resizeMemory(newSandboxMemoryMB)
 	if oldMemBytes != newMemBytes {
 		log.Infof("sandbox total memory usage from %d MiB to %d MiB", oldMemBytes>>20, newMemBytes>>20)
 	}
 
 	return nil
+}
+
+// currentVCPUCount returns the sandbox-wide VCPU count under resMu.
+func (s *Sandbox) currentVCPUCount() uint32 {
+	return lockutil.WithLockValue(&s.resMu, func() uint32 {
+		return s.resManager.VCPUCount
+	})
 }

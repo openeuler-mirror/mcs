@@ -23,6 +23,7 @@ type GuestResourceUpdater interface {
 	UpdateCPUCapacity(ctx context.Context, capacity uint32) error
 	UpdateCPUWeight(ctx context.Context, weight uint32) error
 	UpdateVCPUNum(ctx context.Context, vcpu uint32) (oldCPUs, newCPUs uint32, err error)
+	RecordVCPUCount(vcpu uint32)
 	UpdatePCPUConstraints(ctx context.Context, cpuSet string) error
 	EnsureMemoryLimit(ctx context.Context, mb uint32) error
 	UpdateMemoryThreshold(ctx context.Context, memMiB uint32) error

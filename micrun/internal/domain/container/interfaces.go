@@ -20,6 +20,7 @@ type ContainerTraits interface {
 	ID() string
 	GetAnnotations() map[string]string
 	GetPid() int
+	IsInfra() bool
 	Sandbox() SandboxTraits
 	GetMemoryLimit() uint64
 	Status() StateString

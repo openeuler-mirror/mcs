@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	er "micrun/internal/support/errors"
+	"micrun/internal/support/lockutil"
 )
 
 func (c *Container) stats(ctx context.Context) (*ContainerStats, error) {
@@ -17,7 +18,7 @@ func (c *Container) stats(ctx context.Context) (*ContainerStats, error) {
 	if c.guestExec == nil {
 		return nil, fmt.Errorf("guest executor is nil")
 	}
-	if c.sandbox.state.State != StateRunning {
+	if c.sandbox.GetState() != StateRunning {
 		return nil, er.SandboxDown
 	}
 	deps, err := c.sandbox.dependenciesChecked()
@@ -33,9 +34,19 @@ func (c *Container) stats(ctx context.Context) (*ContainerStats, error) {
 	curMB := c.guestExec.CurrentMaxMem()
 	thrMB := c.guestExec.MemoryThresholdMB()
 	if thrMB == 0 {
-		thrMB = c.config.memoryLimitMB()
+		// Read the mutable memory limit under containersLock to avoid racing
+		// with a concurrent UpdateContainer writing Resources.Memory.Limit.
+		thrMB = lockutil.WithReadLockValue(&c.sandbox.containersLock, func() uint32 {
+			return c.config.memoryLimitMB()
+		})
 	}
-	usageBytes := uint64(curMB) << 20
+	// RTOS guests do not expose real RSS. CurrentMaxMem returns the configured
+	// memory limit (records.memoryMB), NOT actual usage. Reporting it as Usage
+	// makes kubelet/cadvisor see a constant 100% memory occupancy (usage ==
+	// limit), risking false eviction decisions. Report 0 usage until real
+	// guest-side telemetry is available; the Limit is still correct.
+	_ = curMB
+	usageBytes := uint64(0)
 	limitBytes := uint64(thrMB) << 20
 
 	st := &ContainerStats{

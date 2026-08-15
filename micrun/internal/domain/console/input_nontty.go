@@ -43,10 +43,10 @@ func (i *InputInterpreter) appendNonTTYLineActions(actions *actionBuffer, line [
 
 	writeData := line
 	if hasNewline {
-		writeData = append(append([]byte(nil), line...), '\n')
+		writeData = append(append([]byte(nil), line...), '\r', '\n')
 	}
 
 	actions.appendPrintableTrack(writeData)
-	actions.append(writeTTY(convertLFToCRLF(writeData)))
+	actions.append(writeTTY(writeData))
 	return false
 }

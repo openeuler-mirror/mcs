@@ -19,6 +19,7 @@ type IOManager interface {
 	StopWithoutClosingFIFOs()
 	Restart() error
 	RestartWithTTYs(ttyIn io.WriteCloser, ttyOut io.Reader) error
+	RestartWithSubscriber(ttyIn io.WriteCloser, ttyOut io.Reader, onNewBus func(IOEventStream)) error
 	IsRunning() bool
 	EventStream() IOEventStream
 }
@@ -50,6 +51,10 @@ type Sandbox interface {
 	WinResize(ctx context.Context, containerID string, height, width uint32) error
 	OpenTTYs(ctx context.Context, containerID string) (stdin, stdout *os.File, err error)
 	UpdateContainer(ctx context.Context, containerID string, resources specs.LinuxResources) error
+	// WaitContainerExit blocks until the container transitions to a terminal
+	// state (guest domain gone), or the context is canceled. Used by the
+	// lifecycle exit watcher to detect spontaneous guest death.
+	WaitContainerExit(ctx context.Context, containerID string) (int32, error)
 }
 
 // Task exposes the task-level state and lifecycle hooks needed by the
@@ -73,6 +78,11 @@ type Task interface {
 	IOExit()
 	CanBeSandbox() bool
 	IsCriSandbox() bool
+	// IsRecovered reports whether the task was reconstructed from persisted
+	// state after a shim restart. Recovered tasks lost their FIFO paths and
+	// attach session, so no-attach completion shortcuts must not fabricate an
+	// immediate exit for them.
+	IsRecovered() bool
 	Annotations() map[string]string
 	IOManager() IOManager
 	SetIOManager(IOManager)
@@ -80,6 +90,8 @@ type Task interface {
 	SetAttachInfo(*AttachInfo)
 	SetStdinPipe(io.WriteCloser)
 	SetAttached(attached bool) (previous bool)
+	// IsAttached reports whether an attach client is currently connected.
+	IsAttached() bool
 }
 
 // TaskCreateRequest is the transport-independent task creation input consumed by

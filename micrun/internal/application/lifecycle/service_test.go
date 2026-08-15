@@ -7,12 +7,15 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	attachapp "micrun/internal/application/attach"
+	"micrun/internal/application/exitstatus"
 	"micrun/internal/ports"
 	ann "micrun/internal/support/annotations"
+	er "micrun/internal/support/errors"
 
 	"github.com/containerd/containerd/api/types/task"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -21,14 +24,18 @@ import (
 type fakeLifecycleIOManager struct {
 	startCalled bool
 	startErr    error
+	stopCalled  bool
 }
 
 func (f *fakeLifecycleIOManager) Start() error                                    { f.startCalled = true; return f.startErr }
-func (f *fakeLifecycleIOManager) Stop()                                           {}
+func (f *fakeLifecycleIOManager) Stop()                                           { f.stopCalled = true }
 func (f *fakeLifecycleIOManager) StopWithoutClosingFIFOs()                        {}
 func (f *fakeLifecycleIOManager) Restart() error                                  { return nil }
 func (f *fakeLifecycleIOManager) RestartWithTTYs(io.WriteCloser, io.Reader) error { return nil }
-func (f *fakeLifecycleIOManager) IsRunning() bool                                 { return f.startCalled }
+func (f *fakeLifecycleIOManager) RestartWithSubscriber(io.WriteCloser, io.Reader, func(ports.IOEventStream)) error {
+	return nil
+}
+func (f *fakeLifecycleIOManager) IsRunning() bool { return f.startCalled }
 func (f *fakeLifecycleIOManager) EventStream() ports.IOEventStream {
 	return &fakeLifecycleEventStream{}
 }
@@ -112,6 +119,13 @@ func (f *fakeLifecycleSandbox) UpdateContainer(ctx context.Context, id string, r
 	return nil
 }
 
+func (f *fakeLifecycleSandbox) WaitContainerExit(ctx context.Context, containerID string) (int32, error) {
+	// Block until canceled, mimicking the real sandbox which waits for the
+	// guest domain to disappear.
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
 type fakeLifecycleRuntime struct {
 	mu             sync.Mutex
 	namespace      string
@@ -154,6 +168,7 @@ type fakeLifecycleTask struct {
 	ioExit      bool
 	canSandbox  bool
 	criSandbox  bool
+	recovered   bool
 	annotations map[string]string
 	exitStatus  uint32
 	exitTime    time.Time
@@ -173,12 +188,19 @@ func (f *fakeLifecycleTask) ExitTime() time.Time          { return f.exitTime }
 func (f *fakeLifecycleTask) SetExitInfo(status uint32, exitedAt time.Time) {
 	f.exitStatus, f.exitTime = status, exitedAt
 }
-func (f *fakeLifecycleTask) StdinPipe() io.WriteCloser            { return f.stdinPipe }
-func (f *fakeLifecycleTask) StdinCloser() chan struct{}           { return f.stdinCloser }
-func (f *fakeLifecycleTask) ExitChan() chan struct{}              { return f.exitCh }
-func (f *fakeLifecycleTask) IOExit()                              { f.ioExit = true }
+func (f *fakeLifecycleTask) StdinPipe() io.WriteCloser  { return f.stdinPipe }
+func (f *fakeLifecycleTask) StdinCloser() chan struct{} { return f.stdinCloser }
+func (f *fakeLifecycleTask) ExitChan() chan struct{}    { return f.exitCh }
+func (f *fakeLifecycleTask) IOExit() {
+	f.ioExit = true
+	// Mirror shimContainer.ioExit: close via sync.Once equivalent.
+	// Use recover to guard against double-close in test scenarios.
+	defer func() { _ = recover() }()
+	close(f.exitCh)
+}
 func (f *fakeLifecycleTask) CanBeSandbox() bool                   { return f.canSandbox }
 func (f *fakeLifecycleTask) IsCriSandbox() bool                   { return f.criSandbox }
+func (f *fakeLifecycleTask) IsRecovered() bool                    { return f.recovered }
 func (f *fakeLifecycleTask) Annotations() map[string]string       { return f.annotations }
 func (f *fakeLifecycleTask) IOManager() ports.IOManager           { return f.ioManager }
 func (f *fakeLifecycleTask) SetIOManager(m ports.IOManager)       { f.ioManager = m }
@@ -186,6 +208,7 @@ func (f *fakeLifecycleTask) AttachInfo() *ports.AttachInfo        { return f.att
 func (f *fakeLifecycleTask) SetAttachInfo(info *ports.AttachInfo) { f.attachInfo = info }
 func (f *fakeLifecycleTask) SetStdinPipe(pipe io.WriteCloser)     { f.stdinPipe = pipe }
 func (f *fakeLifecycleTask) SetAttached(attached bool) bool       { return false }
+func (f *fakeLifecycleTask) IsAttached() bool                     { return false }
 
 type lifecycleWriteCloser struct {
 	closed bool
@@ -535,8 +558,11 @@ func TestSetupIOWithoutAttachPathsSignalsTaskIOExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setupIO returned error: %v", err)
 	}
-	if taskHandle.stdinPipe == nil {
-		t.Fatal("expected stdin pipe to be recorded")
+	if taskHandle.stdinPipe != nil {
+		t.Fatal("stdin pipe must not be recorded on the no-attach path (nothing closes it)")
+	}
+	if !sandbox.stdin.(*lifecycleWriteCloser).closed {
+		t.Fatal("expected no-attach stdin stream to be closed")
 	}
 	if !taskHandle.ioExit {
 		t.Fatal("expected IOExit to be signaled")
@@ -576,8 +602,11 @@ func TestSetupIOWithoutAttachPathsKeepsCriPodContainerRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setupIO returned error: %v", err)
 	}
-	if taskHandle.stdinPipe == nil {
-		t.Fatal("expected stdin pipe to be recorded")
+	if taskHandle.stdinPipe != nil {
+		t.Fatal("stdin pipe must not be recorded on the no-attach path (nothing closes it)")
+	}
+	if !sandbox.stdin.(*lifecycleWriteCloser).closed {
+		t.Fatal("expected no-attach stdin stream to be closed")
 	}
 	if taskHandle.ioExit {
 		t.Fatal("pod container without initial attach paths should stay attachable")
@@ -731,6 +760,42 @@ func TestWaitForExitReportsRecordedExitInfo(t *testing.T) {
 	}
 }
 
+func TestWaitForExitStopsTaskIOSession(t *testing.T) {
+	svc := NewService(nil)
+	exitCh := make(chan struct{})
+	close(exitCh)
+	ioManager := &fakeLifecycleIOManager{}
+	recordedExit := time.Now()
+	taskHandle := &fakeLifecycleTask{
+		id:         "wait-stop-io",
+		status:     task.Status_RUNNING,
+		exitCh:     exitCh,
+		ioManager:  ioManager,
+		exitStatus: 5,
+		exitTime:   recordedExit,
+	}
+	runtime := &fakeLifecycleRuntime{
+		ctx:     context.Background(),
+		sandbox: &fakeLifecycleSandbox{},
+	}
+
+	svc.waitForExit(&taskContext{
+		Context: context.Background(),
+		Runtime: runtime,
+		Task:    taskHandle,
+	})
+
+	// A terminal task must have its IO session torn down so containerd-side
+	// FIFO copies reach EOF; without it task.Delete blocks in
+	// ContainerIO.Wait and CRI never finishes the container teardown.
+	if !ioManager.stopCalled {
+		t.Fatal("expected task IO session to be stopped after exit")
+	}
+	if runtime.reportedTask != taskHandle {
+		t.Fatal("expected exit to be reported after the IO session stop")
+	}
+}
+
 func TestWaitForExitUsesInjectedClockWhenExitTimeMissing(t *testing.T) {
 	svc := NewService(nil)
 	now := time.Date(2026, 4, 27, 7, 8, 9, 0, time.UTC)
@@ -762,6 +827,46 @@ func TestWaitForExitUsesInjectedClockWhenExitTimeMissing(t *testing.T) {
 	}
 	if !runtime.reportedAt.Equal(now) {
 		t.Fatalf("reported exit time = %v, want %v", runtime.reportedAt, now)
+	}
+}
+
+func TestCompleteExitedTaskPreservesKillPrewrite(t *testing.T) {
+	svc := NewService(nil)
+	now := time.Date(2026, 4, 27, 7, 8, 9, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	prewriteAt := now.Add(-time.Second)
+	exitCh := make(chan struct{})
+	close(exitCh)
+	// Kill pre-write: ExitInfo set, Status still RUNNING (not yet STOPPED).
+	taskHandle := &fakeLifecycleTask{
+		id:         "wait-preserve-kill-prewrite",
+		status:     task.Status_RUNNING,
+		exitCh:     exitCh,
+		exitStatus: 137,
+		exitTime:   prewriteAt,
+	}
+	runtime := &fakeLifecycleRuntime{
+		ctx:     context.Background(),
+		sandbox: &fakeLifecycleSandbox{},
+	}
+
+	status := svc.waitForExit(&taskContext{
+		Context: context.Background(),
+		Runtime: runtime,
+		Task:    taskHandle,
+	})
+
+	if status != 137 {
+		t.Fatalf("waitForExit status = %d, want 137 (kill pre-write)", status)
+	}
+	if taskHandle.exitStatus != 137 {
+		t.Fatalf("task exit status = %d, want 137", taskHandle.exitStatus)
+	}
+	if !taskHandle.exitTime.Equal(prewriteAt) {
+		t.Fatalf("task exit time = %v, want prewrite %v", taskHandle.exitTime, prewriteAt)
+	}
+	if runtime.reportedStatus != 137 {
+		t.Fatalf("reported exit status = %d, want 137", runtime.reportedStatus)
 	}
 }
 
@@ -865,8 +970,8 @@ func TestWaitForExitAutoCloseStopsTaskAndReportsExit(t *testing.T) {
 		Task:    taskHandle,
 	})
 
-	if status != 0 {
-		t.Fatalf("wait status = %d, want 0", status)
+	if status != int32(exitstatus.Interrupt()) {
+		t.Fatalf("wait status = %d, want %d (interrupt)", status, exitstatus.Interrupt())
 	}
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("task status = %v, want STOPPED", taskHandle.status)
@@ -883,9 +988,10 @@ func TestWaitForExitAutoCloseStopsTaskAndReportsExit(t *testing.T) {
 	if runtime.sandbox != nil {
 		t.Fatal("expected auto-close to clear single-container sandbox")
 	}
-	if runtime.reportedTask != taskHandle || runtime.reportedStatus != 0 || !runtime.reportedAt.Equal(now) {
-		t.Fatalf("reported exit = task:%v status:%d at:%v, want task:%v status:0 at:%v",
-			runtime.reportedTask, runtime.reportedStatus, runtime.reportedAt, taskHandle, now)
+	wantStatus := int(exitstatus.Interrupt())
+	if runtime.reportedTask != taskHandle || runtime.reportedStatus != wantStatus || !runtime.reportedAt.Equal(now) {
+		t.Fatalf("reported exit = task:%v status:%d at:%v, want task:%v status:%d at:%v",
+			runtime.reportedTask, runtime.reportedStatus, runtime.reportedAt, taskHandle, wantStatus, now)
 	}
 	select {
 	case <-taskHandle.exitCh:
@@ -916,8 +1022,8 @@ func TestWaitForExitAutoCloseStopsPodContainerWithoutDeletingSandbox(t *testing.
 		Task:    taskHandle,
 	})
 
-	if status != 0 {
-		t.Fatalf("wait status = %d, want 0", status)
+	if status != int32(exitstatus.Interrupt()) {
+		t.Fatalf("wait status = %d, want %d (interrupt)", status, exitstatus.Interrupt())
 	}
 	if sandbox.stopContainerID != taskHandle.id {
 		t.Fatalf("stopped container = %q, want %q", sandbox.stopContainerID, taskHandle.id)
@@ -933,5 +1039,261 @@ func TestWaitForExitAutoCloseStopsPodContainerWithoutDeletingSandbox(t *testing.
 	}
 	if !taskHandle.ioExit {
 		t.Fatal("expected auto-close to signal IO exit")
+	}
+}
+
+func TestCompleteTaskWithoutAttachSkipsRecoveredTask(t *testing.T) {
+	recoveredTask := &fakeLifecycleTask{
+		id:          "recovered-single",
+		canSandbox:  true,
+		recovered:   true,
+		exitCh:      make(chan struct{}),
+		stdinCloser: make(chan struct{}),
+	}
+	completeTaskWithoutAttach(recoveredTask)
+	if recoveredTask.ioExit {
+		t.Fatal("recovered task must not be force-completed: its domain was just started")
+	}
+
+	freshTask := &fakeLifecycleTask{
+		id:          "fresh-single",
+		canSandbox:  true,
+		exitCh:      make(chan struct{}),
+		stdinCloser: make(chan struct{}),
+	}
+	completeTaskWithoutAttach(freshTask)
+	if !freshTask.ioExit {
+		t.Fatal("fresh no-attach single container should be completed immediately")
+	}
+}
+
+type notFoundExitSandbox struct {
+	fakeLifecycleSandbox
+	calls int32
+}
+
+func (f *notFoundExitSandbox) WaitContainerExit(ctx context.Context, containerID string) (int32, error) {
+	atomic.AddInt32(&f.calls, 1)
+	return 0, er.ContainerNotFound
+}
+
+func TestGuestExitSignalReportsExitOnContainerNotFound(t *testing.T) {
+	sandbox := &notFoundExitSandbox{}
+	runtime := &fakeLifecycleRuntime{sandbox: sandbox}
+	taskHandle := &fakeLifecycleTask{id: "deleted-container", exitCh: make(chan struct{})}
+	tc := newTaskContext(context.Background(), runtime, taskHandle)
+
+	ch := guestExitSignal(tc)
+
+	// The container is gone, which semantically IS an exit: the channel must
+	// close so waitForExitSignal reports it — a silent return leaves the task
+	// RUNNING and Wait hanging when the removal came from a sandbox-level Kill.
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("guest exit channel must close for a deleted container (removal IS an exit)")
+	}
+	if got := atomic.LoadInt32(&sandbox.calls); got != 1 {
+		t.Fatalf("WaitContainerExit calls = %d, want 1 (no retry spin for a deleted container)", got)
+	}
+}
+
+// TestMarkTaskRunningTransitionsFromCreated verifies the normal CREATED→RUNNING path.
+func TestMarkTaskRunningTransitionsFromCreated(t *testing.T) {
+	runtime := &fakeLifecycleRuntime{ctx: context.Background()}
+	taskHandle := &fakeLifecycleTask{
+		id:     "created-task",
+		status: task.Status_CREATED,
+		exitCh: make(chan struct{}),
+	}
+
+	if !markTaskRunning(runtime, taskHandle) {
+		t.Fatal("markTaskRunning returned false for CREATED, want true")
+	}
+	if taskHandle.status != task.Status_RUNNING {
+		t.Fatalf("status = %s, want %s", taskHandle.status, task.Status_RUNNING)
+	}
+}
+
+// TestMarkTaskRunningAcceptsAlreadyRunning verifies that a task already set
+// RUNNING by a concurrent State-RPC refresh (which legitimately observed the
+// just-started domain) is treated as success — not as a Kill/Delete that the
+// guard rejects. Without this, Start would tear down a working domain.
+func TestMarkTaskRunningAcceptsAlreadyRunning(t *testing.T) {
+	runtime := &fakeLifecycleRuntime{ctx: context.Background()}
+	taskHandle := &fakeLifecycleTask{
+		id:     "refreshed-task",
+		status: task.Status_RUNNING, // set by refresh during Start's setupIO window
+		exitCh: make(chan struct{}),
+	}
+
+	if !markTaskRunning(runtime, taskHandle) {
+		t.Fatal("markTaskRunning returned false for RUNNING, want true (idempotent)")
+	}
+	if taskHandle.status != task.Status_RUNNING {
+		t.Fatalf("status = %s, want %s (unchanged)", taskHandle.status, task.Status_RUNNING)
+	}
+}
+
+// TestMarkTaskRunningRejectsTerminalStates verifies Kill/Delete (STOPPED) and
+// Pause (PAUSED) during the start window still reject the RUNNING transition.
+func TestMarkTaskRunningRejectsTerminalStates(t *testing.T) {
+	for _, status := range []task.Status{task.Status_STOPPED, task.Status_PAUSED, task.Status_PAUSING} {
+		runtime := &fakeLifecycleRuntime{ctx: context.Background()}
+		taskHandle := &fakeLifecycleTask{
+			id:     "terminal-task",
+			status: status,
+			exitCh: make(chan struct{}),
+		}
+		if markTaskRunning(runtime, taskHandle) {
+			t.Fatalf("markTaskRunning returned true for %s, want false", status)
+		}
+		if taskHandle.status != status {
+			t.Fatalf("status = %s, want %s (must not overwrite concurrent result)", taskHandle.status, status)
+		}
+	}
+}
+
+// --- Regression: exit watcher must tear down the guest (scan §5 item) ---
+//
+// The scan record's checklist requires: "exit watcher: 未 Destroy 不得终态化成功".
+// completeExitedTask calls stopTaskAfterExit → stopLifecycleTask → sandbox
+// Stop/Delete (or StopContainer for pod containers). If the sandbox teardown
+// is skipped, the guest domain is orphaned while containerd believes the
+// task is done. This test verifies the teardown is invoked for both the
+// sandbox task path and the pod-container path.
+
+func TestCompleteExitedTaskTearsDownGuestBeforeReturn(t *testing.T) {
+	svc := NewService(nil)
+
+	// Pod container path: StopContainer must be called.
+	sandbox := &fakeLifecycleSandbox{}
+	runtime := &fakeLifecycleRuntime{
+		ctx:     context.Background(),
+		sandbox: sandbox,
+	}
+	taskHandle := &fakeLifecycleTask{
+		id:         "exit-teardown-pod",
+		status:     task.Status_RUNNING,
+		exitCh:     make(chan struct{}),
+		canSandbox: false, // pod container, not sandbox
+	}
+
+	code := svc.completeExitedTask(&taskContext{
+		Context: context.Background(),
+		Runtime: runtime,
+		Task:    taskHandle,
+	}, exitWaitGuestExit)
+
+	if code == 0 {
+		t.Log("note: guest-exit fabricated non-zero status is expected")
+	}
+	if sandbox.stopContainerID == "" {
+		t.Fatal("exit watcher did not call StopContainer for pod container: guest domain would be orphaned")
+	}
+}
+
+func TestCompleteExitedTaskSandboxTaskStopsAndDeletesSandbox(t *testing.T) {
+	svc := NewService(nil)
+
+	sandbox := &fakeLifecycleSandbox{}
+	runtime := &fakeLifecycleRuntime{
+		ctx:     context.Background(),
+		sandbox: sandbox,
+	}
+	taskHandle := &fakeLifecycleTask{
+		id:         "exit-teardown-sandbox",
+		status:     task.Status_RUNNING,
+		exitCh:     make(chan struct{}),
+		canSandbox: true, // sandbox-level task
+	}
+
+	_ = svc.completeExitedTask(&taskContext{
+		Context: context.Background(),
+		Runtime: runtime,
+		Task:    taskHandle,
+	}, exitWaitGuestExit)
+
+	if !sandbox.stopped {
+		t.Fatal("exit watcher did not stop sandbox: lingering Xen domain")
+	}
+	// Delete is containerd's follow-up RPC after TaskExit; the exit watcher
+	// must destroy the guest (Stop) but not pre-empt the Delete lifecycle.
+	if sandbox.deleted {
+		t.Log("note: sandbox already deleted (acceptable but not required)")
+	}
+}
+
+// attachableFakeTask extends fakeLifecycleTask with a flippable attach
+// state and transition notifications, mirroring the shimContainer capability
+// the auto-close watcher consumes.
+type attachableFakeTask struct {
+	fakeLifecycleTask
+	attachedNow atomic.Bool
+	changes     chan struct{}
+}
+
+func (a *attachableFakeTask) IsAttached() bool               { return a.attachedNow.Load() }
+func (a *attachableFakeTask) AttachChanges() <-chan struct{} { return a.changes }
+func (a *attachableFakeTask) detach() {
+	if a.attachedNow.Swap(false) {
+		select {
+		case a.changes <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// TestWaitForExitAutoCloseGraceStartsAtDetach pins the documented semantics
+// "close N seconds after the IO session disconnects": while attached the
+// grace timer is suspended, and a detach starts (not merely samples) the
+// countdown. The old expiry-time sampling derived the grace from cycle
+// phase — a long attach ending just before expiry gave the client ~0s.
+func TestWaitForExitAutoCloseGraceStartsAtDetach(t *testing.T) {
+	svc := NewService(nil)
+	base := &fakeLifecycleTask{
+		id:         "auto-close-detach",
+		status:     task.Status_RUNNING,
+		exitCh:     make(chan struct{}),
+		attachInfo: &ports.AttachInfo{Terminal: true},
+		canSandbox: true,
+		annotations: map[string]string{
+			ann.AutoCloseTimeout: "60ms",
+		},
+	}
+	// attached at watcher start: grace must be suspended
+	taskHandle := &attachableFakeTask{fakeLifecycleTask: *base, changes: make(chan struct{}, 1)}
+	taskHandle.attachedNow.Store(true)
+	runtime := &fakeLifecycleRuntime{ctx: context.Background(), sandbox: &fakeLifecycleSandbox{}}
+
+	done := make(chan int32, 1)
+	go func() {
+		done <- svc.waitForExit(&taskContext{Context: context.Background(), Runtime: runtime, Task: taskHandle})
+	}()
+
+	// Attached for 3.5 timer periods: the old sampling implementation had
+	// reset the timer at least twice; detach now, ~5ms before the next
+	// expiry would fall under the old semantics.
+	time.Sleep(215 * time.Millisecond)
+	taskHandle.detach()
+
+	// 25ms after detach we must still be alive: the grace (60ms) restarted
+	// at the detach moment — the old phase-dependent code would already have
+	// killed the task here.
+	time.Sleep(25 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("auto-close fired within the grace window: detach must restart the countdown")
+	default:
+	}
+
+	// After the full grace the task must be stopped.
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto-close did not fire after the grace window elapsed")
+	case <-done:
+	}
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("task status = %v, want STOPPED", taskHandle.status)
 	}
 }

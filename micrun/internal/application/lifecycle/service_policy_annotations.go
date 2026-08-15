@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +68,16 @@ func getDurationAnnotation(annotations map[string]string, key string, defaultVal
 			return normalizeAnnotationDuration(key, value, duration, defaultValue), true
 		}
 		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+			// seconds*time.Second overflows for huge positive OR negative
+			// values. A large negative bare integer (e.g. -18446744073) wraps
+			// to a small positive duration, bypassing the negative-value
+			// fallback below and making auto-close fire almost immediately.
+			// Reject both bounds so the overflow can never produce a usable
+			// (and wrong) duration.
+			if seconds > math.MaxInt64/int64(time.Second) || seconds < math.MinInt64/int64(time.Second) {
+				log.Errorf("annotation %s value '%s' overflows duration, defaulting to %v", key, value, defaultValue)
+				return defaultValue, true
+			}
 			duration := time.Duration(seconds) * time.Second
 			return normalizeAnnotationDuration(key, value, duration, defaultValue), true
 		}

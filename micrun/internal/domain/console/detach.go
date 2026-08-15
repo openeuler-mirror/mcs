@@ -3,6 +3,8 @@ package console
 import (
 	"bytes"
 	"strings"
+
+	log "micrun/internal/support/logger"
 )
 
 const (
@@ -102,7 +104,17 @@ func effectiveDetachKeys(config InputConfig) []byte {
 	if config.DetachKeys == "" {
 		return defaultDetachKeys()
 	}
-	return ParseDetachKeys(config.DetachKeys)
+	parsed := ParseDetachKeys(config.DetachKeys)
+	if len(parsed) == 0 {
+		// An explicit but unparseable detach-key sequence (typo, trailing
+		// comma, unsupported key such as "ctrl-1") used to silently disable
+		// detach for the whole session with no fallback or signal. Fall back
+		// to the default so the operator can still detach, and warn so the
+		// misconfiguration is observable.
+		log.Warnf("invalid detach-keys %q; falling back to default ctrl-p,ctrl-q", config.DetachKeys)
+		return defaultDetachKeys()
+	}
+	return parsed
 }
 
 func detachKeysDisabled(config InputConfig) bool {

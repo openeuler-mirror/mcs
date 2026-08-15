@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	er "micrun/internal/support/errors"
+	"micrun/internal/support/lockutil"
 	log "micrun/internal/support/logger"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -20,7 +21,7 @@ func (c *Container) update(ctx context.Context, resources specs.LinuxResources) 
 	if err := c.requireSandbox(); err != nil {
 		return err
 	}
-	if c.sandbox.state.State != StateRunning {
+	if c.sandbox.GetState() != StateRunning {
 		return er.SandboxDown
 	}
 	operational, err := c.operationalWithContext(ctx)
@@ -49,6 +50,11 @@ func (c *Container) validateUpdate() error {
 	if c.config == nil {
 		return fmt.Errorf("container config is nil")
 	}
+	// Initialize shared Resource pointers under containersLock so concurrent
+	// readers (getSandboxCpusetStr, calculations, StoreSandbox) don't see a
+	// half-published nil→non-nil transition.
+	c.sandbox.containersLock.Lock()
+	defer c.sandbox.containersLock.Unlock()
 	if c.config.Resources == nil {
 		c.config.Resources = &specs.LinuxResources{}
 	}
@@ -82,10 +88,32 @@ func (c *Container) applyChanges(ctx context.Context, changes *ResourceChanges, 
 		return err
 	}
 
+	// ContainerConfig.Resources is shared with sandbox-wide readers; protect
+	// the write under containersLock to avoid torn reads of CPU.Cpus (a Go
+	// string is a non-atomic pointer+length pair).
+	c.sandbox.containersLock.Lock()
 	applyLinuxResourceConfig(c.config.Resources, resources)
+	// Sync the derived vCPU count into the shared config: the live guest
+	// already got it (updateVCPUCount), and without this a restart would
+	// recreate the domain with the stale count, silently reverting the
+	// update. PCPUNum follows VCPUNum (no explicit pCPU pinning here).
+	if changes.VCPU != nil && *changes.VCPU > 0 {
+		c.config.VCPUNum = *changes.VCPU
+		c.config.PCPUNum = int(*changes.VCPU)
+	}
+	c.sandbox.containersLock.Unlock()
 
 	if err := c.sandbox.updateResources(ctx); err != nil {
 		return fmt.Errorf("update sandbox resources for %s: %w", c.id, err)
+	}
+
+	// Persist the updated config (combined sandbox document) so a later shim
+	// restart restores the new values. Without this, the update only lives
+	// in memory and is lost on recovery (restore reloads the stale
+	// snapshot). A persistence failure is still reported: the guest already
+	// got the new values, so the caller can retry idempotently.
+	if err := c.saveState(ctx); err != nil {
+		return fmt.Errorf("failed to persist container state after update for %s: %w", c.id, err)
 	}
 
 	return nil
@@ -104,7 +132,11 @@ func (c *Container) setupMemory(ctx context.Context) error {
 		return nil
 	}
 
-	limit := c.config.memoryLimitMB()
+	// Read the mutable memory limit under containersLock to avoid racing
+	// with a concurrent UpdateContainer writing Resources.Memory.Limit.
+	limit := lockutil.WithReadLockValue(&c.sandbox.containersLock, func() uint32 {
+		return c.config.memoryLimitMB()
+	})
 	if limit == 0 {
 		return nil
 	}

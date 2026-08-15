@@ -17,6 +17,14 @@ const (
 	IOEventStdinClosed
 	IOEventDetach
 	IOEventInterrupt
+	// IOEventClientAttached is a live stdin writer, not create-time FIFO
+	// paths and not a transient stdout reader from `ctr start -d`.
+	IOEventClientAttached
+	// IOEventClientDetached is create-time EOF (no writer), a later
+	// CloseIO, or a non-TTY attach writer that closed stdin. start -d and
+	// later detach must clear attached so auto-close can run; the next
+	// stdin writer publishes ClientAttached again.
+	IOEventClientDetached
 )
 
 // IOEvent carries an IO-side notification to the application layer.

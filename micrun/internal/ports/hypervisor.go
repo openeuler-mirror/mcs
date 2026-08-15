@@ -25,6 +25,10 @@ type HypervisorControl interface {
 	// DomainState returns the current state of a domain.
 	DomainState(ctx context.Context, id string) (string, error)
 
+	// Destroy forcefully destroys a domain (e.g. xl destroy). Used when the
+	// micad control socket is gone but the Xen domain is still alive.
+	Destroy(ctx context.Context, id string) error
+
 	// Pause pauses a domain.
 	Pause(ctx context.Context, id string) error
 

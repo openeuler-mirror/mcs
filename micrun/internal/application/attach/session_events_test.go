@@ -45,6 +45,8 @@ func TestSessionEventTypesReflectsInjectedPolicies(t *testing.T) {
 		ports.IOEventStdinClosed,
 		ports.IOEventDetach,
 		ports.IOEventError,
+		ports.IOEventClientAttached,
+		ports.IOEventClientDetached,
 		ports.IOEventTTYReady,
 	}
 	if !reflect.DeepEqual(types, want) {

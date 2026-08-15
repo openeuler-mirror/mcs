@@ -2,6 +2,7 @@ package task
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	attachapp "micrun/internal/application/attach"
@@ -15,6 +16,14 @@ type Service struct {
 	attach    *attachapp.Service
 	lifecycle *lifecycleapp.Service
 	now       timex.Clock
+
+	// lifecycleClaims serializes Start and Delete for the same task id.
+	// Start↔Start: two CREATED checks must not both pass before markTaskRunning.
+	// Start↔Delete: Delete must not tear down the task while Start still holds
+	// a sandbox snapshot and can recreate the guest after Delete finished —
+	// that leaves an untracked Xen/micad domain with no task entry.
+	lifecycleClaimsMu sync.Mutex
+	lifecycleClaims   map[string]struct{}
 }
 
 type serviceConfig struct {
@@ -51,10 +60,38 @@ func NewServiceChecked(attach *attachapp.Service, lifecycle *lifecycleapp.Servic
 		return nil, ErrMismatchedApplicationServices
 	}
 	return &Service{
-		attach:    attach,
-		lifecycle: lifecycle,
-		now:       config.now,
+		attach:          attach,
+		lifecycle:       lifecycle,
+		now:             config.now,
+		lifecycleClaims: make(map[string]struct{}),
 	}, nil
+}
+
+// claimLifecycle reserves Start/Delete for id. Returns false if another
+// Start or Delete is already in flight for the same task.
+func (s *Service) claimLifecycle(id string) bool {
+	if s == nil {
+		return false
+	}
+	s.lifecycleClaimsMu.Lock()
+	defer s.lifecycleClaimsMu.Unlock()
+	if s.lifecycleClaims == nil {
+		s.lifecycleClaims = make(map[string]struct{})
+	}
+	if _, ok := s.lifecycleClaims[id]; ok {
+		return false
+	}
+	s.lifecycleClaims[id] = struct{}{}
+	return true
+}
+
+func (s *Service) releaseLifecycle(id string) {
+	if s == nil {
+		return
+	}
+	s.lifecycleClaimsMu.Lock()
+	delete(s.lifecycleClaims, id)
+	s.lifecycleClaimsMu.Unlock()
 }
 
 func (s *Service) clockNow() time.Time {
