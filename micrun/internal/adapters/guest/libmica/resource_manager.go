@@ -346,13 +346,6 @@ func (me *MicaExecutor) NeedUpdateCPUSet(old, new string) bool {
 }
 
 func (me *MicaExecutor) NeedUpdateCPUWeight(target uint32) bool {
-	// Mirror NeedUpdateCPUCap's handling of the records==0 ambiguity: after a
-	// shim restart the records are empty while the RTOS side may still carry
-	// a stale weight, so a target of 0 ("clear the weight") must always be
-	// written instead of being silently dropped as "already 0".
-	if target == 0 {
-		return true
-	}
 	me.mu.RLock()
 	current := uint32(0)
 	if me.records.cpuWeight > 0 {

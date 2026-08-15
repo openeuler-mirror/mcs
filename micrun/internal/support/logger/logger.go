@@ -52,6 +52,9 @@ var (
 	debugLogFileMu  sync.Mutex
 	activeDebugFile io.Closer
 	loggerSetupMu   sync.Mutex
+
+	containerdLogMu     sync.Mutex
+	activeContainerdLog io.Closer
 )
 
 func init() {
@@ -173,6 +176,10 @@ func swapActiveDebugLogFile(file io.Closer) error {
 
 	if err := activeDebugFile.Close(); err != nil {
 		_ = file.Close()
+		// Clear the stale pointer so subsequent swaps don't re-close the
+		// same dead fd and permanently fail (matching swapActiveContainerdLog
+		// which unconditionally updates the active reference).
+		activeDebugFile = nil
 		return err
 	}
 
@@ -193,6 +200,36 @@ func closeActiveDebugLogFile() error {
 	return err
 }
 
+// swapActiveContainerdLog closes the previously opened containerd log fifo
+// (if any) and records the new one so it can be closed on the next swap.
+// Without this, repeated setupOutputImpl calls leak one fifo fd per call.
+func swapActiveContainerdLog(wc io.WriteCloser) {
+	if wc == nil {
+		return
+	}
+	containerdLogMu.Lock()
+	defer containerdLogMu.Unlock()
+	if activeContainerdLog != nil && activeContainerdLog != wc {
+		_ = activeContainerdLog.Close()
+	}
+	activeContainerdLog = wc
+}
+
+// closeTrackedContainerdLog closes and untracks the currently tracked
+// containerd log fd (if any) WITHOUT installing a replacement. Use this when
+// reinit falls back to os.Stderr: stderr must never be tracked (a later
+// swapActiveContainerdLog would Close it), but a previously tracked fifo fd
+// that failed to reopen must still be released rather than orphaned until the
+// next successful reopen.
+func closeTrackedContainerdLog() {
+	containerdLogMu.Lock()
+	defer containerdLogMu.Unlock()
+	if activeContainerdLog != nil {
+		_ = activeContainerdLog.Close()
+		activeContainerdLog = nil
+	}
+}
+
 // Initialize initializes the logger with the given configuration.
 // If cfg is nil, attempts to load from default config path.
 func Initialize(cfg *Config) error {
@@ -208,6 +245,12 @@ func Initialize(cfg *Config) error {
 	defer loggerSetupMu.Unlock()
 
 	if err := initializeLogger(cfg); err != nil {
+		// Never leave the logger silenced: on any init failure fall back to
+		// stderr at info level instead of the init()-time io.Discard, or the
+		// whole daemon lifetime of diagnostics would be silently dropped
+		// (the only trace left was one line on the shim's stderr).
+		Log.SetOutput(os.Stderr)
+		Log.SetLevel(logrus.InfoLevel)
 		return err
 	}
 
@@ -215,6 +258,16 @@ func Initialize(cfg *Config) error {
 	currentConfig = cloneConfig(cfg)
 	currentConfigMutex.Unlock()
 	return nil
+}
+
+// ForceDebugLevel raises the global log level to debug at runtime. It backs
+// the shim's -debug command-line flag and the runtime.debug annotation,
+// which previously had no consumer: every debug-mode diagnostic was dropped
+// because the configured (info) level stayed in force.
+func ForceDebugLevel() {
+	loggerSetupMu.Lock()
+	defer loggerSetupMu.Unlock()
+	Log.SetLevel(logrus.DebugLevel)
 }
 
 // initializeLogger performs the actual logger initialization.

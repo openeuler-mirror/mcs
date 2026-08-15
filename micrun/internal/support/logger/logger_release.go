@@ -27,7 +27,19 @@ func setupOutputImpl(cfg *Config) error {
 		containerdLog = os.Stderr
 	}
 
+	// Switch logrus output to the new writer BEFORE closing the old one
+	// via swapActiveContainerdLog. Otherwise concurrent goroutines calling
+	// log.Debug/Info/... between the close and SetOutput would write to a
+	// closed fd (EBADF) and silently lose log lines.
 	Log.SetOutput(containerdLog)
+	if err == nil {
+		swapActiveContainerdLog(containerdLog)
+	} else {
+		// Reopen failed and we fell back to stderr. stderr must never be
+		// tracked (a later swap would Close it), but the previously tracked
+		// fifo fd still needs to be released instead of orphaned.
+		closeTrackedContainerdLog()
+	}
 	Log.SetFormatter(&containerdFormatter{})
 	Log.SetReportCaller(false) // No caller info in release logs
 	Log.ReplaceHooks(make(logrus.LevelHooks))

@@ -2,6 +2,7 @@ package libmica
 
 import (
 	"encoding/binary"
+	"runtime"
 
 	defs "micrun/internal/support/definitions"
 	log "micrun/internal/support/logger"
@@ -32,28 +33,28 @@ type MicaClientConfCreateOptions struct {
 // #define MAX_IOMEM_LEN      512 // reserved for IOMEM
 // #define MAX_NETWORK_LEN      512
 //
-//		struct create_msg {
-//			/* required configs */
-//			char name[MAX_NAME_LEN];
-//			char path[MAX_FIRMWARE_PATH_LEN];
-//			/* optional configs for MICA*/
-//			char ped[MAX_NAME_LEN];
-//			char ped_cfg[MAX_FIRMWARE_PATH_LEN];
-//			bool debug;
-//			/* optional configs for pedestal */
-//			char cpu_str[MAX_CPUSTR_LEN];
-//			int vcpu_num;            // 4
-//	   /** NEW: max_vcpu_num */
-//	   int max_vcpu_num;          // 4
-//			int cpu_weight;          // 4
-//			int cpu_capacity;        // 4
-//			int memory;              // 4
-//	   /** NEW: max_memory */
-//	   int max_memory;            // 4
-//	   /** NEW: iomem */
-//		 char iomem[MAX_NETWORK_LEN]; // 512
-//		 char network[MAX_NETWORK_LEN]; // 512
-//		};
+//			struct create_msg {
+//				/* required configs */
+//				char name[MAX_NAME_LEN];
+//				char path[MAX_FIRMWARE_PATH_LEN];
+//				/* optional configs for MICA*/
+//				char ped[MAX_PED_LEN];
+//				char ped_cfg[MAX_FIRMWARE_PATH_LEN];
+//				bool debug;
+//				/* optional configs for pedestal */
+//				char cpu_str[MAX_CPUSTR_LEN];
+//				int vcpu_num;            // 4
+//	  /** NEW: max_vcpu_num */
+//	  int max_vcpu_num;          // 4
+//				int cpu_weight;          // 4
+//				int cpu_capacity;        // 4
+//				int memory;              // 4
+//	  /** NEW: max_memory */
+//	  int max_memory;            // 4
+//	  /** NEW: iomem */
+//			 char iomem[MAX_IOMEM_LEN]; // 512
+//			 char network[MAX_NETWORK_LEN]; // 512
+//			};
 type MicaClientConf struct {
 	// name is container ID, assigned by containerd.
 	name [MaxNameLen]byte
@@ -112,8 +113,18 @@ func (m *MicaClientConf) InitWithOpts(opts MicaClientConfCreateOptions) {
 	m.memoryMB = opts.MemoryMB
 	m.iomem = [MaxConfigStrLen]byte{}
 	// On ARM64, Xen requires maxmem == memory (no Populate-on-Demand support)
-	// So we set memoryThresholdMB equal to memoryMB to ensure maxmem == memory
-	m.memoryThresholdMB = m.memoryMB
+	// So we set memoryThresholdMB equal to memoryMB to ensure maxmem == memory.
+	// On other architectures, use the caller-supplied threshold (which may be
+	// larger than memoryMB to allow ballooning). A missing threshold (0) falls
+	// back to memoryMB so a new caller that forgets to pass it cannot create a
+	// client with maxmem=0.
+	if runtime.GOARCH == "arm64" {
+		m.memoryThresholdMB = m.memoryMB
+	} else if opts.MemoryThreshold > 0 {
+		m.memoryThresholdMB = opts.MemoryThreshold
+	} else {
+		m.memoryThresholdMB = m.memoryMB
+	}
 	if opts.IOMem != "" {
 		copy(m.iomem[:], opts.IOMem)
 	}

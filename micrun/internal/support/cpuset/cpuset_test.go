@@ -251,3 +251,22 @@ func TestToSliceSorted(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRejectsExcessiveTotalSize(t *testing.T) {
+	// Each range stays within the per-range width cap, but the accumulated
+	// entry count must be bounded: "0-1048575,1048576-2097151" would
+	// otherwise allocate one map entry per CPU per range.
+	_, err := Parse("0-1048574,1048575-2097150")
+	if err == nil {
+		t.Fatal("expected total-size limit error")
+	}
+
+	// A single maximal range is still accepted.
+	set, err := Parse("0-1048574")
+	if err != nil {
+		t.Fatalf("maximal single range should parse: %v", err)
+	}
+	if set.Size() != 1048575 {
+		t.Fatalf("Size() = %d, want 1048575", set.Size())
+	}
+}

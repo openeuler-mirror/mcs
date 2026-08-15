@@ -3,11 +3,14 @@ package container
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"micrun/internal/ports"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	statefile "micrun/internal/adapters/state/file"
 )
 
 func stubDeps() *Dependencies {
@@ -183,4 +186,69 @@ func TestResourcePolicyOrDefault(t *testing.T) {
 	if resolved.PlanEssentialRes == nil || resolved.MaxClientCPUs == nil || resolved.HostMemoryMiB == nil || resolved.HostMaxPhysCPUs == nil {
 		t.Fatal("ResourcePolicyOrDefault(explicit) dropped hooks")
 	}
+}
+
+// TestSetRuntimePathsConcurrentSwapsAndReads mirrors the shim's production
+// pattern: every Create RPC swaps the runtime hooks while attach/IO paths
+// read them outside the Create lock. The swap and the reads must be
+// synchronized (scan item: shared Dependencies function fields were a data
+// race); `go test -race` fails this test against an unsynchronized swap.
+func TestSetRuntimePathsConcurrentSwapsAndReads(t *testing.T) {
+	// Both initial hooks must already be non-nil-returning: the reader
+	// goroutines start concurrently with the writer and may read before the
+	// first swap lands.
+	deps := &Dependencies{
+		StateStoreFactory: func() ports.StateStore { return statefile.New("/init") },
+		TTYDiscoveryRoots: func() []string { return []string{"/init"} },
+	}
+	factory := func(dir string) func() ports.StateStore {
+		return func() ports.StateStore { return statefile.New(dir) }
+	}
+	roots := func(dir string) func() []string {
+		return func() []string { return []string{dir} }
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i = (i + 1) % 4 {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			deps.SetRuntimePaths(factory(string(rune('a'+i))), roots(string(rune('a'+i))))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if deps.StateStore() == nil {
+				t.Error("StateStore() returned nil after a non-nil factory swap")
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if roots := deps.RPMSGTTYRoots(); len(roots) == 0 {
+				t.Error("RPMSGTTYRoots() returned empty after a non-empty roots swap")
+			}
+		}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }

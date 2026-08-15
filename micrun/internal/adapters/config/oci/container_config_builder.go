@@ -134,7 +134,10 @@ func (b *containerConfigBuilder) applyResources(ctx context.Context, config *cnt
 		return err
 	}
 	if err := cntr.ValidateResourceLimitsWithPolicy(ctx, config, b.policy); err != nil {
-		log.Warnf("resource validation warning: %v", err)
+		// Hard reject: domain ValidateResourceLimits* tests treat over-host
+		// limits as errors. Soft-warning allowed illegal specs through to
+		// guest create, failing later with a less actionable message.
+		return err
 	}
 	return nil
 }

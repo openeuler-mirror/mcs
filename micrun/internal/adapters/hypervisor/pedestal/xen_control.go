@@ -1,15 +1,20 @@
 package pedestal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	log "micrun/internal/support/logger"
 )
 
 func XlMemSet(ctx context.Context, domainName string, memMB int) error {
-	cmd := newXLContext(ctx, memset, domainName, strconv.Itoa(memMB))
+	// xl mem-set interprets a bare number as KiB; the "m" suffix selects
+	// MiB (same convention as the C client, see library/remoteproc/
+	// xen_rproc.c RSC_memory).
+	cmd := newXLContext(ctx, memset, domainName, strconv.Itoa(memMB)+"m")
 	log.Debugf("run %s to set memory to %d MB for domain %s", cmd.String(), memMB, domainName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("xl mem-set failed for domain %s: %w", domainName, err)
@@ -19,7 +24,10 @@ func XlMemSet(ctx context.Context, domainName string, memMB int) error {
 }
 
 func XlMemMax(ctx context.Context, domainName string, memMB int) error {
-	cmd := newXLContext(ctx, memmax, domainName, strconv.Itoa(memMB))
+	// xl mem-max interprets a bare number as KiB; the "m" suffix selects
+	// MiB (same convention as the C client, see library/remoteproc/
+	// xen_rproc.c RSC_maxmemory).
+	cmd := newXLContext(ctx, memmax, domainName, strconv.Itoa(memMB)+"m")
 	log.Debugf("run %s to set max memory to %d MB for domain %s", cmd.String(), memMB, domainName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("xl mem-max failed for domain %s: %w", domainName, err)
@@ -38,16 +46,23 @@ func xlVcpuSet(ctx context.Context, domainName string, vcpuCount int) error {
 	return nil
 }
 
+// XlSchedCredit2 sets credit2 scheduler parameters. weight<=0 leaves the
+// weight untouched; cap<0 leaves the cap untouched. cap==0 is "unlimited"
+// in credit2 and IS passed explicitly: omitting -c would turn the command
+// into a pure query that exits 0 while the hypervisor keeps the old cap.
 func XlSchedCredit2(ctx context.Context, domainName string, weight, cap int) error {
 	if weight != 0 && weight < 1 {
 		return fmt.Errorf("CPU weight must be >= 1, got %d", weight)
+	}
+	if cap < -1 {
+		return fmt.Errorf("CPU cap must be >= -1, got %d", cap)
 	}
 
 	args := []string{"-d", domainName}
 	if weight > 0 {
 		args = append(args, "-w", strconv.Itoa(weight))
 	}
-	if cap > 0 {
+	if cap >= 0 {
 		args = append(args, "-c", strconv.Itoa(cap))
 	}
 
@@ -75,6 +90,24 @@ func Pause(ctx context.Context, id string) error {
 		return fmt.Errorf("xl failed to pause %s: %w", id, err)
 	}
 	log.Debugf("pause %s successfully", id)
+	return nil
+}
+
+func xlDestroy(ctx context.Context, id string) error {
+	var stderr bytes.Buffer
+	cmd := newXLContext(ctx, destroy, id)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Include stderr so a domain that vanished between two xl calls
+		// ("... does not exist" / "not found") can be classified as a no-op
+		// by isMissingDomainError instead of surfacing as a hard failure.
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("xl failed to destroy %s: %s", id, msg)
+	}
+	log.Debugf("destroy %s successfully", id)
 	return nil
 }
 

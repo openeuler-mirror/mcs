@@ -96,11 +96,16 @@ var (
 	DuplicatedKey = newError(TypeAlreadyExists, "duplicated key in the map")
 
 	// Unavailable
-	SandboxDown         = newError(TypeUnavailable, "sandbox is not running")
-	ContainerDown       = newError(TypeUnavailable, "container is not running")
-	SandboxNotReady     = newError(TypeUnavailable, "sandbox is not in an actionable state")
-	ContainerNotReady   = newError(TypeUnavailable, "container is not ready or stopped")
-	ContainerNotRunning = newError(TypeUnavailable, "container is not running")
+	SandboxDown       = newError(TypeUnavailable, "sandbox is not running")
+	ContainerDown     = newError(TypeUnavailable, "container is not running")
+	SandboxNotReady   = newError(TypeUnavailable, "sandbox is not in an actionable state")
+	ContainerNotReady = newError(TypeUnavailable, "container is not ready or stopped")
+	// ContainerNotRunning reports that an operation requiring a live guest was
+	// rejected because the container is in some other state. Its message must
+	// stay distinct from ContainerDown's: Is() matches on (msg, typ), so two
+	// sentinels sharing both are indistinguishable under errors.Is — see
+	// TestSentinelErrorsAreDistinct.
+	ContainerNotRunning = newError(TypeUnavailable, "container is not in the running state")
 	ContainerNotPaused  = newError(TypeUnavailable, "container is not paused")
 	GuestNotReady       = newError(TypeUnavailable, "client os is not in an actionable state")
 

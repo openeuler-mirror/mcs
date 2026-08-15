@@ -11,6 +11,12 @@ import (
 
 const maxCPUSetRangeWidth = 1 << 20
 
+// maxCPUSetTotalSize bounds the total number of CPUs in a parsed set. The
+// per-range width cap alone does not stop an input like
+// "0-1048575,1048576-2097151,..." from creating one map entry per CPU per
+// range (unbounded memory). Real hosts have orders of magnitude fewer CPUs.
+const maxCPUSetTotalSize = 1 << 20
+
 // CPUSet represents a set of CPUs.
 type CPUSet struct {
 	cpus map[int]struct{}
@@ -40,11 +46,17 @@ func Parse(s string) (CPUSet, error) {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			return set, fmt.Errorf("empty CPU entry in %q", s)
+			// Return an empty set on error: a partially-populated set paired
+			// with a non-nil error is a footgun — a caller that forgets to
+			// check err would use a half-parsed CPU set.
+			return CPUSet{}, fmt.Errorf("empty CPU entry in %q", s)
 		}
 
 		if err := addCPUEntry(set.cpus, part); err != nil {
-			return set, err
+			return CPUSet{}, err
+		}
+		if len(set.cpus) > maxCPUSetTotalSize {
+			return CPUSet{}, fmt.Errorf("CPU set %q exceeds maximum total size %d", s, maxCPUSetTotalSize)
 		}
 	}
 
@@ -94,7 +106,11 @@ func parseCPURange(part string) (int, int, error) {
 	if start > end {
 		return 0, 0, fmt.Errorf("invalid CPU range %s: start > end", part)
 	}
-	if end-start+1 > maxCPUSetRangeWidth {
+	// Use end-start (not end-start+1) to avoid integer overflow when end
+	// is near MaxInt. Since end >= start >= 0, end-start cannot overflow.
+	// end-start >= maxCPUSetRangeWidth is equivalent to end-start+1 > max
+	// for all non-overflowing values.
+	if end-start >= maxCPUSetRangeWidth {
 		return 0, 0, fmt.Errorf("invalid CPU range %s: exceeds maximum width %d", part, maxCPUSetRangeWidth)
 	}
 	return start, end, nil

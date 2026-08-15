@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -29,6 +30,7 @@ func setupOutputImpl(cfg *Config) error {
 
 	// Open containerd log fifo
 	containerdLog, err = openContainerdLogFn()
+	containerdLogErr := err // save before err is reused below
 	if err != nil {
 		// If we can't open containerd log, use stderr as fallback
 		containerdLog = os.Stderr
@@ -36,16 +38,32 @@ func setupOutputImpl(cfg *Config) error {
 
 	// Open log file for debug output
 	if err := ensureLogDirectory(cfg.Log.File); err != nil {
+		if containerdLogErr == nil {
+			_ = containerdLog.Close()
+		}
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
 
 	fileLog, err = openLogFileFn(cfg.Log.File)
 	if err != nil {
+		if containerdLogErr == nil {
+			_ = containerdLog.Close()
+		}
 		return fmt.Errorf("failed to open log file %s: %w", cfg.Log.File, err)
 	}
 
-	// Set output to containerd log only (file output will be handled by hook)
+	// Set output to containerd log only (file output will be handled by hook).
+	// Switch logrus output BEFORE swapActiveContainerdLog closes the old fd,
+	// so concurrent goroutines never write to a closed fd (EBADF).
 	Log.SetOutput(containerdLog)
+	if containerdLogErr == nil {
+		swapActiveContainerdLog(containerdLog)
+	} else {
+		// Reopen failed and we fell back to stderr. stderr must never be
+		// tracked (a later swap would Close it), but the previously tracked
+		// fifo fd still needs to be released instead of orphaned.
+		closeTrackedContainerdLog()
+	}
 
 	// Use containerd formatter for the main output
 	Log.SetFormatter(&containerdFormatter{})
@@ -57,15 +75,16 @@ func setupOutputImpl(cfg *Config) error {
 
 	// Add hooks
 	Log.AddHook(&contextHook{})
+
+	// swapActiveDebugLogFile before AddHook: if swap fails it already closes
+	// fileLog internally, so we only return the error without a redundant close.
+	if err := swapActiveDebugLogFile(fileLog); err != nil {
+		return err
+	}
 	Log.AddHook(&fileHook{
 		file:      fileLog,
 		formatter: &fileFormatter{color: cfg.Log.Color, caller: cfg.Log.Caller},
 	})
-
-	if err := swapActiveDebugLogFile(fileLog); err != nil {
-		_ = fileLog.Close()
-		return err
-	}
 
 	Log.SetReportCaller(true) // Enable caller reporting for debug
 
@@ -106,9 +125,17 @@ func (h *fileHook) Fire(entry *logrus.Entry) error {
 		return err
 	}
 
-	// Write to file
+	// Write to file. Tolerate write errors: during logger reinitialization
+	// (RestoreOutput/Initialize), logrus fires hooks WITHOUT holding Logger.mu
+	// (it unlocks before calling hooks), so a concurrent reinit can close the
+	// old file while an in-flight Fire is still writing to it. Returning nil
+	// avoids polluting stderr with "file already closed" errors; the log line
+	// is simply lost during the brief reinit window.
 	_, err = h.file.Write(bytes)
-	return err
+	if err != nil {
+		return nil
+	}
+	return nil
 }
 
 // getRealCaller finds the actual caller by walking up the stack
@@ -160,33 +187,12 @@ func isLogrusPackage(file string) bool {
 
 // containsPath checks if a path contains a specific component.
 func containsPath(file, component string) bool {
-	for i := len(file) - len(component); i >= 0; i-- {
-		if file[i:i+len(component)] == component {
-			// Check if it's a proper path component
-			if (i == 0 || file[i-1] == '/' || file[i-1] == '\\') &&
-				(i+len(component) >= len(file) || file[i+len(component)] == '/' || file[i+len(component)] == '\\') {
-				return true
-			}
-		}
-	}
-	return false
+	return strings.Contains(file, component)
 }
 
 // isLoggerPackage checks if the file is from the logger package.
 func isLoggerPackage(file string) bool {
-	// Check for "/logger/" pattern (files inside logger directory)
-	for i := 0; i < len(file)-7; i++ {
-		if file[i:i+8] == "/logger/" {
-			return true
-		}
-	}
-
-	// Also check if the file is logger.go itself
-	if len(file) >= 10 && file[len(file)-10:] == "/logger.go" {
-		return true
-	}
-
-	return false
+	return strings.Contains(file, "/logger/") || strings.HasSuffix(file, "/logger.go")
 }
 
 // fileFormatter formats logs for file output in debug builds.
@@ -232,7 +238,8 @@ func (f *fileFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	}
 
 	// Timestamp with nanoseconds: 1970-01-01T03:18:02.011123456Z
-	timestamp := entry.Time.Format("2006-01-02T15:04:05.000000000Z")
+	// Format in UTC: layout's trailing "Z" is a literal, not a zone convert.
+	timestamp := entry.Time.UTC().Format("2006-01-02T15:04:05.000000000Z")
 	b.WriteString("[")
 	b.WriteString(timestamp)
 	b.WriteString("]")

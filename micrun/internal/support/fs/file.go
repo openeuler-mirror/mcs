@@ -9,7 +9,6 @@ import (
 	cdtypes "github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/mount"
 
-	defs "micrun/internal/support/definitions"
 	log "micrun/internal/support/logger"
 	"micrun/internal/support/validation"
 )
@@ -119,23 +118,6 @@ func EnsureDir(path string, mode os.FileMode) error {
 	return nil
 }
 
-func SetReadonly(path string) error {
-	return filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		mode := os.FileMode(0444)
-		if info.IsDir() {
-			mode = os.FileMode(0555)
-		}
-		return os.Chmod(path, mode)
-	})
-}
-
-func RemoveContainerCacheDir(id string) error {
-	return RemoveContainerCacheDirAt(defs.DefaultMicaContainersRoot, id)
-}
-
 func RemoveContainerCacheDirAt(containerRoot, id string) error {
 	root, err := CleanAbsolutePath(containerRoot)
 	if err != nil {
@@ -167,6 +149,7 @@ func MountDirs(mounts []*cdtypes.Mount, dest string) error {
 	if err := EnsureDir(cleanDest, 0o711); err != nil {
 		return fmt.Errorf("mount destination is invalid: %w", err)
 	}
+	var mounted []string
 	for _, rm := range mounts {
 		m := &mount.Mount{
 			Type:    rm.Type,
@@ -175,8 +158,16 @@ func MountDirs(mounts []*cdtypes.Mount, dest string) error {
 		}
 
 		if err := m.Mount(cleanDest); err != nil {
+			// Rollback already-mounted entries in reverse order to avoid
+			// leaking mounts on partial failure.
+			for i := len(mounted) - 1; i >= 0; i-- {
+				if uerr := mount.UnmountAll(mounted[i], 0); uerr != nil {
+					log.Warnf("failed to unmount %s during rollback: %v", mounted[i], uerr)
+				}
+			}
 			return fmt.Errorf("failed to mount to %s: %w", cleanDest, err)
 		}
+		mounted = append(mounted, cleanDest)
 	}
 	return nil
 }

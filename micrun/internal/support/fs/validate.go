@@ -5,7 +5,11 @@ import (
 	"regexp"
 )
 
-const maxClientIDLength = 66
+// maxClientIDLength is the longest id micad can register: it forces
+// name[MAX_NAME_LEN-1] = '\0', so a full-length (66) id is truncated to 65
+// and its per-client control socket path would never match. Keep this in
+// sync with libmica.validateClientID.
+const maxClientIDLength = 65
 
 var cidPattern = regexp.MustCompile("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 

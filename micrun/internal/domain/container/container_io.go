@@ -120,10 +120,10 @@ func (c *Container) OpenTTYs(ctx context.Context) (stdin, stdout *os.File, err e
 }
 
 func (c *Container) ttyDiscoveryRoots() []string {
-	if c == nil || c.sandbox == nil || c.sandbox.deps == nil || c.sandbox.deps.TTYDiscoveryRoots == nil {
+	if c == nil || c.sandbox == nil || c.sandbox.deps == nil {
 		return defaultTTYDiscoveryRoots()
 	}
-	roots := c.sandbox.deps.TTYDiscoveryRoots()
+	roots := c.sandbox.deps.RPMSGTTYRoots()
 	if len(roots) == 0 {
 		return defaultTTYDiscoveryRoots()
 	}

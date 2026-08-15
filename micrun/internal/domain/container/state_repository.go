@@ -43,7 +43,7 @@ func stateRepositoryFromDependenciesChecked(deps *Dependencies) (stateRepository
 	if err := deps.Validate(); err != nil {
 		return stateRepository{}, err
 	}
-	store := deps.StateStoreFactory()
+	store := deps.StateStore()
 	if validation.IsNil(store) {
 		return stateRepository{}, fmt.Errorf("container: dependencies require non-nil StateStore")
 	}

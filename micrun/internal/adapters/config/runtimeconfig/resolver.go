@@ -72,6 +72,9 @@ func (r Resolver) resolveWithStack(stack *oci.RuntimeStack, current *oci.Runtime
 				return nil, fmt.Errorf("failed to load runtime config from %s (%s): %w", candidate.Path, candidate.Source, err)
 			}
 		} else {
+			if candidate.Source == configPathSourceAnnotation && parsed.StripHostPathConfig() {
+				log.Warnf("ignoring host-path keys (state_dir, firmware_path) from annotation-provided runtime config %s", candidate.Path)
+			}
 			stack.Replace(parsed)
 		}
 	} else {

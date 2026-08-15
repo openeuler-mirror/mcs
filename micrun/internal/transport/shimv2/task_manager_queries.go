@@ -6,6 +6,7 @@ import (
 	"micrun/internal/support/lockutil"
 
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
+	"github.com/containerd/containerd/errdefs"
 	ptypes "github.com/containerd/containerd/protobuf/types"
 )
 
@@ -24,6 +25,11 @@ func (m *taskManager) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAP
 	if err := requireTransportRequest("pids", r); err != nil {
 		return nil, err
 	}
+	// Match the containerd contract: an unknown (e.g. already deleted) task
+	// id must surface NotFound, not a shim-PID success that hides the fact.
+	if !m.metrics.hasShimTask(r.ID) {
+		return nil, errdefs.ErrNotFound
+	}
 	return pidsResponse(m.runtimeShimPID()), nil
 }
 
@@ -33,6 +39,10 @@ func (m *taskManager) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*task
 	}
 	source, found := m.metricsSource(r.ID)
 	if !found {
+		// Unknown task id: NotFound instead of empty-but-success metrics.
+		if !m.metrics.hasShimTask(r.ID) {
+			return nil, errdefs.ErrNotFound
+		}
 		return statsResponse(m.metrics.EmptyMetrics()), nil
 	}
 	return statsResponse(m.metricsOrEmpty(ctx, r.ID, source)), nil
@@ -69,6 +79,9 @@ func (m *taskManager) metricsOrEmpty(ctx context.Context, id string, source metr
 func (m *taskManager) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*taskAPI.ConnectResponse, error) {
 	if err := requireTransportRequest("connect", r); err != nil {
 		return nil, err
+	}
+	if !m.metrics.hasShimTask(r.ID) {
+		return nil, errdefs.ErrNotFound
 	}
 	return connectResponse(m.runtimeShimPID()), nil
 }

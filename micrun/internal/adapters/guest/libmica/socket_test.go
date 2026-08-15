@@ -56,10 +56,20 @@ func TestSocketDeadlineUsesEarlierContextDeadline(t *testing.T) {
 func TestSocketDeadlineAtUsesDefaultTimeout(t *testing.T) {
 	now := time.Date(2026, 4, 27, 16, 17, 18, 0, time.UTC)
 
-	deadline := socketDeadlineAt(context.Background(), now)
+	deadline := socketDeadlineAt(context.Background(), now, defs.MicaSocketTimeout)
 
 	if !deadline.Equal(now.Add(defs.MicaSocketTimeout)) {
 		t.Fatalf("socketDeadlineAt = %v, want %v", deadline, now.Add(defs.MicaSocketTimeout))
+	}
+}
+
+func TestSocketDeadlineAtUsesLongTimeout(t *testing.T) {
+	now := time.Date(2026, 4, 27, 16, 17, 18, 0, time.UTC)
+
+	deadline := socketDeadlineAt(context.Background(), now, defs.MicaSocketLongTimeout)
+
+	if !deadline.Equal(now.Add(defs.MicaSocketLongTimeout)) {
+		t.Fatalf("socketDeadlineAt = %v, want %v", deadline, now.Add(defs.MicaSocketLongTimeout))
 	}
 }
 

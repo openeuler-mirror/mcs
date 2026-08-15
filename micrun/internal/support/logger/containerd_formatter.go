@@ -32,7 +32,9 @@ func (f *containerdFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		b = &bytes.Buffer{}
 	}
 
-	timestamp := entry.Time.Format("2006-01-02T15:04:05.000000000Z")
+	// Format in UTC: the trailing "Z" in the layout is a literal, not a
+	// zone conversion — without .UTC() local wall-clock would be labeled Z.
+	timestamp := entry.Time.UTC().Format("2006-01-02T15:04:05.000000000Z")
 	b.WriteString("time=\"")
 	b.WriteString(timestamp)
 	b.WriteString("\" ")

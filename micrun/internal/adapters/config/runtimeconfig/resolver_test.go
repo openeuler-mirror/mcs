@@ -232,7 +232,10 @@ func TestConfigPathFromDecodedOptionsIgnoresUnsupportedValue(t *testing.T) {
 func TestResolverResolveUsesInjectedHostProfileForConfigFallbacks(t *testing.T) {
 	tmp := t.TempDir()
 	conf := filepath.Join(tmp, "micrun.ini")
-	content := []byte("[container_minmem]\ncontainer_minmem=bad\n[container_maxmem]\ncontainer_maxmem=9999\n")
+	// Runtime memory keys live under the [Resource] section (see
+	// docs/reference/configuration.md). Values are intentionally invalid/out
+	// of bounds so the resolver falls back to the host-profile thresholds.
+	content := []byte("[Resource]\ncontainer_minmem=bad\ncontainer_maxmem=9999\n")
 	if err := os.WriteFile(conf, content, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -260,12 +263,14 @@ func TestResolverResolveUsesInjectedHostProfileForConfigFallbacks(t *testing.T) 
 func TestResolverResolveLoadsExplicitTomlConfig(t *testing.T) {
 	tmp := t.TempDir()
 	conf := filepath.Join(tmp, "micrun.toml")
+	// Documented sections: pause_image under [mica], container_minmem under
+	// [resource] (see docs/reference/configuration.md).
 	content := []byte(`
-[container_minmem]
-container_minmem = 64
-
-[pause_image]
+[mica]
 pause_image = "pause:test"
+
+[resource]
+container_minmem = 64
 `)
 	if err := os.WriteFile(conf, content, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -286,5 +291,67 @@ pause_image = "pause:test"
 	}
 	if cfg.PauseImage != "pause:test" {
 		t.Fatalf("PauseImage = %q, want pause:test", cfg.PauseImage)
+	}
+}
+
+func TestResolverResolveStripsHostPathKeysFromAnnotationConfig(t *testing.T) {
+	tmp := t.TempDir()
+	conf := filepath.Join(tmp, "micrun.toml")
+	// state_dir/firmware_path are host-filesystem path keys: a config file
+	// referenced through the pod annotation is pod-author-controlled input,
+	// so honoring them would give the pod author root-privileged directory
+	// creation and file writes at arbitrary host locations.
+	content := []byte(`
+[mica]
+state_dir = "/tmp/micrun-attacker-controlled"
+firmware_path = "/etc/shadow"
+
+[resource]
+container_minmem = 64
+`)
+	if err := os.WriteFile(conf, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := NewResolver(oci.HostProfile{
+		MemLowThreshold:  16,
+		MemHighThreshold: 128,
+	}).Resolve(nil, ports.TaskCreateRequest{}, map[string]string{
+		ann.SandboxConfigPathKey: conf,
+	})
+	if err != nil {
+		t.Fatalf("Resolve returned unexpected error: %v", err)
+	}
+	if cfg.StateDir != defs.MicrunStateDir {
+		t.Fatalf("StateDir = %q, want default %q (annotation source must not set host paths)", cfg.StateDir, defs.MicrunStateDir)
+	}
+	if cfg.DefaultFirmwarePath != "" {
+		t.Fatalf("DefaultFirmwarePath = %q, want empty (annotation source must not set host paths)", cfg.DefaultFirmwarePath)
+	}
+	if cfg.MinContainerMemMB != 64 {
+		t.Fatalf("MinContainerMemMB = %d, want 64 (scalar keys from annotation config stay effective)", cfg.MinContainerMemMB)
+	}
+}
+
+func TestResolverResolveKeepsHostPathKeysFromOptionsConfig(t *testing.T) {
+	tmp := t.TempDir()
+	conf := filepath.Join(tmp, "micrun.toml")
+	// The containerd runtime options come from the admin side, so host-path
+	// keys stay effective there.
+	content := []byte("[mica]\nstate_dir = \"" + tmp + "\"\n")
+	if err := os.WriteFile(conf, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	options, err := typeurl.MarshalAny(&crioption.Options{ConfigPath: conf})
+	if err != nil {
+		t.Fatalf("marshal runtime options: %v", err)
+	}
+
+	cfg, err := NewResolver(oci.HostProfile{}).Resolve(nil, ports.TaskCreateRequest{Options: options}, nil)
+	if err != nil {
+		t.Fatalf("Resolve returned unexpected error: %v", err)
+	}
+	if cfg.StateDir != tmp {
+		t.Fatalf("StateDir = %q, want %q (admin options source keeps host-path keys)", cfg.StateDir, tmp)
 	}
 }

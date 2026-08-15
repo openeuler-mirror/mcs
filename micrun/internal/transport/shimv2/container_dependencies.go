@@ -59,8 +59,11 @@ func configureRuntimePaths(deps *cntr.Dependencies, stateDir string) error {
 	if err := setupStateDir(stateDir); err != nil {
 		return err
 	}
-	deps.StateStoreFactory = runtimeStateStoreFactory(stateDir)
-	deps.TTYDiscoveryRoots = runtimeTTYDiscoveryRoots(stateDir)
+	// Swap both hooks atomically under the Dependencies lock: attach/IO
+	// paths read them outside the Create lock (scan item: shared deps
+	// function fields were a data race between Create writes and TTY
+	// discovery reads).
+	deps.SetRuntimePaths(runtimeStateStoreFactory(stateDir), runtimeTTYDiscoveryRoots(stateDir))
 	return nil
 }
 

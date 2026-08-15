@@ -1,7 +1,5 @@
 package pedestal
 
-import "strings"
-
 type PedType int
 
 type PedestalConfig struct {
@@ -30,19 +28,6 @@ func (p PedType) String() string {
 		return "baremetal"
 	default:
 		return "unsupported"
-	}
-}
-
-func ParsePedType(s string) PedType {
-	switch strings.ToLower(s) {
-	case "xen":
-		return Xen
-	case "baremetal":
-		return Baremetal
-	case "":
-		return Xen
-	default:
-		return Unsupported
 	}
 }
 

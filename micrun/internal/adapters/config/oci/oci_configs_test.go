@@ -215,8 +215,13 @@ func TestResolveFirmwarePathAnnotationOverridesFallback(t *testing.T) {
 	}
 }
 
-func TestParseContainerCfgRequiresRuntimeConfig(t *testing.T) {
-	_, err := ParseContainerCfg(context.Background(), "demo", t.TempDir(), specs.Spec{}, cntr.SingleContainer, "", nil, nil)
+func TestBuildContainerConfigRequiresRuntimeConfig(t *testing.T) {
+	_, err := BuildContainerConfig(context.Background(), ContainerConfigRequest{
+		ID:            "demo",
+		Bundle:        t.TempDir(),
+		Spec:          specs.Spec{},
+		ContainerType: cntr.SingleContainer,
+	})
 	if err == nil {
 		t.Fatal("expected error when runtime config is nil")
 	}

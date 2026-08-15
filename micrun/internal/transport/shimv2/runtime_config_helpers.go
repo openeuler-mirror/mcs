@@ -45,6 +45,11 @@ func loadRuntimeConfig(s *shimService, r ports.TaskCreateRequest, annotations ma
 	if err := configureRuntimePaths(s.runtimeDeps.containerDeps, cfg.StateDir); err != nil {
 		return nil, err
 	}
+	// The runtime.debug annotation previously had no consumer after landing
+	// in RuntimeConfig.Debug; honor it by raising the global level once.
+	if cfg.Debug {
+		log.ForceDebugLevel()
+	}
 	s.config = cfg
 	log.Debugf("loadRuntimeConfig: config loaded successfully")
 	return cfg, nil

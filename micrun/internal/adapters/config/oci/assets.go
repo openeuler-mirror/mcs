@@ -24,17 +24,23 @@ func bundleRootfs(bundle string) string {
 func resolvePedestalPath(baseRootfs, annotationPedestal string) string {
 	var pedPath string
 
-	// Try annotation path first
+	// Try annotation path first. An explicitly set annotation that fails to
+	// resolve (missing file, escaping path) must fail loudly — silently
+	// falling back to the default image would boot the guest on the wrong
+	// pedestal without any signal to the pod author (the baremetal ped.conf
+	// branch below already errors the same way).
 	if annotationPedestal != "" {
 		candidatePath := getBundleImageFile(baseRootfs, annotationPedestal)
-		if candidatePath != "" {
-			pedPath = candidatePath
-			log.Debugf("using pedestal from annotation: %s", pedPath)
-			return pedPath
+		if candidatePath == "" {
+			log.Warnf("pedestal image annotation set but not resolvable in container rootfs: %s", annotationPedestal)
+			return ""
 		}
+		pedPath = candidatePath
+		log.Debugf("using pedestal from annotation: %s", pedPath)
+		return pedPath
 	}
 
-	// Fallback to default image name and try to find it in rootfs
+	// No annotation: fall back to the default image name in the rootfs
 	defaultPath := getBundleImageFile(baseRootfs, defs.DefaultXenImg)
 	if defaultPath != "" {
 		pedPath = defaultPath
@@ -68,11 +74,25 @@ func extPedConfig(getAnnotation func(string) (string, bool), baseRootfs string, 
 
 	var pedconf string
 	if pedtype == pedestal.Xen {
-		// Resolve Xen pedestal image path to absolute path
+		// Resolve Xen pedestal image path to absolute path. An empty result
+		// means an explicit annotation failed to resolve — reject instead of
+		// silently booting on the default pedestal image.
 		pedconf = resolvePedestalPath(baseRootfs, pedconfAnnotation)
+		if pedconf == "" {
+			return pedtype, "", fmt.Errorf("pedestal image annotation set but not resolvable in container rootfs: %s", pedconfAnnotation)
+		}
 		log.Debugf("Resolved Xen pedestal config path: %s", pedconf)
-	} else {
-		pedconf = pedconfAnnotation
+	} else if pedconfAnnotation != "" {
+		// The annotation is documented as rootfs-relative and is
+		// pod-author-controlled input. Resolve it inside the bundle like the
+		// Xen branch (and resolveFirmwarePath) does: passing it through
+		// verbatim let a pod author make the root shim/micad read arbitrary
+		// host files as the pedestal image.
+		pedconf = getBundleImageFile(baseRootfs, pedconfAnnotation)
+		if pedconf == "" {
+			return pedtype, "", fmt.Errorf("pedestal config file not found in container rootfs: %s", pedconfAnnotation)
+		}
+		log.Debugf("Resolved pedestal config path: %s", pedconf)
 	}
 
 	return pedtype, pedconf, nil
@@ -170,8 +190,16 @@ func prepCache(id, pedconf, elfPath string, hostProfile HostProfile, stateDir st
 		return "", "", fmt.Errorf("failed to create container cache directory %s: %w", containerCacheDir, err)
 	}
 
-	if pedconf, err = cacheRegularFile(containerCacheDir, pedconf); err != nil && normalizeHostProfile(hostProfile).Type == pedestal.Xen {
-		return "", "", err
+	// Cache pedestal-conf. On failure, only Xen treats it as fatal (Xen
+	// requires a valid pedconf). For non-Xen (baremetal), pedconf may be
+	// optional — preserve the original path instead of letting
+	// cacheRegularFile replace it with "" on error.
+	if cached, cerr := cacheRegularFile(containerCacheDir, pedconf); cerr != nil {
+		if normalizeHostProfile(hostProfile).Type == pedestal.Xen {
+			return "", "", cerr
+		}
+	} else {
+		pedconf = cached
 	}
 	if elfPath, err = cacheRegularFile(containerCacheDir, elfPath); err != nil {
 		return "", "", err

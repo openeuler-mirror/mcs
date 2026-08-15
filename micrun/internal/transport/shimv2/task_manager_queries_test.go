@@ -3,6 +3,7 @@ package shim
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,23 +11,24 @@ import (
 
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	"github.com/containerd/containerd/errdefs"
 	ptypes "github.com/containerd/containerd/protobuf/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func TestTaskManagerStatsReturnsEmptyMetricsForMissingTask(t *testing.T) {
+func TestTaskManagerStatsReturnsNotFoundForMissingTask(t *testing.T) {
 	service := newTaskRPCShimService()
 	manager, err := service.getTaskManager()
 	if err != nil {
 		t.Fatalf("getTaskManager() error = %v", err)
 	}
 
-	resp, err := manager.Stats(context.Background(), &taskAPI.StatsRequest{ID: "missing"})
-	if err != nil {
-		t.Fatalf("Stats returned unexpected error: %v", err)
+	// Containerd contract: an unknown task id surfaces NotFound instead of
+	// empty-but-success metrics that hide the fact the task is gone.
+	if _, err := manager.Stats(context.Background(), &taskAPI.StatsRequest{ID: "missing"}); !errors.Is(err, errdefs.ErrNotFound) {
+		t.Fatalf("Stats error = %v, want ErrNotFound", err)
 	}
-	assertSameMetricsAny(t, resp.Stats, service.EmptyMetrics())
 }
 
 func TestTaskManagerStatsReturnsEmptyMetricsOnCollectionError(t *testing.T) {
@@ -123,7 +125,10 @@ func TestTaskManagerQueryRPCsUseRuntimeShimPID(t *testing.T) {
 		t.Fatalf("getTaskManager() error = %v", err)
 	}
 
-	pids, err := manager.Pids(context.Background(), &taskAPI.PidsRequest{})
+	// Pids/Connect for a missing id must return NotFound (contract test
+	// lives below); here exercise the happy path with a registered task.
+	service.containers["demo"] = &shimContainer{id: "demo", status: tasktypes.Status_RUNNING}
+	pids, err := manager.Pids(context.Background(), &taskAPI.PidsRequest{ID: "demo"})
 	if err != nil {
 		t.Fatalf("Pids returned error: %v", err)
 	}
@@ -131,7 +136,7 @@ func TestTaskManagerQueryRPCsUseRuntimeShimPID(t *testing.T) {
 		t.Fatalf("Pids pid = %d, want 4242", got)
 	}
 
-	connect, err := manager.Connect(context.Background(), &taskAPI.ConnectRequest{})
+	connect, err := manager.Connect(context.Background(), &taskAPI.ConnectRequest{ID: "demo"})
 	if err != nil {
 		t.Fatalf("Connect returned error: %v", err)
 	}

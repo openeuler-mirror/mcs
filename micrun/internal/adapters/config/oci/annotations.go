@@ -3,6 +3,7 @@ package oci
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -12,8 +13,17 @@ import (
 	log "micrun/internal/support/logger"
 
 	ctrAnnotations "github.com/containerd/containerd/pkg/cri/annotations"
-	podmanAnnotations "github.com/containers/podman/v4/pkg/annotations"
 	"github.com/opencontainers/runtime-spec/specs-go"
+)
+
+// CRI-O / podman annotation keys and values. Defined locally to avoid pulling
+// in the entire github.com/containers/podman/v4 module (7 govulncheck advisories)
+// for 4 string constants. Values mirror podman/v4/pkg/annotations verbatim.
+const (
+	podmanContainerTypeKey       = "io.kubernetes.cri-o.ContainerType"
+	podmanSandboxIDKey           = "io.kubernetes.cri-o.SandboxID"
+	podmanContainerTypeSandbox   = "sandbox"
+	podmanContainerTypeContainer = "container"
 )
 
 type annotationContainerType struct {
@@ -28,20 +38,20 @@ var (
 	// CRIContainerTypeKeyList lists all the CRI keys that could define
 	// the container type from annotations in the config.json.
 	// io.kubernetes.cri.container_type || io.kubernetes.cri-o.container_type
-	CRIContainerTypeKeyList = []string{ctrAnnotations.ContainerType, podmanAnnotations.ContainerType}
+	CRIContainerTypeKeyList = []string{ctrAnnotations.ContainerType, podmanContainerTypeKey}
 
 	// CRISandboxNameKeyList lists all the CRI keys that could define
 	// the sandbox ID from annotations in the config.json.
 	// "io.kubernetes.cri.sandbox-id" || "io.kubernetes.cri-o.SandboxID"
-	CRISandboxNameKeyList = []string{ctrAnnotations.SandboxID, podmanAnnotations.SandboxID}
+	CRISandboxNameKeyList = []string{ctrAnnotations.SandboxID, podmanSandboxIDKey}
 
 	// CRIContainerTypeList lists all the maps from CRI ContainerTypes annotations
 	// to a virtcontainers ContainerType.
 	CRIContainerTypeList = []annotationContainerType{
 		{ctrAnnotations.ContainerTypeSandbox, cntr.PodSandbox},
 		{ctrAnnotations.ContainerTypeContainer, cntr.PodContainer},
-		{podmanAnnotations.ContainerTypeSandbox, cntr.PodSandbox},
-		{podmanAnnotations.ContainerTypeContainer, cntr.PodContainer},
+		{podmanContainerTypeSandbox, cntr.PodSandbox},
+		{podmanContainerTypeContainer, cntr.PodContainer},
 	}
 
 	sandboxBoolAnnotationAppliers = map[string]sandboxBoolAnnotationApplier{
@@ -148,7 +158,7 @@ func checkInfra(ct cntr.ContainerType, ocispec specs.Spec) bool {
 		hasCRIInfraAnnotation = annotationMatches(ocispec.Annotations, func(k, v string) bool {
 			v = strings.TrimSpace(v)
 			return slices.Contains(CRIContainerTypeKeyList, k) &&
-				(v == ctrAnnotations.ContainerTypeSandbox || v == podmanAnnotations.ContainerTypeSandbox)
+				(v == ctrAnnotations.ContainerTypeSandbox || v == podmanContainerTypeSandbox)
 		})
 	}
 
@@ -176,8 +186,17 @@ func applySandboxAnnotations(ocispec specs.Spec, cfg *cntr.SandboxConfig) {
 		cfg.Annotations = make(map[string]string)
 	}
 
-	for key, value := range ocispec.Annotations {
-		trimmed := strings.TrimSpace(value)
+	// Deterministic order: sort the keys so alias pairs (e.g. the canonical
+	// enable_vcpus_pinning and its legacy alias vcpu_pcpu_binding, which
+	// write the same field) apply in a stable sequence — map iteration order
+	// used to make a same-value conflict flip the outcome between runs.
+	keys := make([]string, 0, len(ocispec.Annotations))
+	for key := range ocispec.Annotations {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		trimmed := strings.TrimSpace(ocispec.Annotations[key])
 		if !strings.HasPrefix(key, ann.MicrunAnnotationPrefix) || trimmed == "" {
 			continue
 		}

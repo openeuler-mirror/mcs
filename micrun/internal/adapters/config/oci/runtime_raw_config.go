@@ -16,19 +16,21 @@ const (
 	KeySharedCPUPool    = "shared_cpu_pool"      // default=false, shared CPU pool for Xen cpupool management
 )
 
-var runtimeConfigKeys = []string{
-	KeyStaticResource,
-	KeyDebug,
-	KeyStateDir,
-	KeyPauseImg,
-	KeyMaxContainerVCPU,
-	KeySandboxMinVCPU,
-	KeyHugePage,
-	KeyExclusiveDom0CPU,
-	KeyMaxMemory,
-	KeyMinMemory,
-	KeyDefaultFirmware,
-	KeySharedCPUPool,
+// runtimeConfigSections lists the INI/TOML section names that may hold runtime
+// configuration keys (see docs/reference/configuration.md). parse.ParseINI uses
+// this list as a SECTION whitelist: only keys appearing under one of these
+// sections are returned. applyRawConfig then filters those keys down to the
+// recognized set (runtimeConfigSetters), so unrelated keys in these sections
+// are ignored.
+//
+// Sections are lowercase because ParseINI lower-cases section names before the
+// allows() check. Passing the KEY names here (as a previous version did) made
+// every documented config — which uses [Mica]/[Resource]/[Xen] headers — match
+// nothing, silently dropping the entire runtime config file.
+var runtimeConfigSections = []string{
+	"mica",
+	"resource",
+	"xen",
 }
 
 type runtimeConfigSetter struct {

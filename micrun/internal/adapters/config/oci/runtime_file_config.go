@@ -22,7 +22,7 @@ func (r *RuntimeConfig) parseRuntimeFile(configPath string, format string, parse
 	if _, err := os.Stat(configPath); err != nil {
 		return err
 	}
-	filtered, err := parser(configPath, runtimeConfigKeys)
+	filtered, err := parser(configPath, runtimeConfigSections)
 	if err != nil {
 		return err
 	}

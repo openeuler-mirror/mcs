@@ -1,6 +1,3 @@
-//go:build test
-// +build test
-
 package oci
 
 import (
@@ -39,7 +36,7 @@ func TestApplyMicrunFiles(t *testing.T) {
 	stack := NewRuntimeStackWithHost(testHostProfile())
 	tmp := t.TempDir()
 	conf := tmp + "/micrun.ini"
-	if err := os.WriteFile(conf, []byte("[static_resource]\nmax_container_vcpu=2\n"), 0o644); err != nil {
+	if err := os.WriteFile(conf, []byte("[resource]\nmax_container_vcpu=2\n"), 0o644); err != nil {
 		t.Fatalf("failed to write config: %v", err)
 	}
 	if err := stack.ApplyMicrunFiles([]configstack.MicrunConfigFile{{Path: conf, Format: configstack.FormatINI}}); err != nil {
