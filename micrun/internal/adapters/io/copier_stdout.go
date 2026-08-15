@@ -1,9 +1,20 @@
 package io
 
 import (
+	"time"
+
 	"micrun/internal/domain/console"
 	"micrun/internal/support/logger"
 )
+
+// outputWriteRetryDelay is the pause between EAGAIN retries when the stdout
+// FIFO is under backpressure (attach client reading slowly).
+const outputWriteRetryDelay = 10 * time.Millisecond
+
+// outputWriteNoReaderDelay is used when the FIFO has no client (EPIPE/ENXIO).
+// Detached start waits here until `ctr task attach` reopens the same path;
+// 10ms would spin the copier at 100 Hz for the life of the task.
+const outputWriteNoReaderDelay = 100 * time.Millisecond
 
 type ttyOutputLoopConfig struct {
 	normalizer         *console.OutputNormalizer
@@ -13,54 +24,75 @@ type ttyOutputLoopConfig struct {
 	errorSource        string
 	logRead            func(totalRead int, n int, sample []byte)
 	writeData          func([]byte) outputWriteDecision
+	waiter             *epollWaiter
 }
 
 func (c *Copier) copyTTYOutputLoop(source ttyReadSource, loopName string, config ttyOutputLoopConfig) {
+	// On any exit, emit any byte the normalizer is holding (e.g. a pending
+	// bare CR at a block boundary). Without this, the last \r of an
+	// interactive TTY stream is permanently lost because Flush is the only
+	// release path for a buffered CR.
+	defer c.flushNormalizer(config)
+
 	buf := make([]byte, c.config.StdoutBufSize)
 	totalRead := 0
 	for {
-		if !c.waitForTTYRead(source, loopName) {
+		if !c.waitForTTYRead(config.waiter, source, loopName) {
 			return
 		}
 
-		n, err := source.read(buf)
-		if err != nil {
-			sourceName := config.errorSource
-			if sourceName == "" {
-				sourceName = loopName
+		// The epoll waiter is edge-triggered: a wakeup does not re-fire
+		// until a NEW edge arrives. A guest output burst larger than the
+		// buffer must therefore be drained here — keep reading until EAGAIN
+		// — or the remainder would be stranded forever (no new edge while
+		// the guest is quiet).
+		for {
+			n, err := source.read(buf)
+			if err != nil {
+				if isEAGAIN(err) {
+					break // drained; wait for the next edge
+				}
+				sourceName := config.errorSource
+				if sourceName == "" {
+					sourceName = loopName
+				}
+				if c.handleTTYReadError(sourceName, err) == ttyReadStop {
+					return
+				}
+				continue
 			}
-			if c.handleTTYReadError(sourceName, err) == ttyReadStop {
+
+			if n == 0 {
+				continue
+			}
+
+			totalRead += n
+			if config.publishTTYReady {
+				c.publishTTYReadyOnce()
+			}
+
+			if config.logRead != nil {
+				config.logRead(totalRead, n, buf[:min(n, 100)])
+			}
+
+			data := c.normalizeTTYOutput(config.normalizer, buf[:n], config.suppressEcho)
+			if len(data) == 0 {
+				continue
+			}
+
+			c.logPostInputOutput(len(data))
+
+			if config.checkWriteCanceled && c.outputWriteCanceled(loopName) {
 				return
 			}
-			continue
-		}
 
-		if n == 0 {
-			continue
-		}
-
-		totalRead += n
-		if config.publishTTYReady {
-			c.publishTTYReadyOnce()
-		}
-
-		if config.logRead != nil {
-			config.logRead(totalRead, n, buf[:min(n, 100)])
-		}
-
-		data := c.normalizeTTYOutput(config.normalizer, buf[:n], config.suppressEcho)
-		if len(data) == 0 {
-			continue
-		}
-
-		c.logPostInputOutput(len(data))
-
-		if config.checkWriteCanceled && c.outputWriteCanceled(loopName) {
-			return
-		}
-
-		if config.writeData != nil && config.writeData(data) == outputWriteStop {
-			return
+			if config.writeData != nil {
+				// writeData (writeOutputFIFO) handles EAGAIN retry internally
+				// and only returns Continue or Stop — no outer retry needed.
+				if config.writeData(data) == outputWriteStop {
+					return
+				}
+			}
 		}
 	}
 }
@@ -82,6 +114,7 @@ func (c *Copier) copyStdout() {
 		publishTTYReady:    true,
 		checkWriteCanceled: true,
 		errorSource:        "TTY stdout",
+		waiter:             &c.ttyWaiter,
 		logRead: func(totalRead, n int, sample []byte) {
 			// Log first reads for debugging (with hex dump for diagnosis)
 			if totalRead <= 500 || n < 20 {
@@ -125,6 +158,7 @@ func (c *Copier) copyStdoutErrUnified() {
 		publishTTYReady:    true,
 		checkWriteCanceled: false,
 		errorSource:        "Unified TTY",
+		waiter:             &c.ttyWaiter,
 		logRead: func(totalRead, n int, sample []byte) {
 			// Log first reads for debugging
 			if totalRead <= 500 || n < 20 {
@@ -163,6 +197,7 @@ func (c *Copier) copyStderr() {
 		publishTTYReady:    false,
 		checkWriteCanceled: false,
 		errorSource:        "TTY stderr",
+		waiter:             &c.ttyErrWaiter,
 		writeData: func(data []byte) outputWriteDecision {
 			return c.writeOutputFIFO("stderr", c.stderrFIFO, data)
 		},

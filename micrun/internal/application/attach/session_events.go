@@ -40,6 +40,6 @@ func (s *Service) startSessionEventHandler(
 	if err != nil {
 		return err
 	}
-	panicsafe.Go("attach io event handler", func() { s.handleIOEvents(ctx, runtime, taskHandle, events) })
+	panicsafe.Go("attach io event handler", func() { s.handleIOEvents(ctx, runtime, taskHandle, events, stream) })
 	return nil
 }

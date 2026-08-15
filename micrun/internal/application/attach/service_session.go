@@ -250,7 +250,7 @@ func (s *Service) startManagedSession(
 	})
 	cleanupManager = nil
 
-	panicsafe.Go("attach io event handler", func() { s.handleIOEvents(sessionCtx, runtime, taskHandle, events) })
+	panicsafe.Go("attach io event handler", func() { s.handleIOEvents(sessionCtx, runtime, taskHandle, events, eventStream) })
 	log.Infof("[ATTACH] Saved attach info for %s: terminal=%v", taskHandle.ID(), attachInfo.Terminal)
 	return nil
 }

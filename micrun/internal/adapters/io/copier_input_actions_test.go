@@ -3,6 +3,7 @@ package io
 import (
 	"context"
 	"errors"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestInputActionHandlersDispatchAndStop(t *testing.T) {
 		EventBus:    bus,
 		Terminal:    true,
 	})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	copier.SetTTYs(ttyOut, nil, nil)
 	copier.SetStdout(stdoutFIFO)
 	copier.SetStdoutFifoForEcho(stdoutEcho)
@@ -84,7 +85,7 @@ func TestExecuteInputActionsDetachStopsWithoutClosingStreams(t *testing.T) {
 		EventBus:    bus,
 		Terminal:    true,
 	})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	copier.SetStdin(failingReadCloser{})
 	copier.SetStdout(failingWriteCloser{})
 	copier.SetStderr(failingWriteCloser{})
@@ -124,7 +125,7 @@ func TestInputActionWriteTTYPublishesIOError(t *testing.T) {
 		ContainerID: "input-action-write-error",
 		EventBus:    bus,
 	})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	copier.SetTTYs(errorTTYWriter{err: expectedErr}, nil, nil)
 
 	copier.executeInputActions([]console.Action{
@@ -149,7 +150,7 @@ func TestInputActionWriteTTYPublishesIOError(t *testing.T) {
 
 func TestExecuteInputActionsIgnoresUnsupportedKinds(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "input-action-unsupported"})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 
 	copier.executeInputActions([]console.Action{
 		{Kind: console.ActionKind(99)},
@@ -157,5 +158,53 @@ func TestExecuteInputActionsIgnoresUnsupportedKinds(t *testing.T) {
 
 	if copier.stopped.Load() {
 		t.Fatal("unsupported action should not stop copier")
+	}
+}
+
+func TestLocalEchoEPIPEDoesNotBlockWriteTTYOrExit(t *testing.T) {
+	// Detached stdout (no FIFO reader) makes LocalEcho/WriteStdout hit EPIPE.
+	// Those writes are best-effort; stalling on them must not prevent WriteTTY
+	// or ExitCommandDetected.
+	bus := NewEventBus(context.Background())
+	defer bus.Close()
+	events := bus.Subscribe(ExitCommandDetected)
+
+	ttyOut := &recordingTTYWriter{}
+	copier := NewCopier(Config{
+		ContainerID: "echo-epipe",
+		EventBus:    bus,
+		Terminal:    true,
+	})
+	defer copier.finishStop(0, false)
+	copier.SetTTYs(ttyOut, nil, nil)
+	copier.SetStdout(errorTTYWriter{err: syscall.EPIPE})
+	copier.SetStdoutFifoForEcho(errorTTYWriter{err: syscall.EPIPE})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		copier.executeInputActions([]console.Action{
+			{Kind: console.ActionLocalEcho, Data: []byte("e")},
+			{Kind: console.ActionWriteTTY, Data: []byte("exit\n")},
+			{Kind: console.ActionWriteStdout, Data: []byte("\r\n")},
+			{Kind: console.ActionEmitEvent, Event: console.EventExitCommand, StopMode: console.ActionStopClose},
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("executeInputActions blocked on LocalEcho/WriteStdout EPIPE")
+	}
+	if got, want := ttyOut.String(), "exit\n"; got != want {
+		t.Fatalf("tty writes = %q, want %q", got, want)
+	}
+	select {
+	case ev := <-events:
+		if ev.Type != ExitCommandDetected {
+			t.Fatalf("event type = %v, want ExitCommandDetected", ev.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ExitCommandDetected was not published")
 	}
 }

@@ -41,6 +41,11 @@ type IOEventSubscriber <-chan IOEvent
 // IOEventStream abstracts subscription to a merged IO lifecycle event stream.
 type IOEventStream interface {
 	SubscribeMany(eventTypes ...IOEventType) IOEventSubscriber
+	// Current reports whether this stream still belongs to the session's
+	// active event bus. A session restart replaces the bus; events queued on
+	// the old bus before it closed may still be delivered, and acting on them
+	// (stop/detach) would tear down the freshly restarted session.
+	Current() bool
 }
 
 // IOSessionConfig describes the stdio wiring needed to bootstrap a task IO

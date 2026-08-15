@@ -33,7 +33,13 @@ func newTTYReadSource(name, containerID string, reader io.Reader) ttyReadSource 
 
 func (s ttyReadSource) read(buf []byte) (int, error) {
 	if s.fd >= 0 {
-		return unix.Read(s.fd, buf)
+		n, err := unix.Read(s.fd, buf)
+		// unix.Read at EOF returns (0, nil) — translate to io.EOF so the
+		// output copier loop treats it as terminal instead of busy-spinning.
+		if err == nil && n == 0 {
+			return 0, io.EOF
+		}
+		return n, err
 	}
 	if s.reader == nil {
 		return 0, io.ErrClosedPipe

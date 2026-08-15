@@ -42,6 +42,8 @@ func (f *fakeLifecycleIOManager) EventStream() ports.IOEventStream {
 
 type fakeLifecycleEventStream struct{}
 
+func (f *fakeLifecycleEventStream) Current() bool { return true }
+
 func (f *fakeLifecycleEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	ch := make(chan ports.IOEvent)
 	return ch

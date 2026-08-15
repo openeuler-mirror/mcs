@@ -21,6 +21,74 @@ func TestPublishEventSafeRecoversFromClosedSubscriber(t *testing.T) {
 	})
 }
 
+func TestPublishControlEventDoesNotDropWhenBufferFull(t *testing.T) {
+	bus := NewEventBus(context.Background())
+	defer bus.Close()
+
+	events := bus.Subscribe(ClientAttached)
+	for i := 0; i < eventChannelBufferSize; i++ {
+		bus.Publish(Event{Type: ClientAttached, ContainerID: "c1"})
+	}
+
+	delivered := make(chan struct{})
+	go func() {
+		bus.Publish(Event{Type: ClientAttached, ContainerID: "c1-overflow"})
+		close(delivered)
+	}()
+
+	select {
+	case <-delivered:
+		t.Fatal("control Publish returned while subscriber buffer was full; event would have been dropped")
+	case <-time.After(50 * time.Millisecond):
+		// Still blocked — expected backpressure for control events.
+	}
+
+	// Drain the buffered events so the blocked overflow publish can complete.
+	for i := 0; i < eventChannelBufferSize; i++ {
+		select {
+		case <-events:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out draining buffered ClientAttached #%d", i)
+		}
+	}
+
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("blocked control Publish did not complete after drain")
+	}
+
+	select {
+	case ev := <-events:
+		if ev.ContainerID != "c1-overflow" {
+			t.Fatalf("overflow event container = %q, want c1-overflow", ev.ContainerID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("overflow ClientAttached was not delivered")
+	}
+}
+
+func TestPublishNonControlEventDropsWhenBufferFull(t *testing.T) {
+	bus := NewEventBus(context.Background())
+	defer bus.Close()
+
+	_ = bus.Subscribe(IOError)
+	for i := 0; i < eventChannelBufferSize; i++ {
+		bus.Publish(Event{Type: IOError, ContainerID: "c1"})
+	}
+	// Must not block: high-volume noise stays drop-on-full.
+	done := make(chan struct{})
+	go func() {
+		bus.Publish(Event{Type: IOError, ContainerID: "c1-drop"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("non-control Publish blocked on full buffer")
+	}
+}
+
 func TestEventBusPublishConcurrentCloseDoesNotPanic(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		bus := NewEventBus(context.Background())

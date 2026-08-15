@@ -46,8 +46,24 @@ func (c *Copier) copyStdin() {
 				}
 				continue
 			}
+			if isEINTR(err) {
+				continue
+			}
 			if isEAGAIN(err) {
-				c.handleStdinEAGAIN()
+				// EAGAIN on this FIFO is a live writer with no data. start -d
+				// has no writer and returns EOF. After create-time EOF,
+				// nerdctl -i / attach opens the write end and the next read
+				// is EAGAIN — that client must block auto-close before the
+				// first byte. Writer-close returns EOF again (not EAGAIN),
+				// so this cannot busy-loop on HUP.
+				if c.stdinEOFSeen {
+					c.stdinEOFSeen = false
+					c.attachClientConnected = true
+				}
+				c.noteLiveClient()
+				if !c.waitForStdinOrCancel(c.stdinFIFOFD()) {
+					return
+				}
 				continue
 			}
 			log.Errorf("[IO] stdin read error for %s: %v", c.config.ContainerID, err)
@@ -78,6 +94,11 @@ const (
 	stdinLoopStop
 )
 
+// stdinReattachPollInterval is how often the stdin copier polls for a
+// reattach writer after the previous writer closed (epoll would busy-loop
+// on the continuous HUP).
+const stdinReattachPollInterval = 100 * time.Millisecond
+
 func (c *Copier) handleStdinEOF() stdinLoopDecision {
 	select {
 	case <-c.ctx.Done():
@@ -93,10 +114,17 @@ func (c *Copier) handleStdinEOF() stdinLoopDecision {
 			return stdinLoopStop
 		}
 
-		log.Infof("[IO] stdin EOF for %s (non-TTY attach closed stdin, keeping stdout open for output/reattach)", c.config.ContainerID)
+		// Keep the session: start -d may open and close stdin once, and
+		// `ctr task attach` reuses the same FIFOs with no second Start.
+		// Stopping here leaves attach blocked on a stdout FIFO with no writer.
+		// Clear the live-client CAS so the next writer can publish
+		// ClientAttached again. CloseIO already cleared attached; without
+		// this, auto-close would kill a second attach that never calls Start.
+		log.Infof("[IO] stdin EOF for %s (non-TTY attach closed stdin, keeping stdout open for reattach)", c.config.ContainerID)
 		c.attachClientConnected = false
 		c.stdinEOFSeen = true
-		if !c.waitForStdinOrCancel(c.stdinFIFOFD()) {
+		c.noteLiveClientGone()
+		if !c.waitForStdinReattach() {
 			return stdinLoopStop
 		}
 		return stdinLoopContinue
@@ -105,20 +133,38 @@ func (c *Copier) handleStdinEOF() stdinLoopDecision {
 	if !c.stdinEOFSeen {
 		log.Infof("[IO] stdin EOF for %s (no attach client yet, waiting)", c.config.ContainerID)
 		c.stdinEOFSeen = true
+		// start -d: StartInitialSession marked attached for nerdctl -i;
+		// no writer means that was not a live client.
+		c.publishEvent(ClientDetached, nil)
 	}
-	if !c.waitForStdinOrCancel(c.stdinFIFOFD()) {
+	if !c.waitForStdinReattach() {
 		return stdinLoopStop
 	}
 	return stdinLoopContinue
 }
 
-func (c *Copier) handleStdinEAGAIN() {
-	if !c.stdinEOFSeen {
-		return
+// waitForStdinReattach waits for a reattach writer on a timer instead of
+// epoll: after a writer opened and closed the FIFO, the read end reports
+// HUP continuously and an epoll wait returns immediately, which would busy-
+// loop at 100% CPU until a new writer connects. Polling every
+// stdinReattachPollInterval keeps the wait cheap; the caller re-reads and
+// detects actual data (EAGAIN alone is not a writer signal).
+func (c *Copier) waitForStdinReattach() bool {
+	timer := time.NewTimer(stdinReattachPollInterval)
+	defer timer.Stop()
+	select {
+	case <-c.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
-	log.Infof("[IO] stdin writer detected for %s (reattach detected)", c.config.ContainerID)
-	c.stdinEOFSeen = false
-	c.reenableStdinEpoll()
+}
+
+func (c *Copier) handleStdinEAGAIN() {
+	// No longer used for EOF-seen waiting (see waitForStdinReattach):
+	// EAGAIN after EOF does NOT mean a writer appeared — only actual data
+	// does. Kept as a no-op guard so callers cannot reintroduce the busy
+	// loop.
 }
 
 func (c *Copier) markStdinDataReceived() {
@@ -128,6 +174,7 @@ func (c *Copier) markStdinDataReceived() {
 		if !c.attachClientConnected {
 			log.Infof("[IO] Attach client connected for %s", c.config.ContainerID)
 			c.attachClientConnected = true
+			c.noteLiveClient()
 		}
 		c.reenableStdinEpoll()
 		return
@@ -136,8 +183,23 @@ func (c *Copier) markStdinDataReceived() {
 	if !c.attachClientConnected {
 		log.Infof("[IO] First data received for %s (attach client connected)", c.config.ContainerID)
 		c.attachClientConnected = true
+		c.noteLiveClient()
 		c.reenableStdinEpoll()
 	}
+}
+
+func (c *Copier) noteLiveClient() {
+	if c == nil || !c.liveClientPublished.CompareAndSwap(false, true) {
+		return
+	}
+	c.publishEvent(ClientAttached, nil)
+}
+
+func (c *Copier) noteLiveClientGone() {
+	if c == nil || !c.liveClientPublished.CompareAndSwap(true, false) {
+		return
+	}
+	c.publishEvent(ClientDetached, nil)
 }
 
 func (c *Copier) stdinFIFOFD() int {
@@ -185,24 +247,44 @@ func (c *Copier) writeTTY(data []byte) (int, error) {
 	}
 
 	written := 0
-	var singleByte [1]byte
-	for i, ch := range data {
+	for i := 0; i < len(data); {
 		select {
 		case <-c.ctx.Done():
 			return written, c.ctx.Err()
 		default:
 		}
 
-		singleByte[0] = ch
-		n, err := c.ttyIn.Write(singleByte[:])
+		// Keep CRLF atomic. A 20ms gap between CR and LF lets the guest
+		// "skip next" window expire; the delayed LF then eats the first
+		// byte of the next command (help → elp).
+		chunk := data[i : i+1]
+		if data[i] == '\r' && i+1 < len(data) && data[i+1] == '\n' {
+			chunk = data[i : i+2]
+		}
+
+		n, err := c.ttyIn.Write(chunk)
 		written += n
 		if err != nil {
+			if isEAGAIN(err) {
+				select {
+				case <-c.ctx.Done():
+					return written, c.ctx.Err()
+				case <-time.After(outputWriteRetryDelay):
+				}
+				continue
+			}
 			return written, err
 		}
 		if n == 0 {
 			return written, io.ErrShortWrite
 		}
+		if n < len(chunk) {
+			i += n
+			continue
+		}
+		i += n
 
+		ch := chunk[len(chunk)-1]
 		if lineDelay := c.lineDelayAfter(ch); lineDelay > 0 {
 			log.Tracef("[IO] TTY write line-paced for %s: delayed by %v",
 				c.config.ContainerID, lineDelay)
@@ -213,8 +295,8 @@ func (c *Copier) writeTTY(data []byte) (int, error) {
 		}
 
 		if delay > 0 {
-			log.Tracef("[IO] TTY write paced for %s: byte %d/%d delayed by %v",
-				c.config.ContainerID, i+1, len(data), delay)
+			log.Tracef("[IO] TTY write paced for %s: delayed by %v",
+				c.config.ContainerID, delay)
 			if !sleepWithContext(c.ctx.Done(), delay) {
 				return written, c.ctx.Err()
 			}

@@ -12,7 +12,7 @@ import (
 
 func TestHandleTTYReadErrorContinuesOnEAGAIN(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "tty-read-eagain"})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 
 	if got := copier.handleTTYReadError("TTY stdout", syscall.EAGAIN); got != ttyReadContinue {
 		t.Fatalf("handleTTYReadError = %v, want continue", got)
@@ -25,7 +25,7 @@ func TestHandleTTYReadErrorPublishesIOError(t *testing.T) {
 	defer bus.Close()
 	events := bus.Subscribe(IOError)
 	copier := NewCopier(Config{ContainerID: "tty-read-error", EventBus: bus})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 
 	if got := copier.handleTTYReadError("TTY stdout", expectedErr); got != ttyReadStop {
 		t.Fatalf("handleTTYReadError = %v, want stop", got)
@@ -46,7 +46,7 @@ func TestPublishTTYReadyOncePublishesSingleEvent(t *testing.T) {
 	defer bus.Close()
 	events := bus.Subscribe(TTYReady)
 	copier := NewCopier(Config{ContainerID: "tty-ready-once", EventBus: bus})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 
 	copier.publishTTYReadyOnce()
 	copier.publishTTYReadyOnce()
@@ -69,17 +69,17 @@ func TestPublishTTYReadyOncePublishesSingleEvent(t *testing.T) {
 
 func TestWaitForTTYReadStopsWhenContextCanceled(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "tty-read-canceled"})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	copier.cancel()
 
-	if copier.waitForTTYRead(ttyReadSource{fd: -1}, "test copier") {
+	if copier.waitForTTYRead(&copier.ttyWaiter, ttyReadSource{fd: -1}, "test copier") {
 		t.Fatal("waitForTTYRead = true, want false after cancellation")
 	}
 }
 
 func TestOutputWriteCanceledReportsCanceledContext(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "tty-write-canceled"})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	copier.cancel()
 
 	if !copier.outputWriteCanceled("test copier") {
@@ -89,7 +89,7 @@ func TestOutputWriteCanceledReportsCanceledContext(t *testing.T) {
 
 func TestNormalizeTTYOutputAppliesNormalizerAndEchoSuppression(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "tty-normalize", Terminal: true})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	normalizer := console.NewOutputNormalizer(console.OutputConfig{FilterNUL: true})
 	copier.trackSentCharForEcho('a')
 

@@ -9,6 +9,8 @@ import (
 
 	"micrun/internal/support/contextx"
 	"micrun/internal/support/lockutil"
+	log "micrun/internal/support/logger"
+	"micrun/internal/support/panicsafe"
 	"micrun/internal/support/timex"
 )
 
@@ -35,6 +37,15 @@ const (
 
 	// InterruptDetected is fired when the user presses Ctrl+C in a TTY session.
 	InterruptDetected
+
+	// ClientAttached is fired when a live stdin writer is present.
+	// A successful stdout write is not enough: start -d can briefly have a
+	// reader. Create-time FIFO paths alone are not a client.
+	ClientAttached
+
+	// ClientDetached is fired on create-time stdin EOF (no writer) and
+	// when a later non-TTY attach writer closes stdin.
+	ClientDetached
 )
 
 // Event represents an IO event.
@@ -75,10 +86,10 @@ func newEventBus(ctx context.Context, now timex.Clock) *EventBus {
 		cancel:      cancel,
 		now:         now,
 	}
-	go func() {
+	panicsafe.Go("io event bus auto-close", func() {
 		<-ctx.Done()
 		bus.Close()
-	}()
+	})
 	return bus
 }
 
@@ -115,18 +126,17 @@ func (b *EventBus) SubscribeContext(ctx context.Context, eventType EventType) Ev
 	}
 
 	ch := b.subscribe(eventType)
-	go func() {
+	panicsafe.Go("io event bus context unsubscribe", func() {
 		select {
 		case <-ctx.Done():
 		case <-b.ctx.Done():
 		}
 		b.unsubscribe(eventType, ch)
-	}()
+	})
 	return ch
 }
 
 func (b *EventBus) unsubscribe(eventType EventType, ch eventSubscriber) {
-	closeSubscriber := false
 	b.withLock(func() {
 		if b.closed {
 			return
@@ -144,44 +154,73 @@ func (b *EventBus) unsubscribe(eventType EventType, ch eventSubscriber) {
 			} else {
 				b.subscribers[eventType] = subscribers
 			}
-			closeSubscriber = true
+			// Close under the write lock: Publish sends under the read
+			// lock, so a send can never race this close.
+			close(ch)
 			break
 		}
 	})
-	if closeSubscriber {
-		close(ch)
-	}
 }
 
 // Publish publishes an event to all subscribers.
 func (b *EventBus) Publish(event Event) {
-	type publishSnapshot struct {
-		subscribers   []eventSubscriber
-		shouldPublish bool
-	}
-	snapshot := lockutil.WithReadLockValue(&b.mu, func() publishSnapshot {
+	// Deliver under the read lock: a send can then never race a channel
+	// close, because Close/unsubscribe close channels only under the write
+	// lock. (The previous snapshot-then-send-outside-the-lock design relied
+	// on recover to swallow send-on-closed panics — which is a data race
+	// under the Go memory model, flagged by the race detector.) Holding the
+	// read lock across a blocked control-event send cannot stall Close:
+	// Close cancels the bus context BEFORE taking the write lock, aborting
+	// any blocked sender promptly.
+	lockutil.WithReadLock(&b.mu, func() {
 		if b.closed || b.ctx.Err() != nil {
-			return publishSnapshot{}
+			return
 		}
 		event.Timestamp = timex.Now(b.now)
-		return publishSnapshot{
-			subscribers:   append([]eventSubscriber(nil), b.subscribers[event.Type]...),
-			shouldPublish: true,
+		for _, ch := range b.subscribers[event.Type] {
+			publishEvent(b.ctx, ch, event)
 		}
 	})
-	if !snapshot.shouldPublish {
-		return
-	}
+}
 
-	for _, ch := range snapshot.subscribers {
-		publishEventSafe(ch, event)
+// controlEventSendTimeout bounds a blocking control-event delivery. The
+// subscriber (handleIOEvents) drains a 16-slot buffered channel continuously;
+// if it has not consumed anything for this long it is wedged, and keeping the
+// IO copier worker blocked on the send forever (stdin/stdout pump dead, no
+// exit/detach detection) is strictly worse than dropping the event loudly.
+const controlEventSendTimeout = 5 * time.Second
+
+func isControlEvent(t EventType) bool {
+	switch t {
+	case ExitCommandDetected, StdinClosed, DetachDetected, InterruptDetected, ClientAttached, ClientDetached:
+		return true
+	default:
+		return false
 	}
 }
 
-func publishEventSafe(ch eventSubscriber, event Event) {
+func publishEvent(ctx context.Context, ch eventSubscriber, event Event) {
 	defer func() {
 		_ = recover()
 	}()
+
+	if isControlEvent(event.Type) {
+		// Control events must not be dropped under backpressure: losing
+		// ClientAttached after CloseIO leaves attached=false and can
+		// auto-close a live reattach. Block — but bounded: an unbounded
+		// send deadlocks the IO copier forever when the subscriber is
+		// wedged, and aborts on bus shutdown so Close is never held up.
+		timer := time.NewTimer(controlEventSendTimeout)
+		defer timer.Stop()
+		select {
+		case ch <- event:
+		case <-ctx.Done():
+		case <-timer.C:
+			log.Errorf("[IO] control event %v for %s dropped: subscriber did not drain for %v",
+				event.Type, event.ContainerID, controlEventSendTimeout)
+		}
+		return
+	}
 
 	select {
 	case ch <- event:
@@ -190,21 +229,29 @@ func publishEventSafe(ch eventSubscriber, event Event) {
 	}
 }
 
+// publishEventSafe is kept for tests that exercise recover-on-closed-channel.
+func publishEventSafe(ch eventSubscriber, event Event) {
+	publishEvent(context.Background(), ch, event)
+}
+
 // Close closes the event bus and all subscriber channels.
 func (b *EventBus) Close() {
-	var subs []eventSubscriber
+	// Cancel first: a Publish blocked in a control-event send under the
+	// read lock aborts via ctx.Done and releases the lock, so the write
+	// lock below cannot deadlock behind it.
+	b.cancel()
 	b.withLock(func() {
 		if b.closed {
 			return
 		}
 		b.closed = true
+		// Close channels under the write lock so concurrent Publish (which
+		// sends under the read lock) cannot race the close.
 		for _, chs := range b.subscribers {
-			subs = append(subs, chs...)
+			for _, ch := range chs {
+				close(ch)
+			}
 		}
 		b.subscribers = make(map[EventType][]eventSubscriber)
 	})
-	for _, ch := range subs {
-		close(ch)
-	}
-	b.cancel()
 }

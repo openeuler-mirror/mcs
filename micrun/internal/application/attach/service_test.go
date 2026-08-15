@@ -267,6 +267,8 @@ type fakeEventStream struct {
 	events         chan ports.IOEvent
 }
 
+func (f *fakeEventStream) Current() bool { return true }
+
 func (f *fakeEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	f.subscribeCount += len(eventTypes)
 	if f.events != nil {
@@ -278,6 +280,8 @@ func (f *fakeEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.I
 
 type closedEventStream struct{}
 
+func (closedEventStream) Current() bool { return true }
+
 func (closedEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	ch := make(chan ports.IOEvent)
 	close(ch)
@@ -285,6 +289,8 @@ func (closedEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IO
 }
 
 type nilSubscriberEventStream struct{}
+
+func (nilSubscriberEventStream) Current() bool { return true }
 
 func (nilSubscriberEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	return nil
@@ -410,12 +416,12 @@ func TestHandleIOEventsAcceptsNilContext(t *testing.T) {
 	close(events)
 	svc := NewService(nil)
 
-	svc.handleIOEvents(nil, &fakeRuntime{}, &fakeTask{id: "nil-context-events"}, events)
+	svc.handleIOEvents(nil, &fakeRuntime{}, &fakeTask{id: "nil-context-events"}, events, nil)
 }
 
 func TestHandleIOEventsRejectsNilSubscriber(t *testing.T) {
 	svc := NewService(nil)
-	svc.handleIOEvents(context.Background(), &fakeRuntime{}, &fakeTask{id: "nil-subscriber"}, nil)
+	svc.handleIOEvents(context.Background(), &fakeRuntime{}, &fakeTask{id: "nil-subscriber"}, nil, nil)
 }
 
 func TestIOEventPumpStopsOnCanceledContext(t *testing.T) {
@@ -673,7 +679,7 @@ func TestHandleDetachStopsManagerOutsideRuntimeLock(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventDetach,
 		ContainerID: taskHandle.id,
-	})
+	}, nil)
 
 	if !ioMgr.stopWithoutClosingCalled {
 		t.Fatal("expected StopWithoutClosingFIFOs to be called")
@@ -694,7 +700,7 @@ func TestHandleIOEventIgnoresOtherContainers(t *testing.T) {
 	svc.handleIOEvent(&fakeRuntime{}, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: "container-b",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_RUNNING {
 		t.Fatalf("status = %v, want running", taskHandle.status)
@@ -714,7 +720,7 @@ func TestHandleIOEventIgnoresEmptyContainerID(t *testing.T) {
 
 	svc.handleIOEvent(&fakeRuntime{}, taskHandle, ports.IOEvent{
 		Type: ports.IOEventExitCommand,
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_RUNNING {
 		t.Fatalf("status = %v, want running", taskHandle.status)
@@ -728,7 +734,7 @@ func TestHandleIOEventRejectsNilTask(t *testing.T) {
 	svc := NewService(nil)
 	var taskHandle *fakeTask
 
-	svc.handleIOEvent(nil, taskHandle, ports.IOEvent{Type: ports.IOEventError})
+	svc.handleIOEvent(nil, taskHandle, ports.IOEvent{Type: ports.IOEventError}, nil)
 }
 
 func TestResolveIOEventPolicyRejectsNilService(t *testing.T) {
@@ -777,7 +783,7 @@ func TestHandleIOEventsRejectsNilTask(t *testing.T) {
 	svc := NewService(nil)
 	var taskHandle *fakeTask
 
-	svc.handleIOEvents(context.Background(), &fakeRuntime{}, taskHandle, events)
+	svc.handleIOEvents(context.Background(), &fakeRuntime{}, taskHandle, events, nil)
 }
 
 func TestHandleIOEventUsesInjectedPolicySet(t *testing.T) {
@@ -793,7 +799,7 @@ func TestHandleIOEventUsesInjectedPolicySet(t *testing.T) {
 	svc.handleIOEvent(&fakeRuntime{}, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: "custom-policy",
-	})
+	}, nil)
 
 	if !handled {
 		t.Fatal("expected custom IO event handler to be invoked")
@@ -886,7 +892,7 @@ func TestHandleIOEventStopTaskWithNilRuntime(t *testing.T) {
 	svc.handleIOEvent(nil, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventInterrupt,
 		ContainerID: "stop-no-runtime",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -1038,6 +1044,7 @@ func TestClientAttachedEventSetsAttached(t *testing.T) {
 		taskHandle,
 		ports.IOEvent{Type: ports.IOEventClientAttached, ContainerID: taskHandle.id},
 		ioEventPlan{},
+		nil,
 	))
 	if !taskHandle.IsAttached() {
 		t.Fatal("ClientAttached should mark a live FIFO client attached")
@@ -1049,6 +1056,7 @@ func TestClientAttachedEventSetsAttached(t *testing.T) {
 		taskHandle,
 		ports.IOEvent{Type: ports.IOEventClientDetached, ContainerID: taskHandle.id},
 		ioEventPlan{},
+		nil,
 	))
 	if taskHandle.IsAttached() {
 		t.Fatal("ClientDetached should clear attached so start -d can auto-close")
@@ -1060,6 +1068,7 @@ func TestClientAttachedEventSetsAttached(t *testing.T) {
 		taskHandle,
 		ports.IOEvent{Type: ports.IOEventClientAttached, ContainerID: taskHandle.id},
 		ioEventPlan{},
+		nil,
 	))
 	if !taskHandle.IsAttached() {
 		t.Fatal("ClientAttached should restore attached after detach")
@@ -1163,7 +1172,7 @@ func TestHandleExitCommandStopsSessionAndMarksExit(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: "exit-test",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -1201,7 +1210,7 @@ func TestHandleExitCommandStopsManagerOutsideRuntimeLock(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: taskHandle.id,
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -1238,7 +1247,7 @@ func TestHandleInterruptStopsSessionAndMarksSignalExit(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventInterrupt,
 		ContainerID: "interrupt-test",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -1390,7 +1399,7 @@ func TestStopFromIOEventDoesNotOverwriteStoppedTaskExitInfo(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventInterrupt,
 		ContainerID: "already-stopped",
-	})
+	}, nil)
 
 	if taskHandle.exitStatus != 123 {
 		t.Fatalf("exit status = %d, want preserved 123", taskHandle.exitStatus)
@@ -1682,4 +1691,100 @@ func TestStartInitialSessionRequiresFactoryOutputs(t *testing.T) {
 			t.Fatal("expected missing event stream error")
 		}
 	})
+}
+
+type staleEventStream struct {
+	events chan ports.IOEvent
+}
+
+func (s *staleEventStream) Current() bool { return false }
+
+func (s *staleEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
+	return s.events
+}
+
+// Events queued on a pre-restart event bus must not be acted on: a stale
+// detach/stop event would tear down the freshly restarted IO session (and,
+// via stopFromIOEvent, the whole task). When the subscription no longer
+// tracks the session's active bus the handler must drop the events and exit.
+func TestHandleIOEventsDropsEventsFromStaleStream(t *testing.T) {
+	events := make(chan ports.IOEvent, 2)
+	events <- ports.IOEvent{Type: ports.IOEventDetach, ContainerID: "task-stale"}
+	events <- ports.IOEvent{Type: ports.IOEventDetach, ContainerID: "task-stale"}
+
+	task := &fakeTask{id: "task-stale"}
+	task.SetAttached(true)
+
+	svc := NewService(nil)
+	done := make(chan struct{})
+	go func() {
+		svc.handleIOEvents(context.Background(), &fakeRuntime{}, task, events, &staleEventStream{events: events})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIOEvents did not return for a stale stream")
+	}
+	// A processed detach event would flip attached to false (and cascade into
+	// stopping the session). It must stay attached: the events belong to a
+	// pre-restart bus.
+	if previous := task.SetAttached(true); !previous {
+		t.Fatal("stale detach event was acted on; a freshly restarted session would be torn down")
+	}
+}
+
+// lateFlipEventStream models a bus that gets superseded between the
+// handler's stale check and the task-locked mutation: Current() is true for
+// the pre-dispatch checks but flips false by the time the mutation runs
+// under the task lock (an EnsureAttach restart landed in between).
+type lateFlipEventStream struct {
+	staleEventStream
+	staysFreshFor int
+	calls         int
+}
+
+func (s *lateFlipEventStream) Current() bool {
+	s.calls++
+	return s.calls <= s.staysFreshFor
+}
+
+// TestHandleIOEventDetachRechecksStalenessInsideTaskLock guards the
+// second stale check: the unlocked pre-checks (pump dispatch and the
+// handler's own check) race an EnsureAttach restart that swaps the event
+// bus. If the re-check does not happen while holding the task lock, a
+// detach queued on the old bus stops the freshly restarted session
+// (SetAttached(false) then preserves-stops the new copier) and auto-close
+// eventually kills a task that has a live client attached.
+func TestHandleIOEventDetachRechecksStalenessInsideTaskLock(t *testing.T) {
+	events := make(chan ports.IOEvent, 1)
+	events <- ports.IOEvent{Type: ports.IOEventDetach, ContainerID: "task-late-flip"}
+	close(events) // let the pump exit after draining instead of waiting for a next event
+
+	task := &fakeTask{id: "task-late-flip"}
+	task.SetAttached(true)
+
+	svc := NewService(nil)
+	done := make(chan struct{})
+	go func() {
+		svc.handleIOEvents(context.Background(), &fakeRuntime{}, task, events, &lateFlipEventStream{
+			staleEventStream: staleEventStream{events: events},
+			// fresh at the pump dispatch and the handler's unlocked pre-check,
+			// superseded by the time the mutation re-checks under the task lock
+			staysFreshFor: 2,
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIOEvents did not return")
+	}
+	// The detach arrived on a bus that was superseded before the mutation:
+	// the task must stay attached and the (restarted) session untouched.
+	if previous := task.SetAttached(true); !previous {
+		t.Fatal("detach from a superseded bus was acted on; the freshly restarted session would be torn down")
+	}
 }

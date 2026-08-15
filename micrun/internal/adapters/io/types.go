@@ -89,6 +89,12 @@ func normalizeConfig(config Config) Config {
 	if config.TTYWriteLineDelay == 0 {
 		config.TTYWriteLineDelay = defaults.TTYWriteLineDelay
 	}
+	// Per-byte pacing (~50 B/s) is for TTY paste. Piped non-TTY input
+	// would crawl under it. Keep the line delay so "echo help; echo uname"
+	// stays two commands (otherwise the guest sees puname).
+	if !config.Terminal && config.TTYWriteDelay == defaults.TTYWriteDelay {
+		config.TTYWriteDelay = 0
+	}
 	return config
 }
 

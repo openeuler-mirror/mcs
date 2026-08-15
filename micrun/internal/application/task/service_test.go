@@ -277,6 +277,8 @@ func (f *fakeTaskIOManager) EventStream() ports.IOEventStream { return &fakeTask
 
 type fakeTaskEventStream struct{}
 
+func (f *fakeTaskEventStream) Current() bool { return true }
+
 func (f *fakeTaskEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	return make(chan ports.IOEvent)
 }

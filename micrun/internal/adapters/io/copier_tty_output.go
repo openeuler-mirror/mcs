@@ -22,6 +22,9 @@ func (c *Copier) handleTTYReadError(source string, err error) ttyReadDecision {
 	if isEAGAIN(err) {
 		return ttyReadContinue
 	}
+	if isEINTR(err) {
+		return ttyReadContinue
+	}
 	log.Errorf("[IO] %s read error for %s: %v", source, c.config.ContainerID, err)
 	c.publishEvent(IOError, err)
 	return ttyReadStop
@@ -35,7 +38,7 @@ func (c *Copier) publishTTYReadyOnce() {
 	c.publishEvent(TTYReady, nil)
 }
 
-func (c *Copier) waitForTTYRead(source ttyReadSource, loopName string) bool {
+func (c *Copier) waitForTTYRead(waiter *epollWaiter, source ttyReadSource, loopName string) bool {
 	select {
 	case <-c.ctx.Done():
 		log.Infof("[IO] %s canceled for %s", loopName, c.config.ContainerID)
@@ -43,7 +46,7 @@ func (c *Copier) waitForTTYRead(source ttyReadSource, loopName string) bool {
 	default:
 	}
 
-	if !c.waitForData(source.fd) {
+	if !c.waitForData(waiter, source.fd) {
 		log.Infof("[IO] %s: waitForData returned false (context canceled) for %s", loopName, c.config.ContainerID)
 		return false
 	}
@@ -66,4 +69,20 @@ func (c *Copier) normalizeTTYOutput(normalizer *console.OutputNormalizer, data [
 		return c.suppressRTOSEcho(normalized)
 	}
 	return normalized
+}
+
+// flushNormalizer drains any byte the normalizer is holding (e.g. a trailing
+// bare CR) and writes it to whichever FIFO the loop was feeding. Called on
+// loop exit so the final partial byte is not lost.
+func (c *Copier) flushNormalizer(config ttyOutputLoopConfig) {
+	if config.normalizer == nil {
+		return
+	}
+	remaining := config.normalizer.Flush()
+	if len(remaining) == 0 {
+		return
+	}
+	if config.writeData != nil {
+		config.writeData(remaining)
+	}
 }

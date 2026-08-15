@@ -270,7 +270,7 @@ func TestMergeCloseErrorsEmpty(t *testing.T) {
 
 func TestBeginStopIsIdempotent(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "test-stop-idempotent"})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 
 	if !copier.beginStop("test stop") {
 		t.Fatal("expected first beginStop to start stopping")
@@ -288,7 +288,7 @@ func TestBeginStopIsIdempotent(t *testing.T) {
 
 func TestNewCopierGivesCancelPipeOwnershipToSingleWaiter(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "test-cancel-owner"})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	if copier.ttyWaiter.cancelPipeR < 0 {
 		t.Skip("cancel pipe unavailable")
 	}
@@ -310,7 +310,7 @@ func TestNewCopierGivesCancelPipeOwnershipToSingleWaiter(t *testing.T) {
 func TestNewCopierDerivesLifecycleFromConfigContext(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	copier := NewCopier(Config{Context: parent, ContainerID: "test-parent-context"})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 
 	cancel()
 
@@ -925,6 +925,9 @@ func TestIOErrorClassifiersUseWrappedSentinels(t *testing.T) {
 	if !isBrokenPipe(fmt.Errorf("wrapped: %w", syscall.EPIPE)) {
 		t.Fatal("isBrokenPipe(wrapped EPIPE) returned false")
 	}
+	if !isENXIO(fmt.Errorf("wrapped: %w", syscall.ENXIO)) {
+		t.Fatal("isENXIO(wrapped ENXIO) returned false")
+	}
 }
 
 func TestShouldMarkPostInputOutput(t *testing.T) {
@@ -1068,8 +1071,31 @@ func TestCopyStdinNonTTYUsesPacedCRLFWrite(t *testing.T) {
 	if got := tty.String(); got != want {
 		t.Fatalf("TTY received %q, want %q", got, want)
 	}
-	if len(tty.writes) != len(want) {
-		t.Fatalf("TTY received %d write calls, want %d", len(tty.writes), len(want))
+	if len(tty.writes) != 11 {
+		t.Fatalf("TTY received %d write calls, want 11 (CRLF atomic)", len(tty.writes))
+	}
+	if got := string(tty.writes[4]); got != "\r\n" {
+		t.Fatalf("CRLF write = %q, want atomic CRLF", got)
+	}
+}
+
+func TestWriteTTYKeepsCRLFAtomic(t *testing.T) {
+	tty := &recordingTTYWriter{}
+	copier := NewCopier(Config{
+		ContainerID:       "test-crlf-atomic",
+		TTYWriteDelay:     -1,
+		TTYWriteLineDelay: -1,
+	})
+	copier.SetTTYs(tty, nil, nil)
+
+	if _, err := copier.writeTTY([]byte("x\r\ny")); err != nil {
+		t.Fatalf("writeTTY: %v", err)
+	}
+	if len(tty.writes) != 3 {
+		t.Fatalf("writes = %d, want 3 (x, CRLF, y)", len(tty.writes))
+	}
+	if got := string(tty.writes[1]); got != "\r\n" {
+		t.Fatalf("middle write = %q, want CRLF", got)
 	}
 }
 
