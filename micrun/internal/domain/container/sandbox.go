@@ -89,7 +89,6 @@ type Sandbox struct {
 	// change itself. Without this, an in-flight StoreSandbox from a
 	// concurrent State probe can resurrect a deleted container.
 	persistMu sync.Mutex
-	wg        *sync.WaitGroup
 }
 
 func (s *Sandbox) stateRepositoryChecked() (stateRepository, error) {

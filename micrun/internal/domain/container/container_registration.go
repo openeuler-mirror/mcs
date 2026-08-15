@@ -7,6 +7,7 @@ import (
 	defs "micrun/internal/support/definitions"
 	er "micrun/internal/support/errors"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/perf"
 )
 
 func (c *Container) ensureClientPresence() (StateString, error) {
@@ -88,10 +89,12 @@ func (c *Container) registerClient(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	perfT := perf.Start(c.clock(), "register_client", c.id)
 	if err := deps.CreateGuest(ctx, conf); err != nil {
 		log.Errorf("registerClient: CreateGuest failed: %v", err)
 		return err
 	}
+	perfT.Stage("create_guest")
 
 	// Read mutable config fields under containersLock to avoid racing with a
 	// concurrent UpdateContainer writing Resources.Memory.Limit.
@@ -112,6 +115,7 @@ func (c *Container) registerClient(ctx context.Context) error {
 	}
 	c.guestExec.RecordMemoryState(initialMem, recordThreshold)
 
+	perfT.Stage("initial_config")
 	if err := c.setContainerState(ctx, StateReady); err != nil {
 		// The Xen domain was already created; roll it back so a retry does not
 		// find a stale domain that blocks re-registration. Detach from a

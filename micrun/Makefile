@@ -111,6 +111,13 @@ lint:
 		exit 1; \
 	fi
 	go vet $(GO_TEST_FLAGS) ./...
+	@echo "🔍 Lint: high-risk pattern gate (reliability.md patterns P1/P2)..."
+	@bash scripts/lint_patterns.sh
+
+# Pattern gate rationale: every rule below maps to a defect class that
+# shipped through review and only surfaced in later scan rounds (see
+# docs/internals/reliability.md). Mechanical enforcement replaces discipline.
+
 
 # Local CI gate: format check, vet, build, unit tests, race detector.
 ci: lint build test test-race

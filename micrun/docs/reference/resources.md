@@ -133,11 +133,11 @@ Container memory reservation      <====> RTOS Client memory min
 
 ### 4.2 权重转换公式
 
-$$
-W(S) = \max{1, \min{\frac{S}{R}, 65535}}; \quad R=4
-$$
+```text
+weight = max(1, min(shares / 4, 65535))
+```
 
-其中 S 为 cgroup cpu.shares 值 (2-262144)
+其中 shares 为 cgroup `cpu.shares` 值（2-262144），与 1.3 节 CPU Shares 的转换公式一致。
 
 ## 5. 配置优先级
 

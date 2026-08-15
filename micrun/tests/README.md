@@ -1,5 +1,10 @@
 # MicRun 测试
 
+> 已验证环境：宿主 `qemu-system-aarch64` 8.2.x（`-machine virt,gic-version=3`
+> 的 aarch64 系统仿真）；显著更旧的版本存在影响 Xen 的 bug，起机异常时先查
+> `qemu-system-aarch64 --version`。
+
+
 本目录提供 MicRun 的稳定测试入口，并把重复的远端访问、QEMU 启动和日志处理
 收敛到 `tests/common`。
 

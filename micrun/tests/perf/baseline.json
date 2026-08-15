@@ -1,0 +1,100 @@
+{
+ "_doc": "Performance baseline for tests/perf/measure.sh. Compare policy: median drift >25% FAIL, >10% WARN (tests/perf/compare.sh). Remeasure after changes to lifecycle/IO/micad paths and before releases; record the new baseline with its rootfs/QEMU fingerprint.",
+ "_fingerprint": {
+  "rootfs": "openeuler-image-qemu-aarch64-20260817180724",
+  "mcs_pin": "f0a1ccd (+ workspace perf instrumentation, support/perf)",
+  "qemu": "host qemu-system-aarch64, -machine virt,gic-version=3, 4 vCPU/4G, tap+usernet",
+  "guest_load": "7 valid rounds (8 attempted, 1 cold-start ctr run failure)",
+  "date": "2026-08-18"
+ },
+ "_metric_semantics": {
+  "create_running": "ctr run --detach issued until ctr tasks ls reports RUNNING (1s poll)",
+  "attach": "attach session window: printf help | timeout 3 ctr task attach; healthy ~= window+overhead (~3.8s); a broken attach path closes early (<1s). First-response latency measured separately (timestamp method): median 0.37s, see docs/internals/testing.md 1.6",
+  "kill_gone": "ctr task kill -9 until xl list shows no domain (1s poll)"
+ },
+ "wall": {
+  "create_running": {
+   "median": 7.804,
+   "max": 8.474,
+   "n": 7
+  },
+  "attach": {
+   "median": 3.804,
+   "max": 3.852,
+   "n": 7
+  },
+  "kill_gone": {
+   "median": 0.375,
+   "max": 0.424,
+   "n": 7
+  }
+ },
+ "stages": [
+  "1 [PERF] dial_tty:total 3.255263869s id=perf-6\" namespace=default",
+  "1 [PERF] dial_tty:total 3.25594072s id=perf-1\" namespace=default",
+  "1 [PERF] dial_tty:total 3.304332921s id=perf-2\" namespace=default",
+  "1 [PERF] dial_tty:total 3.305363339s id=perf-3\" namespace=default",
+  "1 [PERF] dial_tty:total 3.305923239s id=perf-7\" namespace=default",
+  "1 [PERF] dial_tty:total 3.30820167s id=perf-4\" namespace=default",
+  "1 [PERF] dial_tty:total 3.354430459s id=perf-8\" namespace=default",
+  "1 [PERF] register_client:create_guest 12.663229ms id=perf-1\" namespace=default",
+  "1 [PERF] register_client:create_guest 3.640245ms id=perf-7\" namespace=default",
+  "1 [PERF] register_client:create_guest 4.362203ms id=perf-8\" namespace=default",
+  "1 [PERF] register_client:create_guest 4.44979ms id=perf-2\" namespace=default",
+  "1 [PERF] register_client:create_guest 5.336728ms id=perf-3\" namespace=default",
+  "1 [PERF] register_client:create_guest 6.76417ms id=perf-4\" namespace=default",
+  "1 [PERF] register_client:create_guest 7.685934ms id=perf-6\" namespace=default",
+  "1 [PERF] register_client:initial_config 1.901351ms id=perf-4\" namespace=default",
+  "1 [PERF] register_client:initial_config 2.106139ms id=perf-3\" namespace=default",
+  "1 [PERF] register_client:initial_config 3.605357ms id=perf-1\" namespace=default",
+  "1 [PERF] register_client:initial_config 450.413µs id=perf-8\" namespace=default",
+  "1 [PERF] register_client:initial_config 707.651µs id=perf-6\" namespace=default",
+  "1 [PERF] register_client:initial_config 744.094µs id=perf-7\" namespace=default",
+  "1 [PERF] register_client:initial_config 746.602µs id=perf-2\" namespace=default",
+  "1 [PERF] start_client:cpu_settings 132.996503ms id=perf-4\" namespace=default",
+  "1 [PERF] start_client:cpu_settings 135.683287ms id=perf-3\" namespace=default",
+  "1 [PERF] start_client:cpu_settings 145.892272ms id=perf-7\" namespace=default",
+  "1 [PERF] start_client:cpu_settings 146.817306ms id=perf-1\" namespace=default",
+  "1 [PERF] start_client:cpu_settings 151.570406ms id=perf-6\" namespace=default",
+  "1 [PERF] start_client:cpu_settings 157.770056ms id=perf-2\" namespace=default",
+  "1 [PERF] start_client:cpu_settings 165.91955ms id=perf-8\" namespace=default",
+  "1 [PERF] start_client:guest_start 2.186238889s id=perf-8\" namespace=default",
+  "1 [PERF] start_client:guest_start 2.226392724s id=perf-3\" namespace=default",
+  "1 [PERF] start_client:guest_start 2.243113137s id=perf-6\" namespace=default",
+  "1 [PERF] start_client:guest_start 2.252459123s id=perf-4\" namespace=default",
+  "1 [PERF] start_client:guest_start 2.267469869s id=perf-7\" namespace=default",
+  "1 [PERF] start_client:guest_start 2.320850692s id=perf-2\" namespace=default",
+  "1 [PERF] start_client:guest_start 2.33668304s id=perf-1\" namespace=default",
+  "1 [PERF] start_client:memory_setup 2.162425ms id=perf-8\" namespace=default",
+  "1 [PERF] start_client:memory_setup 348.302µs id=perf-7\" namespace=default",
+  "1 [PERF] start_client:memory_setup 405.55µs id=perf-3\" namespace=default",
+  "1 [PERF] start_client:memory_setup 578.887µs id=perf-6\" namespace=default",
+  "1 [PERF] start_client:memory_setup 588.83µs id=perf-2\" namespace=default",
+  "1 [PERF] start_client:memory_setup 771.345µs id=perf-1\" namespace=default",
+  "1 [PERF] start_client:memory_setup 783.795µs id=perf-4\" namespace=default",
+  "1 [PERF] start_client:total 2.35514473s id=perf-8\" namespace=default",
+  "1 [PERF] start_client:total 2.363084804s id=perf-3\" namespace=default",
+  "1 [PERF] start_client:total 2.387511952s id=perf-4\" namespace=default",
+  "1 [PERF] start_client:total 2.396149229s id=perf-6\" namespace=default",
+  "1 [PERF] start_client:total 2.413885337s id=perf-7\" namespace=default",
+  "1 [PERF] start_client:total 2.479440715s id=perf-2\" namespace=default",
+  "1 [PERF] start_client:total 2.485900131s id=perf-1\" namespace=default",
+  "1 [PERF] stop_sandbox:total 105.889056ms id=perf-8\" namespace=default",
+  "1 [PERF] stop_sandbox:total 109.126586ms id=perf-6\" namespace=default",
+  "1 [PERF] stop_sandbox:total 119.04366ms id=perf-2\" namespace=default",
+  "1 [PERF] stop_sandbox:total 288.592601ms id=perf-4\" namespace=default",
+  "1 [PERF] stop_sandbox:total 291.764159ms id=perf-6\" namespace=default",
+  "1 [PERF] stop_sandbox:total 292.675673ms id=perf-2\" namespace=default",
+  "1 [PERF] stop_sandbox:total 293.191974ms id=perf-8\" namespace=default",
+  "1 [PERF] stop_sandbox:total 298.792136ms id=perf-3\" namespace=default",
+  "1 [PERF] stop_sandbox:total 327.367871ms id=perf-1\" namespace=default",
+  "1 [PERF] stop_sandbox:total 334.236428ms id=perf-7\" namespace=default",
+  "1 [PERF] stop_sandbox:total 54.993468ms id=perf-1\" namespace=default",
+  "1 [PERF] stop_sandbox:total 90.370612ms id=perf-4\" namespace=default",
+  "1 [PERF] stop_sandbox:total 99.50432ms id=perf-7\" namespace=default",
+  "1 [PERF] stop_sandbox:total 99.893712ms id=perf-3\" namespace=default"
+ ],
+ "failed_rounds": [
+  "perf-5"
+ ]
+}

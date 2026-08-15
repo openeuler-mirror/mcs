@@ -8,6 +8,7 @@ import (
 	"micrun/internal/support/contextx"
 	er "micrun/internal/support/errors"
 	"micrun/internal/support/lockutil"
+	"micrun/internal/support/perf"
 	"micrun/internal/support/validation"
 
 	taskapi "github.com/containerd/containerd/api/types/task"
@@ -161,9 +162,11 @@ func stopSandboxOnly(ctx context.Context, sandbox ports.Sandbox, operation strin
 	// Kill/Delete RPC cancellation must not abort domain teardown mid-way
 	// (micaCtl returns ctx.Err() immediately). Mirror lifecycle.task_stop.
 	ctx = context.WithoutCancel(ctx)
+	perfT := perf.Start(nil, "stop_sandbox", sandbox.SandboxID())
 	if err := sandbox.Stop(ctx, true); err != nil {
 		return fmt.Errorf("stop sandbox %s %s: %w", sandbox.SandboxID(), operation, err)
 	}
+	perfT.Total()
 	return nil
 }
 

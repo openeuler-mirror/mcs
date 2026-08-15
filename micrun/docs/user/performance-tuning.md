@@ -15,7 +15,6 @@
 metadata:
   annotations:
     org.openeuler.micrun.runtime.enable_vcpus_pinning: "true"
-    org.openeuler.micrun.runtime.vcpu_pcpu_binding: "true"
 spec:
   containers:
   - resources:
@@ -71,7 +70,7 @@ metadata:
 **配置**：
 ```ini
 [Resource]
-hugepage_support = true
+hugepage_enable = true
 ```
 
 **前提条件**：
@@ -90,7 +89,7 @@ echo 1024 > /proc/sys/vm/nr_hugepages
 **配置**：
 ```ini
 [Resource]
-static_resource_management = true
+static_resource = true
 ```
 
 **注解方式**：
@@ -114,7 +113,10 @@ metadata:
 
 ### FIFO 大小调整
 
-调整管道大小可以提高吞吐量：
+> **注意**：`org.openeuler.micrun.runtime.pipe_size` 目前仅有注解常量与文档，
+> runtime/IO 路径尚未读取该值，设置后不会生效。
+
+调整管道大小可以提高吞吐量（目标行为）：
 
 ```yaml
 metadata:
@@ -138,7 +140,10 @@ top -p $(pgrep containerd-shim-mica-v2)
 
 ### 禁用网络命名空间
 
-如果不需要网络隔离，禁用网络命名空间可以减少开销：
+> **注意**：`org.openeuler.micrun.runtime.disable_new_netns` 目前尚未接线，
+> Create 仍会无条件创建 netns；设置该注解不会跳过 `setupNetNS`。
+
+如果不需要网络隔离，禁用网络命名空间可以减少开销（目标行为）：
 
 ```yaml
 metadata:
@@ -185,7 +190,6 @@ kind: Pod
 metadata:
   annotations:
     org.openeuler.micrun.runtime.enable_vcpus_pinning: "true"
-    org.openeuler.micrun.runtime.vcpu_pcpu_binding: "true"
     org.openeuler.micrun.runtime.static_resource: "true"
     org.openeuler.micrun.container.min_memory_mb: "64"
 spec:
@@ -277,8 +281,11 @@ strace -p $(pgrep containerd-shim-mica-v2)
 |------|-----|------|
 | IO 延迟 | <100ms | epoll 超时设置 |
 | 空闲 CPU | ~0% | epoll 零 CPU 等待 |
-| 启动时间 | <1s | 容器启动到 Ready |
+| 端到端启动（Create→RUNNING） | 中位 8.21s | QEMU 实测；~93% 耗时在 ctr run 返回前（镜像解包+domain 构建） |
 | 内存开销 | <10MB | shim 进程常驻内存 |
+
+端到端耗时的完整实测基线（attach 首响应、删除收敛、阶段节点分解与测量方法）见
+[测试体系 §1.6](../internals/testing.md#16-端到端性能基线)。
 
 ### 优化检查清单
 

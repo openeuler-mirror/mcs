@@ -69,10 +69,10 @@ internal/adapters
 
 实现主体位于：
 
-- [sandbox.go](internal/domain/container/sandbox.go)
-- [sandbox_factory.go](internal/domain/container/sandbox_factory.go)
-- [sandbox_loader.go](internal/domain/container/sandbox_loader.go)
-- [sandbox_lifecycle.go](internal/domain/container/sandbox_lifecycle.go)
+- `sandbox.go`
+- `sandbox_factory.go`
+- `sandbox_loader.go`
+- `sandbox_lifecycle.go`
 
 ## 3. Ports
 
@@ -161,7 +161,7 @@ application/task 的方法不直接要求完整 `TaskRuntime`，而是按用例�
 - `TaskIORuntime`
 
 `TaskLifecycleRuntime` 和 `TaskAttachRuntime` 仍分别服务于 lifecycle/attach 子应用。
-metrics 采集已经回收到 `transport/shimv2` 内部，不再属于 application/task 的 runtime port。
+metrics 采集位于 `transport/shimv2` 内部，不属于 application/task 的 runtime port。
 在 `taskManager` 内部，transport 读写视图继续按用途拆分为 process、metrics、task presence、events、shutdown。这样 `Stats`、`Pids`/`Connect`、`Shutdown` 和事件发布不会共享一个全能 transport runtime 接口。
 
 实现位置：
@@ -208,7 +208,7 @@ metrics 采集已经回收到 `transport/shimv2` 内部，不再属于 applicati
 ### 4.1 `task.Service`
 
 定义位置：
-[service.go](internal/application/task/service.go)
+`internal/application/task/service.go`
 
 职责：
 
@@ -218,7 +218,7 @@ metrics 采集已经回收到 `transport/shimv2` 内部，不再属于 applicati
 ### 4.2 `attach.Service`
 
 定义位置：
-[service.go](internal/application/attach/service.go)
+`internal/application/attach/service.go`
 
 职责：
 
@@ -230,7 +230,7 @@ metrics 采集已经回收到 `transport/shimv2` 内部，不再属于 applicati
 ### 4.3 `lifecycle.Service`
 
 定义位置：
-[service.go](internal/application/lifecycle/service.go)
+`internal/application/lifecycle/service.go`
 
 职责：
 
@@ -240,7 +240,7 @@ metrics 采集已经回收到 `transport/shimv2` 内部，不再属于 applicati
 ### 4.4 `recovery.Service`
 
 定义位置：
-[service.go](internal/application/recovery/service.go)
+`internal/application/recovery/service.go`
 
 职责：
 
@@ -252,7 +252,7 @@ metrics 采集已经回收到 `transport/shimv2` 内部，不再属于 applicati
 ### 5.1 Shim 启动
 
 入口：
-[shim_bootstrap.go](internal/transport/shimv2/shim_bootstrap.go)
+`shim_bootstrap.go`
 
 关键步骤：
 
@@ -264,9 +264,9 @@ metrics 采集已经回收到 `transport/shimv2` 内部，不再属于 applicati
 
 相关代码：
 
-- [platform_bindings.go](internal/transport/shimv2/platform_bindings.go)
-- [container_dependencies.go](internal/transport/shimv2/container_dependencies.go)
-- [runtime_dependencies.go](internal/transport/shimv2/runtime_dependencies.go)
+- `platform_bindings.go`
+- `container_dependencies.go`
+- `runtime_dependencies.go`
 
 ### 5.2 创建链路
 
@@ -284,10 +284,10 @@ Create RPC
 
 代码落点：
 
-- [create_plan.go](internal/transport/shimv2/create_plan.go)
-- [runtime_config_helpers.go](internal/transport/shimv2/runtime_config_helpers.go)
-- [create_sandbox_runtime.go](internal/transport/shimv2/create_sandbox_runtime.go)
-- [create_pod_runtime.go](internal/transport/shimv2/create_pod_runtime.go)
+- `create_plan.go`
+- `runtime_config_helpers.go`
+- `create_sandbox_runtime.go`
+- `create_pod_runtime.go`
 
 ### 5.3 恢复链路
 
@@ -304,16 +304,16 @@ shim daemon start
 
 代码落点：
 
-- [recovery_backend.go](internal/transport/shimv2/recovery_backend.go)
-- [sandbox_loader.go](internal/domain/container/sandbox_loader.go)
-- [state_repository.go](internal/domain/container/state_repository.go)
+- `recovery_backend.go`
+- `sandbox_loader.go`
+- `state_repository.go`
 
 ## 6. 配置与资源相关接口
 
 ### 6.1 `RuntimeConfig`
 
 定义位置：
-[runtime_setup.go](internal/adapters/config/oci/runtime_setup.go)
+`internal/adapters/config/oci/runtime_setup.go`
 
 作用：
 
@@ -324,7 +324,7 @@ shim daemon start
 ### 6.2 `HostProfile`
 
 定义位置：
-[host_profile.go](internal/adapters/config/oci/host_profile.go)
+`internal/adapters/config/oci/host_profile.go`
 
 作用：
 
@@ -335,30 +335,27 @@ shim daemon start
 ### 6.3 `ResourcePolicy`
 
 定义位置：
-[deps.go](internal/domain/container/deps.go)
+`internal/domain/container/deps.go`
 
 作用：
 
 - 从 `Dependencies` 中抽取资源规划和资源校验所需能力
 - 从 `shimv2` 显式传到 `oci` 配置解析链
-- `PlanEssentialRes` 接收 `*specs.Spec`，资源规划边界不再使用 `any` 后做运行时类型断言
+- `PlanEssentialRes` 接收 `*specs.Spec`，资源规划边界不使用 `any` 后做运行时类型断言
 
 ## 7. 依赖注入现状
 
-当前所有创建和恢复链路已通过显式注入完成：
+当前所有创建和恢复链路通过显式注入完成：
 
 - `containerDeps`（`Dependencies` 结构体，包含 `StateStoreFactory`、`GuestExecutorFactory` 等 9 个必需字段）
 - `resourcePolicy`（从 `Dependencies` 中提取的资源规划能力子集）
 - `runtimeResolver`（运行时配置解析器）
 - `HostProfile`（宿主平台画像）
 
-已完全移除的旧机制：
+代码库中不存在下列机制，架构上也禁止重新引入（见 `AGENTS.md` 架构边界）：
 
-- ~~`domain/container` 内部的 `globalDeps`~~ 已完全移除，所有依赖通过 `SandboxConfig.Dependencies` 显式注入
-- ~~`SetDependencies()` / `activeDependencies()` / `resolveDependencies()`~~ 已移除
-- ~~包级默认 `defaultResourcePolicy()` / `defaultStateRepository()`~~ 已移除
-
-全局入口状态：
-
-- `pedestal.Host` / `pedestal.InitHost()` 已删除，默认 bootstrap 使用 `pedestal.DetectHost()`
-- `guestmicad` / `pedestal` 已不再提供包级默认 control 适配器
+- `domain/container` 包级 `globalDeps` 服务定位器——依赖一律经 `SandboxConfig.Dependencies` 显式注入
+- `SetDependencies()` / `activeDependencies()` / `resolveDependencies()` 等包级依赖入口
+- 包级默认 `defaultResourcePolicy()` / `defaultStateRepository()`
+- `pedestal.Host` / `pedestal.InitHost()` 全局宿主入口——默认 bootstrap 使用 `pedestal.DetectHost()`
+- `guestmicad` / `pedestal` 的包级默认 control 适配器

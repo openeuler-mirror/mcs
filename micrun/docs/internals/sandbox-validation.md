@@ -17,14 +17,17 @@
 MicRun 当前通过 `internal/adapters/state/file.Store` 把快照写到 `/run/micrun` 下：
 
 - sandbox snapshot: `/run/micrun/runtime/sandbox/<sandbox-id>/runtime.json`
-- container snapshot: `/run/micrun/runtime/container/<container-path-or-id>/runtime.json`
 
-这两类 `runtime.json` 是当前恢复链路的第一读取来源，也是新状态的唯一写入目标。
+这个合并文档是恢复链路的第一读取来源，也是新状态的唯一写入目标——
+它同时内嵌了每个容器的运行时记录（`containers` 键），因此每次容器
+状态转换就是一次该文档的原子写。
 
 ### 2.2 legacy 兼容路径
 
-恢复时仍会兼容以下旧路径：
+恢复时兼容以下旧路径（只读回退，不写入）：
 
+- `/run/micrun/runtime/container/<container-path-or-id>/runtime.json`
+  （合并格式之前的每容器快照，sandbox 文档缺 `containers` 键时读取）
 - `/run/micrun/sandbox/<sandbox-id>/state.json`
 - `/run/micrun/<container-path>/state.json`
 - `/run/micrun/<container-id>/state.json`
@@ -35,15 +38,12 @@ MicRun 当前通过 `internal/adapters/state/file.Store` 把快照写到 `/run/m
 2. `runtime.json` 不存在时再读 legacy `state.json`
 3. 如果成功从 legacy 文件恢复，会尝试迁移写回 `runtime.json`
 
-因此 legacy 文件已经不是权威状态源，只是历史数据入口。
+legacy 文件不是权威状态源，只是历史数据入口。
 
 ## 3. 恢复与验证链路
 
-![MicRun sandbox restore and validation](../assets/flowcharts/sandbox-validation-flow.png)
-
-下面的决策图用于快速区分“可以恢复”和“应该清理 stale 状态”的分支。
-
-![MicRun state recovery map](../assets/flowcharts/micrun-state-recovery-map.png)
+[恢复与校验链路图](../README.md#恢复与校验)给出整体流程；
+[状态恢复决策图](../README.md#状态恢复决策)区分"可以恢复"与"应该清理 stale 状态"的分支。
 
 ```mermaid
 flowchart TD
@@ -164,7 +164,10 @@ shim daemon start
 
 ### 5.3 Container 写入
 
-container 快照也会同步写入 `runtime/container/.../runtime.json`，恢复 sandbox 时再把 containers 一并装回领域对象。
+container 运行时状态内嵌在 sandbox 文档的 `containers` 键里，随
+`StoreSandbox` 一并原子写入；恢复 sandbox 时按容器一次性消费这些内嵌
+记录装回领域对象。独立的 `runtime/container/.../runtime.json` 不
+写入，仅作为旧格式回退读取来源，并在容器删除时清理。
 
 ## 6. 调试方法
 
@@ -177,7 +180,10 @@ ls -la /run/micrun/runtime/sandbox/
 # 查看单个 sandbox 快照
 cat /run/micrun/runtime/sandbox/<sandbox-id>/runtime.json | jq
 
-# 查看 container 快照
+# 查看容器运行时记录（内嵌在 sandbox 快照里）
+cat /run/micrun/runtime/sandbox/<sandbox-id>/runtime.json | jq '.containers'
+
+# 查看旧格式的每容器快照（仅当 sandbox 快照缺 containers 键时才有意义）
 find /run/micrun/runtime/container -maxdepth 3 -name runtime.json | grep <container-id>
 ```
 
@@ -222,4 +228,4 @@ A: 先看 `/run/micrun/runtime/sandbox/<sandbox-id>/runtime.json`，再看 legac
 | `internal/domain/container/sandbox_state.go` | `Sandbox.StoreSandbox()` 与 restore |
 | `internal/domain/container/runtime_state.go` | runtime snapshot namespace 定义 |
 | `internal/transport/shimv2/recovery_backend.go` | shim 恢复后端实现 |
-| `definitions/paths.go` | 状态目录常量 |
+| `internal/support/definitions/paths.go` | 状态目录常量 |

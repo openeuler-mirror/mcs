@@ -3,7 +3,6 @@ package container
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	defs "micrun/internal/support/definitions"
 	log "micrun/internal/support/logger"
@@ -61,7 +60,6 @@ func newSandbox(ctx context.Context, config SandboxConfig) (sb *Sandbox, retErr 
 			Version: defs.SandboxVersion,
 		},
 		resManager:        *newResMgmt(),
-		wg:                &sync.WaitGroup{},
 		guestControl:      config.GuestControl,
 		hypervisorControl: config.HypervisorControl,
 	}

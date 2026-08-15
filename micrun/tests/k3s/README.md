@@ -81,8 +81,7 @@ oEE/QEMU guest 的 cgroup 层级可能不足以支撑 kubelet 的 Pod QoS cgroup
 
 ```bash
 --kubelet-arg=cgroups-per-qos=false \
-  --kubelet-arg=enforce-node-allocatable= \
-  --kubelet-arg=fail-cgroupv1=false
+  --kubelet-arg=enforce-node-allocatable=
 ```
 
 这样 kubelet 不会因为 Pod cgroup 不存在而在 RTOS domain 刚启动后立即

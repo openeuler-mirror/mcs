@@ -6,6 +6,7 @@ import (
 	"micrun/internal/ports"
 	er "micrun/internal/support/errors"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/perf"
 	"micrun/internal/support/timex"
 )
 
@@ -27,18 +28,23 @@ func startClient(ctx context.Context, c *Container) error {
 	}
 
 	start := timex.Now(c.clock())
+	perfT := perf.Start(c.clock(), "start_client", c.id)
 	if err := c.sandbox.guestControl.Start(ctx, c.id); err != nil {
 		log.Errorf("startClient: Start failed: %v", err)
 		return err
 	}
+	perfT.Stage("guest_start")
 
 	if err := c.applyInitialCPUSettings(ctx); err != nil {
 		return err
 	}
+	perfT.Stage("cpu_settings")
 	if err := c.setupMemory(ctx); err != nil {
 		return err
 	}
+	perfT.Stage("memory_setup")
 	log.Infof("startClient: Start OK in %s", timex.Now(c.clock()).Sub(start))
+	perfT.Total()
 
 	return nil
 }

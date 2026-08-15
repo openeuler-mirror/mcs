@@ -65,18 +65,19 @@
 |------|------|
 | 1. 构建系统镜像 | 使用 oebuild 构建包含 MicRun 的 openEuler Embedded |
 | 2. 启动系统 | 启动构建好的系统镜像 |
-| 3. 构建 RTOS 镜像 | 使用 mica-image-builder 打包固件 |
-| 4. 导入镜像 | 将镜像导入 containerd |
-| 5. 注册运行时 | 在 containerd 中注册 MicRun |
-| 6. 运行容器 | 启动并测试 RTOS 容器 |
+| 3. 构建 RTOS 容器镜像 | 使用 mica-image-builder 打包固件 |
+| 4. 在 containerd 中注册 MicRun | 注册运行时 |
+| 5. 导入并运行 RTOS 容器 | 导入镜像、启动并测试 |
+| 6. （可选）接入 Kubernetes 集群 | K3s RuntimeClass 与 Pod 方式使用 |
 
 ---
 
 ## 步骤 1：构建系统镜像
 
-`openeuler Embedded`基础构建过程可参考以下内容
-+ [快速上手](https://embedded.pages.openeuler.org/master/getting_started/index.html)
-+ [mica构建指导](https://embedded.pages.openeuler.org/master/features/mica/build.html)
+`openEuler Embedded`基础构建过程可参考以下内容：
+
+- [快速上手](https://embedded.pages.openeuler.org/master/getting_started/index.html)
+- [mica构建指导](https://embedded.pages.openeuler.org/master/features/mica/build.html)
 
 ### 1.1 系统要求
 
@@ -90,17 +91,17 @@
 | `Xen` | - | 作为`MCS`底座（虚拟化层） |
 | `systemd` | 推荐 | 系统和服务管理 |
 | `containerd` | ≥1.7.19 | 容器引擎（构建时需≥1.7.27，运行时≥1.7.19即可） |
+| `k3s`（可选） | v1.27.15 | 边侧 K3s；云侧镜像已验证 `rancher/k3s:v1.27.15-k3s1`。kubelet 不得新于 apiserver（K8s skew 约束），其他组合未验证 |
 
 ### 1.2 生成构建环境
 
 ```bash
-# 安装/更新 oebuild
 oebuild generate -p qemu-aarch64 \
-  -f zephyr \      # Zephyr RTOS 支持
-  -f micrun \      # MicRun 运行时
-  -f mcs/xen \     # mcs和xen支持
-  -f systemd \     # systemd 服务管理
-  -f containerd \  # containerd 容器引擎（必须）
+  -f zephyr \
+  -f micrun \
+  -f mcs/xen \
+  -f systemd \
+  -f containerd \
   -d <build_dir>   # 构建目录名称，自定义（如 playmicrun）
 
 cd <build_dir>
@@ -139,7 +140,7 @@ oebuild generate -p qemu-aarch64 \
   -f mcs/xen \
   -f systemd \
   -f containerd \
-  -f k3s-agent \   # 添加 K3s agent 支持
+  -f k3s-agent \
   -d <build_dir>
 ```
 
@@ -155,7 +156,7 @@ oebuild generate -p qemu-aarch64 \
 
 **标准 Xen + tap 启动路径**：
 
-这条路径继续作为 MicRun 本地标准测试方式，适合原有 `192.168.7.0/24`
+这条路径是 MicRun 本地标准测试方式，适合 `192.168.7.0/24`
 测试网络、K3s 云边联调和需要 `tap0` 的场景。rootfs 应直接使用构建输出中的
 `openeuler-image-qemu-aarch64-*.rootfs.cpio.gz` 产物；测试过程不应重命名、
 解包或改写该 rootfs 产物。
@@ -184,8 +185,8 @@ sudo qemu-system-aarch64 \
 
 如果只是做 smoke test，或希望在不依赖 guest 固定 IP 的情况下通过宿主端口
 访问 SSH，可以额外加一块 usernet 网卡。仓库里的 `tests/common/qemu.sh`
-默认 `QEMU_NET_MODE=both`，含义就是保留 tap 网卡，同时增加下面的 usernet
-端口转发；它不是替代 tap 的新标准路径。
+默认 `QEMU_NET_MODE=both`，即保留 tap 网卡，同时增加下面的 usernet
+端口转发；usernet 仅是辅助通道，不替代 tap 标准路径。
 
 ```bash
 sudo qemu-system-aarch64 \
@@ -336,7 +337,7 @@ version = 2
 ```
 
 **配置说明**：
-- `version = 2`：显示声明配置文件格式版本。
+- `version = 2`：显式声明配置文件格式版本。
 - `runtime_type`：指定运行时类型为 MicRun 的`shimv2`实现`io.containerd.mica.v2`。
 - `pod_annotations` / `container_annotations`：声明 `MicRun` 支持的注解通配规则，用于接收来自 `Kubernetes` / `Pod` 的配置。containerd 使用通配匹配，需写成 `org.openeuler.micrun.*`。
 > `runc`这样的容器运行时不在此配置的原因：`runc`是`containerd`的默认运行时，由系统内置配置自动处理，无需手动添加。
@@ -440,9 +441,8 @@ nerdctl create \
 nerdctl start <container_name>
 ```
 
-**重要说明**：
-- `--network=none`：RTOS 容器通常不需要网络，这是测试验证过的配置
-- 如果需要网络，可以尝试省略此参数或配置 CNI 网络插件
+**重要说明**：`--network=none` 是测试验证过的配置——交付规格面向无网络
+配置场景，网络场景当前未支持、未验证；省略 `--network=none` 属未定义行为。
 
 #### 5.3.2 管理容器
 
@@ -560,7 +560,7 @@ nerdctl run -d -t \
 | 正常停止容器 | `nerdctl stop <container_name>` | 停止，之后可 `nerdctl rm` |
 | 强制清理容器 | `nerdctl rm -f <container_name>` | 停止并删除 |
 | 在 UniProton shell 内退出 | 输入 `exit` 并回车 | 停止 |
-| 管道输入命令 | `printf 'help\n' | nerdctl run -i ...` | 按输入和 auto-close 策略运行 |
+| 管道输入命令 | `printf 'help\n' \| nerdctl run -i ...` | 按输入和 auto-close 策略运行 |
 
 TTY detach 默认使用 `Ctrl+P Ctrl+Q`。如果通过 `--detach-keys` 配置自定义序列，
 MicRun 支持 `ctrl-a` 到 `ctrl-z`，也支持 `ctrl-@`、`ctrl-[`、`ctrl-\`、`ctrl-]`、
@@ -613,9 +613,7 @@ nerdctl attach <container_id>
 
 ## 步骤 6：（可选）接入`Kubernetes`集群
 
-> **详细指南**：完整的 Kubernetes 云边协同部署指南，请参考 **[Kubernetes 集成指南](user/kubernetes.md)**。
-
-本节简要介绍 Kubernetes 集成的概念。完整的部署步骤、配置示例和故障排查，请查看专门的集成文档。
+> 本节只介绍 Kubernetes 集成的概念与快速体验；完整的部署步骤、配置示例和故障排查见 **[Kubernetes 集成指南](user/kubernetes.md)**。
 
 ### 6.1 什么是云边协同
 
@@ -681,54 +679,12 @@ nerdctl attach <container_id>
    kubectl apply -f rtos-pod.yaml
    ```
 
-**仓库测试入口**：
-
-```bash
-export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
-export EDGE_IP="${EDGE_IP:-192.168.7.2}"
-export HOST_TAP_IP="${HOST_TAP_IP:-192.168.7.1}"
-export CLOUD_IP="${CLOUD_IP:-192.168.7.10}"
-
-# 边侧节点已可通过 SSH 访问，且 rootfs 包含 server-capable K3s 时，
-# 可验证单节点 K3s + MicRun；只有 agent 子命令时跳过该项。
-export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
-micrun/tests/bin/test-k3s-single-node
-
-# 云侧在本机 Docker 中启动，边侧通过 tap0 加入集群
-export TEST_REMOTE_HOST="${EDGE_SSH_USER}@${EDGE_IP}"
-export K3S_BIN="/usr/bin/k3s"
-export K3S_CLOUD_SERVER_IMAGE="<k3s-server-image-matching-edge-version>"
-export K3S_CLOUD_KUBECTL_BIN="k3s"
-export K3S_CLOUD_KUBECTL_SUBCOMMAND="kubectl"
-export K3S_CLOUD_NETWORK_PARENT="tap0"
-export K3S_CLOUD_NETWORK_GATEWAY="${HOST_TAP_IP}"
-export K3S_CLOUD_SERVER_IP="${CLOUD_IP}"
-export K3S_EDGE_NODE_IP="${EDGE_IP}"
-export K3S_EDGE_CONTAINERD_MODE="external"
-export K3S_CONTAINERD_ADDRESS="/run/containerd/containerd.sock"
-export K3S_EDGE_CTR_BIN="ctr"
-export K3S_EDGE_CTR_SUBCOMMAND=""
-export K3S_KUBELET_ARGS="--kubelet-arg=cgroups-per-qos=false --kubelet-arg=enforce-node-allocatable="
-micrun/tests/bin/test-k3s-cloud-edge
-
-# 云边用例默认会删除测试 Pod，并验证边侧 task/Xen domain 清理。
-# 如需保留现场调试，可临时设置 K3S_E2E_KEEP_POD=true。
-
-# 环境已经就绪后，验证 kubectl attach、边侧 task/Xen domain 和删除清理
-export K3S_INTERACTION_MODE="auto"
-micrun/tests/bin/test-k3s-interaction
-```
-
-`K3S_INTERACTION_MODE=auto` 会依次选择 Docker 云侧、已有本机控制面和边侧
-单节点 K3s。若本机已经启动 K3s server，可显式使用：
-
-```bash
-export K3S_INTERACTION_MODE="local"
-export K3S_LOCAL_KUBECONFIG="<path-to-local-kubeconfig>"
-export K3S_LOCAL_KUBECTL_BIN="<path-to-k3s-or-kubectl>"
-export K3S_LOCAL_KUBECTL_SUBCOMMAND="kubectl"
-micrun/tests/bin/test-k3s-interaction
-```
+**仓库测试入口**：K3s 场景（single-node / cloud-edge / interaction /
+ota）由 `micrun/tests/bin/test-k3s-*` 提供统一入口。运行所需的完整
+环境前置（QEMU 边侧 guest、本机 Docker 云侧、tap 网络与 SSH 凭据）
+和全部环境变量（含 `K3S_INTERACTION_MODE` 的 auto/cloud/local/edge
+模式选择）见 [tests/README.md](../tests/README.md) 与
+[K3s 测试说明](../tests/k3s/README.md)，此处不再重复。
 
 K3s 测试必须使用 rootfs 中已经构建好的 `/usr/bin/k3s`。脚本会配置运行中的
 边侧节点上的 K3s service、CNI、RuntimeClass、containerd 和镜像导入；这些动作
@@ -742,25 +698,16 @@ oEE/QEMU guest 中 Kubernetes 删除等待超时，脚本默认只清理该 Pod 
 containerd task/container 和 Xen domain，并移除已经 Terminating 的 Pod API
 对象；不会修改构建产物中的 rootfs。
 
-在 oEE/QEMU guest 中，kubelet 的 Pod QoS cgroup 可能无法完整创建。仓库的
-K3s 脚本默认附加：
-
-```bash
---kubelet-arg=cgroups-per-qos=false \
-  --kubelet-arg=enforce-node-allocatable= \
-  --kubelet-arg=fail-cgroupv1=false
-```
-
-这能避免 RTOS Pod 刚进入 Running 就被 kubelet 因 Pod cgroup 缺失而
-`Stopping container`。较新的 kubelet 可能还需要 `fail-cgroupv1=false`；
-较旧版本若提示 unknown flag，则通过 `K3S_KUBELET_ARGS` 移除该参数。这是
-K3s 运行态参数，不需要修改 QEMU rootfs 产物。
+在 oEE/QEMU guest 中，kubelet 的 Pod QoS cgroup 可能无法完整创建，仓库的
+K3s 脚本默认附加降级参数（`cgroups-per-qos=false` 等，完整清单与版本差异见
+[user/kubernetes.md](user/kubernetes.md)），避免 RTOS Pod 因 Pod cgroup
+缺失被 `Stopping container`。这是 K3s 运行态参数，不需要修改 rootfs 产物。
 
 ### 6.4 学习路径
 
 - **新手**：建议先完成步骤 1-5，熟悉 MicRun 基本用法后再尝试 Kubernetes 集成
 - **有经验用户**：直接参考 [Kubernetes 集成指南](user/kubernetes.md) 进行完整部署
-- **生产环境**：需要考虑高可用、监控、安全等，详见集成指南的高级用法章节
+- **生产环境**：需要考虑高可用、监控、安全等，详见 [Kubernetes 集成指南的常见问题](user/kubernetes.md#常见问题)
 
 ### 6.5 常见问题
 
@@ -772,10 +719,10 @@ Kubernetes/K3s 版本应保持兼容。K3s 更轻量，适合边缘场景。
 A：可以。K3s 支持单节点模式，云侧和边侧可以在同一台机器上运行（仅用于测试）。
 
 **Q：如何监控 RTOS 容器状态？**
-A：使用 `kubectl get pods` 和 `kubectl describe pod` 查看。详细日志在边侧的 `/var/log/mica/mica-runtime.log`（如果日志目录不存在，请先创建：`sudo mkdir -p /var/log/mica`）。
+A：使用 `kubectl get pods` 和 `kubectl describe pod` 查看。详细日志在边侧的 `/var/log/mica/mica-runtime.log`（仅 debug 构建输出文件日志，见 [日志系统](internals/logging.md)；release 构建日志走 journald。如果日志目录不存在，请先创建：`sudo mkdir -p /var/log/mica`）。
 
 **Q：Pod 无法启动怎么办？**
-A：参考 [Kubernetes 集成指南 - 故障排查](user/kubernetes.md#故障排查) 章节，涵盖了常见问题和解决方法。
+A：参考 [Kubernetes 集成指南 - 故障排查](user/kubernetes.md#常见问题) 章节，涵盖了常见问题和解决方法。
 
 ---
 
@@ -804,7 +751,7 @@ ctr container delete <container_name>
 ### Q：如何调试容器启动问题？
 
 **A**：
-1. 查看 MicRun 日志：`tail -f /var/log/mica/mica-runtime.log`（需先创建目录）
+1. 查看 MicRun 日志：`tail -f /var/log/mica/mica-runtime.log`（仅 debug 构建；需先创建目录）
 2. 查看 containerd 日志：`journalctl -u containerd -f`
 
 ### Q：遇到 `ctr: task xxx: already exists` 错误怎么办？

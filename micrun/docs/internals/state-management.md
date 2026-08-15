@@ -43,35 +43,31 @@ Domain 侧仓储实现：
 
 ## 3. 当前存储内容
 
-### 3.1 Sandbox snapshot
+### 3.1 合并的 sandbox snapshot（唯一写入目标）
 
 逻辑命名空间：
 
 - `runtimeStateNamespaceSandbox`
 
-包含的信息：
+一个文档携带整个 pod 的持久化状态：
 
-- sandbox id
-- sandbox state
-- sandbox config
-- network config
-- shim pid
-- 创建时间
+- sandbox id / state / config / network / shim pid / 创建时间
+- 每个容器的完整 config（`Config.ContainerConfigs`）
+- 每个容器的运行时记录（`Containers` map：state、mounts、container path）
 
-### 3.2 Container snapshot
+每次容器状态转换（`setContainerState`）就是一次该文档的原子写。
+被删除的容器不在 containers map 中，迟到的持久化写出的文档天然不含
+其记录——状态复活在构造上不可能发生。
+
+### 3.2 Container snapshot（只读兼容）
 
 逻辑命名空间：
 
 - `runtimeStateNamespaceContainer`
 
-包含的信息：
-
-- container id
-- sandbox id
-- container state
-- container config
-- mounts
-- container path
+合并格式之前每容器单独持久化 state/config/mounts/path，现在**不写入**，
+仅在恢复时（sandbox 文档缺 `containers` 键的旧格式）作为回退读取来源，
+并在容器删除时清理。
 
 ## 4. 恢复链路
 
@@ -97,13 +93,18 @@ shim daemon start
 
 ## 5. Legacy 兼容策略
 
-MicRun 当前仍兼容历史 `state.json` 文件，但兼容角色已经变化：
+MicRun 当前兼容两代旧格式，读取回退顺序为：
 
-- 新写入：只走 `StateStore`
-- 旧读取：当 runtime snapshot 缺失时，才回退到 legacy 文件
-- 回退成功后：会把旧格式迁移回 runtime snapshot
+1. 合并的 sandbox `runtime.json`（`containers` 键存在 → 容器状态直接内嵌读取）
+2. 旧格式 sandbox `runtime.json`（无 `containers` 键）→ 容器状态回退读
+   每容器 `runtime.json`
+3. legacy `state.json`（读入后迁移到 `runtime.json`）
 
-也就是说，legacy 文件现在是“兼容回退来源”，不是主状态源。
+重建完成后的第一次 `StoreSandbox` 会把文档迁移为合并格式。新写入只走
+合并的 sandbox 文档；每容器文件与 legacy 文件都只是“兼容回退来源”。
+
+注意：合并格式写出后不支持降级回旧版本 shim（旧版本会读到过期的每容器
+文件）；跨该版本降级需要清空运行时状态目录。
 
 ## 6. 显式依赖注入现状
 
@@ -115,7 +116,7 @@ MicRun 当前仍兼容历史 `state.json` 文件，但兼容角色已经变化�
 - `LoadSandboxWithDependencies(...)`
 - `CleanupContainerWithDependencies(...)`
 
-这意味着恢复和清理链已经不必只能靠包级默认仓储。
+这意味着恢复和清理链不依赖包级默认仓储。
 
 相关代码：
 
@@ -163,6 +164,5 @@ shim 恢复需要的是：
 
 ## 9. 仍待继续优化的点
 
-- ~~`domain/container` 仍保留 `globalDeps` 兼容入口~~ 已移除，依赖通过 `SandboxConfig.Dependencies` 显式注入
 - 运行态校验仍主要依赖 `micad/Xen` 查询，而不是更强的一致性模型
 - sandbox 与 container snapshot 仍在 `domain/container` 大包里统一维护

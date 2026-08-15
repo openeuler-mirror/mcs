@@ -36,9 +36,9 @@ unset SSH_ASKPASS SUDO_ASKPASS
 export SSH_ASKPASS_REQUIRE=never
 
 qemu_resolve_assets || exit 1
-trap 'qemu_stop_existing >/dev/null 2>&1 || true' EXIT
 qemu_start_background "$CONSOLE" || { echo "PERF_GUEST_START_FAIL"; exit 1; }
 qemu_wait_for_ssh 90 || { echo "PERF_SSH_FAIL"; exit 1; }
+trap 'qemu_stop_existing >/dev/null 2>&1 || true' EXIT
 
 guest() { qemu_local_ssh "$1" 2>/dev/null; }
 

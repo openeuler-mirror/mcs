@@ -7,6 +7,7 @@ import (
 	"micrun/internal/support/contextx"
 	defs "micrun/internal/support/definitions"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/perf"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,6 +241,12 @@ func dialTTY(ctx context.Context, containerID string) (stdin *os.File, stdout *o
 
 func dialTTYWithRoots(ctx context.Context, containerID string, roots []string) (stdin *os.File, stdout *os.File, openedPath string, err error) {
 	ctx = contextx.OrBackground(ctx)
+	perfT := perf.Start(nil, "dial_tty", containerID)
+	defer func() {
+		if err == nil {
+			perfT.Total()
+		}
+	}()
 	paths := buildCandidateTTYs(containerID, roots)
 	if len(paths) == 0 {
 		return nil, nil, "", fmt.Errorf("empty container id")

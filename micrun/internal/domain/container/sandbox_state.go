@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	er "micrun/internal/support/errors"
 	"micrun/internal/support/lockutil"
@@ -135,10 +134,6 @@ func (s *Sandbox) normalizeRestoredRuntime(repo stateRepository) {
 		s.containers = make(map[string]*Container)
 	}
 	lockutil.WithLock(&s.resMu, func() { s.resManager.ensureMaps() })
-	if s.wg == nil {
-		s.wg = &sync.WaitGroup{}
-	}
-
 	if s.config == nil {
 		if s.network == nil {
 			s.network = &dummyNetwork{}
