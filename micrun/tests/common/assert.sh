@@ -55,7 +55,9 @@ assert_contains() {
     local needle="$2"
     local message="${3:-Assertion failed}"
 
-    if printf '%s\n' "$haystack" | grep -q "$needle"; then
+    # -F: the needle is a literal, not a BRE (a "." in it used to match any
+    # character and pass assertions that should have failed).
+    if printf '%s\n' "$haystack" | grep -qF "$needle"; then
         return 0
     fi
 

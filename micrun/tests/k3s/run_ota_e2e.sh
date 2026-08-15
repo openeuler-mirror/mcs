@@ -6,8 +6,10 @@ source "${SCRIPT_DIR}/../lib/test_utils.sh"
 source "${SCRIPT_DIR}/../test-env.sh"
 
 CLOUD_CONTAINER="${K3S_CLOUD_SERVER_CONTAINER:-micrun-k3s-server}"
-CLOUD_KUBECTL_BIN="${K3S_CLOUD_KUBECTL_BIN:-k3s}"
-CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-kubectl}"
+# k3s v1.27.15 CLIs break both "k3s <args>" and "k3s kubectl <args>" (exit 3/1);
+# call the container's kubectl directly with no extra subcommand.
+CLOUD_KUBECTL_BIN="${K3S_CLOUD_KUBECTL_BIN:-kubectl}"
+CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-}"
 REMOTE_HOST="${TEST_REMOTE_HOST:-root@192.168.7.2}"
 EDGE_NODE="${K3S_EDGE_NODE_NAME:-qemu-aarch64}"
 EDGE_CONTAINERD_ADDR="${K3S_EDGE_CONTAINERD_ADDR:-${K3S_CONTAINERD_ADDRESS:-/run/containerd/containerd.sock}}"
@@ -275,7 +277,7 @@ cleanup_edge_objects_for_app() {
         ids=\"\"
         for id in \$(edge_ctr containers ls -q 2>/dev/null); do
             if edge_ctr containers info \"\$id\" 2>/dev/null |
-                grep -Fq '\"io.kubernetes.pod.name\": \"$DEPLOYMENT'; then
+                grep -Fq '\"io.kubernetes.pod.name\": \"$DEPLOYMENT-'; then
                 ids=\"\$ids \$id\"
             fi
         done
@@ -299,14 +301,40 @@ cleanup() {
     [ "$POD_CLEANUP_DONE" = "true" ] && return 0
 
     if docker inspect -f '{{.State.Running}}' "$CLOUD_CONTAINER" 2>/dev/null | grep -qx true; then
-        cleanup_edge_objects_for_app
+        # Delete through Kubernetes first so the product's own CRI cleanup
+        # path runs; only force-clean leftovers afterwards. Force-cleaning
+        # before the delete made the final absence checks vacuous (they
+        # validated the suite's own force cleanup, never the product's).
         cloud_kubectl delete deployment "$DEPLOYMENT" -n "$NAMESPACE" \
             --ignore-not-found=true --wait=true --timeout="${POD_DELETE_TIMEOUT}s" >/dev/null 2>&1 ||
             cloud_kubectl delete deployment "$DEPLOYMENT" -n "$NAMESPACE" \
                 --force --grace-period=0 --ignore-not-found=true >/dev/null 2>&1 || true
         cloud_kubectl delete runtimeclass "$RUNTIME_CLASS_NAME" \
             --ignore-not-found=true >/dev/null 2>&1 || true
-        cleanup_edge_objects_for_app
+        # Assert cleanup only for objects belonging to THIS deployment: the
+        # old "no ctr task and no non-Domain-0 domain at all" check failed
+        # on unrelated leftovers (other suites, manual debugging domains),
+        # which the product cannot and should not clean.
+        if ! wait_for_remote_edge "
+            $(edge_ctr_script)
+            ids=\"\"
+            for id in \$(edge_ctr containers ls -q 2>/dev/null); do
+                if edge_ctr containers info \"\$id\" 2>/dev/null |
+                    grep -Fq '\"io.kubernetes.pod.name\": \"$DEPLOYMENT-'; then
+                    ids=\"\$ids \$id\"
+                fi
+            done
+            [ -z \"\$ids\" ] && exit 0
+            for id in \$ids; do
+                edge_ctr tasks ls 2>/dev/null | awk -v id=\"\$id\" '\$1 == id {found=1} END {exit found ? 1 : 0}' || exit 1
+                xl list 2>/dev/null | awk -v id=\"\$id\" 'NR>2 && \$1 == id {found=1} END {exit found ? 1 : 0}' || exit 1
+            done
+            exit 0
+        " "$EDGE_CLEANUP_WAIT_SECONDS"; then
+            log_error "edge tasks/domains for app '$APP_LABEL' not cleaned by the product path; forcing (this run FAILs)"
+            OTA_PRODUCT_CLEANUP_FAILED="true"
+            cleanup_edge_objects_for_app
+        fi
     fi
 
     POD_CLEANUP_DONE="true"
@@ -420,11 +448,15 @@ verify_old_workload_cleaned() {
         return 0
     fi
 
-    log_info "old v1 containerd residual detected; cleaning edge objects for pod $old_pod"
+    # The rollout path (pod delete -> CRI stop/remove) is the product's own
+    # cleanup; a residual here is a regression, not something the suite may
+    # force away and still report green (same policy as the interaction
+    # suite). Force-clean the leftovers, then fail loudly.
+    log_error "old v1 containerd task '$old_cid' not removed by the rollout path (product cleanup regression)"
     cleanup_edge_objects_for_pod "$old_pod"
     cloud_kubectl delete pod "$old_pod" -n "$NAMESPACE" \
         --force --grace-period=0 --ignore-not-found=true >/dev/null 2>&1 || true
-    verify_edge_task_and_domain_absent "$old_cid"
+    exit 1
 }
 
 main() {
@@ -436,6 +468,9 @@ main() {
     log_info "Cleaning old OTA resources"
     cleanup
     POD_CLEANUP_DONE="false"
+    # The pre-run cleanup may have set this flag while clearing leftovers
+    # from a previous run; a fresh run must not inherit that failure.
+    OTA_PRODUCT_CLEANUP_FAILED="false"
 
     log_info "Deploying v1 image: $V1_IMAGE"
     apply_v1_deployment
@@ -481,6 +516,10 @@ main() {
     cleanup
     if [ -n "$NEW_CONTAINER_ID" ]; then
         verify_edge_task_and_domain_absent "$NEW_CONTAINER_ID"
+    fi
+    if [ "${OTA_PRODUCT_CLEANUP_FAILED:-false}" = "true" ]; then
+        log_error "product did not clean its own tasks/domains; see errors above"
+        exit 1
     fi
 
     log_success "K3s OTA rollout, v2 attach, edge task, Xen domain, and cleanup validated"

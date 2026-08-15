@@ -119,11 +119,11 @@ echo ">>> 步骤 4: 运行 Go 单元测试..."
 cd "$MICRUN_ROOT"
 
 # 运行状态验证相关的单元测试
-echo "运行 processExists 测试..."
-if go test -v ./internal/domain/container -run TestProcessExists -timeout 30s; then
-    echo "✓ TestProcessExists 通过"
+echo "运行 checkShimCollision 测试..."
+if go test -v ./internal/domain/container -run TestCheckShimCollision -timeout 30s; then
+    echo "✓ TestCheckShimCollision 通过"
 else
-    echo "✗ TestProcessExists 失败"
+    echo "✗ TestCheckShimCollision 失败"
     exit 1
 fi
 echo ""
@@ -153,7 +153,7 @@ echo ""
 echo "测试覆盖的场景:"
 echo "  1. 状态文件元数据 (CreatedAt, ShimPID)"
 echo "  2. 僵尸状态检测 (shim 死亡)"
-echo "  3. 进程存在性检查 (processExists)"
+echo "  3. shim 进程身份检查 (checkShimCollision)"
 echo "  4. 状态验证函数 (ValidateSandboxState)"
 echo ""
 echo "=== 测试完成 ==="

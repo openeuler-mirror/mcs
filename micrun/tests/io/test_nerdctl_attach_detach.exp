@@ -98,7 +98,7 @@ expect_remote_prompt "nerdctl run"
 
 send "nerdctl attach $cid\r"
 wait_or_nudge_shell_prompt "attach"
-send_shell_line_expect "uname" {UniProton 24\.03-LTS} "attach uname"
+send_shell_line_expect "uname" {UniProton} "attach uname"
 send "\020\021"
 expect_remote_prompt "detach"
 

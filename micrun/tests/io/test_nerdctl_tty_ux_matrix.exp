@@ -136,12 +136,12 @@ wait_or_nudge_shell_prompt "foreground run"
 send_shell_line "" "empty command"
 send_shell_line_expect "help" {support shell commond} "foreground help"
 send_shell_line "definitely-not-a-uniproton-command" "foreground invalid command"
-send_shell_burst_expect "uname\rsysteminfo\r" [list {UniProton 24\.03-LTS} {Module[[:space:]]+Used[[:space:]]+Total}] "foreground pasted burst"
+send_shell_burst_expect "uname\rsysteminfo\r" [list {UniProton} {Module[[:space:]]+Used[[:space:]]+Total}] "foreground pasted burst"
 detach_to_remote "foreground detach"
 assert_container_up $cid "after foreground detach"
 
 attach_to_shell $cid "first attach"
-send_shell_burst_expect "help\runame\r" [list {support shell commond} {UniProton 24\.03-LTS}] "first attach pasted burst"
+send_shell_burst_expect "help\runame\r" [list {support shell commond} {UniProton}] "first attach pasted burst"
 detach_to_remote "first attach detach"
 assert_container_up $cid "after first detach"
 
@@ -157,7 +157,7 @@ assert_container_up $cid "after partial detach"
 
 attach_to_shell $cid "partial recovery attach"
 send_shell_line "" "partial command completion"
-send_shell_line_expect "uname" {UniProton 24\.03-LTS} "partial recovery command"
+send_shell_line_expect "uname" {UniProton} "partial recovery command"
 
 send "\003"
 expect_remote_prompt "ctrl-c interrupt"

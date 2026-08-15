@@ -5,11 +5,32 @@ if [ -n "${MICRUN_TEST_ENV_SH_LOADED:-}" ]; then
 fi
 MICRUN_TEST_ENV_SH_LOADED=1
 
+# Graphical sessions often set SSH_ASKPASS/SUDO_ASKPASS. Bare ssh/sudo then
+# pops a password dialog. Tests must stay non-interactive.
+unset SSH_ASKPASS SUDO_ASKPASS || true
+export SSH_ASKPASS_REQUIRE=never
+
 export TEST_REMOTE_HOST="${TEST_REMOTE_HOST:-root@192.168.7.2}"
 export TEST_REMOTE_PASSWORD="${TEST_REMOTE_PASSWORD:-}"
 case "${TEST_REMOTE_HOST}" in
-    root@127.0.0.1|127.0.0.1)
+    qemu-k3s|root@127.0.0.1|127.0.0.1)
         export TEST_REMOTE_PORT="${TEST_REMOTE_PORT:-${QEMU_SSH_FWD_PORT:-10022}}"
+        # empty-root QEMU guests: sshpass needs a non-empty secret. A
+        # bootstrapped fresh guest carries the strong bootstrap secret in
+        # guest.pass (written by qemu_console_bootstrap); prefer it and
+        # fall back to the legacy default only without that file.
+        if [ -z "${TEST_REMOTE_PASSWORD}" ]; then
+            stored="$(cat "${QEMU_GUEST_PASS_FILE:-/tmp/micrun-tests/guest.pass}" 2>/dev/null || true)"
+            export TEST_REMOTE_PASSWORD="${stored:-micrun}"
+        fi
+        ;;
+    root@192.168.7.2|192.168.7.2)
+        # tap-side QEMU edge: same secret, but direct port 22 — the usernet
+        # forward port only listens on the loopback host side.
+        if [ -z "${TEST_REMOTE_PASSWORD}" ]; then
+            stored="$(cat "${QEMU_GUEST_PASS_FILE:-/tmp/micrun-tests/guest.pass}" 2>/dev/null || true)"
+            export TEST_REMOTE_PASSWORD="${stored:-micrun}"
+        fi
         ;;
     *)
         export TEST_REMOTE_PORT="${TEST_REMOTE_PORT:-}"
@@ -47,8 +68,10 @@ export K3S_CLOUD_SERVER_NAME="${K3S_CLOUD_SERVER_NAME:-cloud-srv}"
 export K3S_CLOUD_SERVER_IP="${K3S_CLOUD_SERVER_IP:-192.168.7.10}"
 export K3S_CLOUD_SERVER_SNAPSHOTTER="${K3S_CLOUD_SERVER_SNAPSHOTTER:-native}"
 export K3S_CLOUD_SERVER_EXTRA_ARGS="${K3S_CLOUD_SERVER_EXTRA_ARGS:-}"
-export K3S_CLOUD_KUBECTL_BIN="${K3S_CLOUD_KUBECTL_BIN:-k3s}"
-export K3S_CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-kubectl}"
+# k3s v1.27.15 CLIs break both "k3s <args>" and "k3s kubectl <args>" (exit 3/1);
+# call the container's kubectl directly with no extra subcommand.
+export K3S_CLOUD_KUBECTL_BIN="${K3S_CLOUD_KUBECTL_BIN:-kubectl}"
+export K3S_CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-}"
 export K3S_CLOUD_NETWORK_NAME="${K3S_CLOUD_NETWORK_NAME:-micrun-cloud}"
 export K3S_CLOUD_NETWORK_SUBNET="${K3S_CLOUD_NETWORK_SUBNET:-192.168.7.0/24}"
 export K3S_CLOUD_NETWORK_GATEWAY="${K3S_CLOUD_NETWORK_GATEWAY:-192.168.7.1}"

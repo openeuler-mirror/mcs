@@ -16,10 +16,10 @@ micrun/tests/bin/test-k3s-ota
 ```
 
 `run_all_tests.sh k3s` 是纳入项目测试体系的类别入口。默认会执行基础 K3s
-用例并包含 `K3S-008` 交互测试；也可以指定单项，例如
-`micrun/tests/run_all_tests.sh k3s K3S-008`。OTA 用例是 `K3S-009`，需要准备
-v2 RTOS 镜像，因此默认不随无 `test_id` 的 K3s 类别运行；如需纳入默认类别，
-设置 `K3S_INCLUDE_OTA=true`。
+用例并包含 `interaction` 交互测试；也可以指定单项场景（语义名，如
+`micrun/tests/run_all_tests.sh k3s interaction`；旧 `K3S-00x` 编号仍是
+兼容别名）。OTA 用例场景名是 `ota`，需要准备 v2 RTOS 镜像，因此默认不随
+无场景参数的 K3s 类别运行；如需纳入默认类别，设置 `K3S_INCLUDE_OTA=true`。
 
 底层场景脚本仍保留在本目录：
 
@@ -245,6 +245,10 @@ StopContainer/StopPodSandbox 超时。交互测试会先执行 Kubernetes 正常
 对象。这个 fallback 仅作用于运行中的 guest，不会解包或修改 QEMU rootfs
 产物；真实环境可设置 `K3S_INTERACTION_EDGE_DELETE_FALLBACK=false` 禁用。
 
+注意：fallback 的作用是**给下一次测试留一个干净环境**。一旦 fallback 被触发，
+说明产品自身清理没有完成，交互测试会判定为**失败**（打印
+"product cleanup incomplete"），不会因 fallback 清干净而变绿。
+
 如果只想保留 Pod 供人工继续 attach，可设置：
 
 ```bash
@@ -286,7 +290,7 @@ micrun/tests/bin/test-k3s-ota
 也可以通过统一入口指定用例：
 
 ```bash
-micrun/tests/run_all_tests.sh k3s K3S-009
+micrun/tests/run_all_tests.sh k3s ota
 ```
 
 验证内容：
@@ -347,8 +351,8 @@ K3s 场景需要清理和重建运行中边侧节点的 K3s 状态：
 | `K3S_INTERACTION_NODE_SELECTOR` | 空 | 覆盖交互测试 Pod 的 `key=value` 节点选择器 |
 | `K3S_INTERACTION_KEEP_POD` | `false` | 交互测试后是否保留 Pod |
 | `K3S_INTERACTION_TTY` | `false` | 交互测试 Pod 是否启用 TTY |
-| `K3S_INTERACTION_EDGE_DELETE_FALLBACK` | `true` | Kubernetes 删除超时时是否清理边侧运行时对象 |
-| `K3S_INCLUDE_OTA` | `false` | K3s 类别无 `test_id` 时是否包含 `K3S-009` |
+| `K3S_INTERACTION_EDGE_DELETE_FALLBACK` | `true` | Kubernetes 删除超时时是否清理边侧运行时对象（触发即判失败，仅用于环境收尾） |
+| `K3S_INCLUDE_OTA` | `false` | K3s 类别无场景参数时是否包含 `ota` 场景 |
 | `K3S_OTA_V1_IMAGE` | `$TEST_IMAGE` | OTA Deployment 初始 RTOS 镜像 |
 | `K3S_OTA_V2_IMAGE` | `localhost:5000/mica-uniproton-app:xen-0.2` | OTA Deployment 目标 RTOS 镜像 |
 | `K3S_OTA_V1_IMAGE_TAR` | `$K3S_IMAGE_TAR` | v1 RTOS 镜像 tar 在边侧的路径 |

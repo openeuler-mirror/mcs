@@ -1,0 +1,630 @@
+#!/bin/bash
+set -euo pipefail
+
+# Never pop a graphical askpass from bare ssh/sudo.
+unset SSH_ASKPASS SUDO_ASKPASS || true
+export SSH_ASKPASS_REQUIRE=never
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../common/env.sh"
+source "${SCRIPT_DIR}/../common/assert.sh"
+source "${SCRIPT_DIR}/../common/qemu.sh"
+
+# test-qemu-lifecycle validates edge-case container lifecycle scenarios that
+# complement the basic smoke and IO tests:
+#
+#   1. Non-existent image produces a clean error (no panic)
+#   2. Deleting a non-existent container is a clean error
+#   3. Duplicate container creation is rejected
+#   4. Kill of an already-stopped task is idempotent
+#   5. Create-then-delete cycle leaves no Xen domain or fd leak
+#   6. Auto-close timeout transitions a detached container to STOPPED
+#   7. Pause/resume a container task works correctly
+#   8. Same name can be recreated after a full delete
+#   9. A running task has a Xen domain that disappears after delete
+#  10. An unknown runtime name fails cleanly
+#  11. SIGTERM stops a running task without leaving a Xen domain
+#  12. Attach interaction answers; EOF stop leaves no domain behind
+#  13. Unmapped kill signal reports an error instead of fake success
+#
+# Environment variables:
+#   TEST_IMAGE           OCI image ref (default from env.sh)
+#   QEMU_GUEST_PASSWORD  SSH password for the guest (must be non-empty to use sshpass)
+#   QEMU_AUTO_START      If "true", start QEMU automatically
+#   QEMU_SMOKE_LOG_FILE  Log file for QEMU output
+#   QEMU_IMAGE_TAR       Host-side OCI tar; copied into the guest if needed
+#   ATTACH_TIMEOUT       Seconds to wait on non-TTY ctr attach (default 20)
+
+QEMU_SMOKE_LOG_FILE="${QEMU_SMOKE_LOG_FILE:-/tmp/micrun-qemu-lifecycle.log}"
+QEMU_KEEP_RUNNING="${QEMU_KEEP_RUNNING:-false}"
+QEMU_AUTO_START="${QEMU_AUTO_START:-true}"
+TEST_IMAGE="${TEST_IMAGE:-docker.io/local/mica-uniproton-app:xen-arm64-0.1}"
+# Annotation is 10s after the client disconnects; 15s is enough slack.
+AUTO_CLOSE_WAIT="${AUTO_CLOSE_WAIT:-15}"
+ATTACH_TIMEOUT="${ATTACH_TIMEOUT:-20}"
+MICRUN_LC_CASES="${MICRUN_LC_CASES:-}"
+
+MICRUN_RUNTIME="io.containerd.mica.v2"
+PASS_COUNT=0
+FAIL_COUNT=0
+
+usage() {
+    cat <<'EOF'
+Usage: test-qemu-lifecycle [--reuse] [--case ID[,ID...]] [case ...]
+
+  --case ID   run selected cases (1-13 or names such as auto-close)
+  --reuse     do not restart QEMU when guest SSH already works
+
+Env:
+  MICRUN_LC_CASES=6,9    same as --case
+  AUTO_CLOSE_WAIT=15     seconds to wait after attach EOF (case 6)
+EOF
+}
+
+lc_normalize_case() {
+    case "$1" in
+        1|nonexist|non-existent) echo 1 ;;
+        2|delete-missing|ghost) echo 2 ;;
+        3|duplicate|dup) echo 3 ;;
+        4|kill-idempotent|kill) echo 4 ;;
+        5|create-delete|cycle) echo 5 ;;
+        6|auto-close) echo 6 ;;
+        7|pause|pause-resume) echo 7 ;;
+        8|recreate) echo 8 ;;
+        9|xen) echo 9 ;;
+        10|unknown-runtime|badrt) echo 10 ;;
+        11|sigterm|term) echo 11 ;;
+        12|reattach|attach-eof) echo 12 ;;
+        13|kill-signal|signal) echo 13 ;;
+        *) echo "$1" ;;
+    esac
+}
+
+lc_selected() {
+    local want="$1"
+    local raw item
+    [ -z "${MICRUN_LC_CASES}" ] && return 0
+    IFS=', ' read -r -a raw <<< "${MICRUN_LC_CASES}"
+    for item in "${raw[@]}"; do
+        item="$(echo "$item" | tr -d '[:space:]')"
+        [ -z "$item" ] && continue
+        [ "$(lc_normalize_case "$item")" = "$want" ] && return 0
+    done
+    return 1
+}
+
+QEMU_REUSE="${QEMU_REUSE:-false}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --reuse)
+            QEMU_REUSE=true
+            shift
+            ;;
+        --case|--cases)
+            if [ $# -lt 2 ]; then
+                echo "test-qemu-lifecycle: $1 requires a value" >&2
+                exit 2
+            fi
+            MICRUN_LC_CASES="${MICRUN_LC_CASES:+$MICRUN_LC_CASES,}$2"
+            shift 2
+            ;;
+        *)
+            MICRUN_LC_CASES="${MICRUN_LC_CASES:+$MICRUN_LC_CASES,}$1"
+            shift
+            ;;
+    esac
+done
+
+if [ "$QEMU_REUSE" = "true" ] || [ -n "${MICRUN_LC_CASES}" ]; then
+    if qemu_local_ssh "echo ok" >/dev/null 2>&1 || remote_can_connect; then
+        QEMU_AUTO_START=false
+        QEMU_KEEP_RUNNING=true
+    fi
+fi
+
+cleanup() {
+    local name
+    for name in lc-nonexist lc-dup lc-kill lc-auto lc-pause \
+        lc-cycle-a lc-cycle-b lc-cycle-c \
+        lc-recreate lc-xen lc-badrt lc-term lc-reattach lc-sig; do
+        qemu_local_ssh "ctr task kill -s 9 $name 2>/dev/null; ctr task delete $name 2>/dev/null; ctr container delete $name 2>/dev/null; xl destroy $name 2>/dev/null" 2>/dev/null || true
+    done
+    if [ "$QEMU_KEEP_RUNNING" != "true" ]; then
+        qemu_stop_existing >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+record_result() {
+    if [ "$1" -eq 0 ]; then
+        echo -e "  ${PASS}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "  ${FAIL}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# sshd MOTD and remote ctr errors both leak on ssh stderr. Merge them.
+# Leading newline before the EC marker avoids attach/stdout that omitted a
+# trailing newline gluing into `__MICRUN_EC__=`.
+guest_sh() {
+    qemu_local_ssh "echo __MICRUN_OUT_START__; set +e; $1; printf '\\n__MICRUN_EC__=%s\\n' \"\$?\"; echo __MICRUN_OUT_END__" 2>&1
+}
+
+guest_payload() {
+    guest_sh "$1" | awk '
+        $0 == "__MICRUN_OUT_START__" { p = 1; next }
+        $0 == "__MICRUN_OUT_END__" { p = 0; next }
+        p {
+            sub(/__MICRUN_EC__=.*/, "")
+            if ($0 != "") print
+        }
+    '
+}
+
+guest_ec() {
+    guest_sh "$1" | sed -n 's/.*__MICRUN_EC__=//p' | tail -1
+}
+
+guest_has_image() {
+    guest_payload "ctr image ls" | grep -qF "$TEST_IMAGE"
+}
+
+scp_to_guest() {
+    local src="$1"
+    local dest="$2"
+    local password="${QEMU_GUEST_PASSWORD:-${TEST_REMOTE_PASSWORD:-}}"
+    local port="${QEMU_SSH_FWD_PORT:-${TEST_REMOTE_PORT:-10022}}"
+    local opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15)
+
+    if [ -n "$password" ]; then
+        sshpass -p "$password" scp -P "$port" "${opts[@]}" "$src" "root@127.0.0.1:${dest}"
+    else
+        scp -P "$port" "${opts[@]}" "$src" "root@127.0.0.1:${dest}"
+    fi
+}
+
+ensure_test_image() {
+    if guest_has_image; then
+        log_info "image already present: $TEST_IMAGE"
+        return 0
+    fi
+
+    if [ -z "${QEMU_IMAGE_TAR:-}" ]; then
+        log_error "image $TEST_IMAGE is missing and QEMU_IMAGE_TAR is unset"
+        return 1
+    fi
+
+    if [ -f "$QEMU_IMAGE_TAR" ]; then
+        local dest="/tmp/$(basename "$QEMU_IMAGE_TAR")"
+        log_info "copying $(basename "$QEMU_IMAGE_TAR") into guest"
+        scp_to_guest "$QEMU_IMAGE_TAR" "$dest"
+        guest_sh "ctr image import $dest" >/dev/null
+    else
+        log_info "importing guest-side tar: $QEMU_IMAGE_TAR"
+        guest_sh "ctr image import $QEMU_IMAGE_TAR" >/dev/null
+    fi
+
+    guest_has_image
+}
+
+# ---------------------------------------------------------------------------
+log_test "lifecycle edge-case validation"
+if [ -n "${MICRUN_LC_CASES}" ]; then
+    log_info "Cases: ${MICRUN_LC_CASES}"
+fi
+
+qemu_resolve_assets
+
+if [ "$QEMU_AUTO_START" = "true" ]; then
+    qemu_stop_existing
+    qemu_start_background "$QEMU_SMOKE_LOG_FILE"
+fi
+
+qemu_wait_for_ssh 60 || {
+    log_error "SSH not reachable within 60s"
+    exit 1
+}
+
+log_info "ensuring image is imported"
+ensure_test_image || {
+    log_error "failed to import $TEST_IMAGE"
+    exit 1
+}
+qemu_warmup_runtime
+
+# ---------------------------------------------------------------------------
+if lc_selected 1; then
+log_test "1. Non-existent image produces clean error"
+
+OUTPUT=$(guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach docker.io/local/not-exist:latest lc-nonexist")
+if echo "$OUTPUT" | grep -q "not found"; then
+    record_result 0
+else
+    record_result 1
+fi
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 2; then
+log_test "2. Deleting non-existent container is a clean error"
+
+OUTPUT=$(guest_sh "ctr container delete lc-ghost")
+if echo "$OUTPUT" | grep -q "not found"; then
+    record_result 0
+else
+    record_result 1
+fi
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 3; then
+log_test "3. Duplicate container creation is rejected"
+
+guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach ${TEST_IMAGE} lc-dup" >/dev/null
+sleep 1
+OUTPUT=$(guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach ${TEST_IMAGE} lc-dup")
+if echo "$OUTPUT" | grep -qE "already exists"; then
+    record_result 0
+else
+    record_result 1
+fi
+guest_sh "ctr task kill -s 9 lc-dup 2>/dev/null; ctr task delete lc-dup 2>/dev/null; ctr container delete lc-dup 2>/dev/null" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 4; then
+log_test "4. Kill of an already-stopped task is idempotent"
+
+RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach ${TEST_IMAGE} lc-kill")
+if [ "$RUN_EC" != "0" ]; then
+    log_warn "ctr run failed (ec=$RUN_EC); idempotent-kill path not exercised"
+    record_result 1
+else
+sleep 1
+guest_sh "ctr task kill -s 9 lc-kill" >/dev/null
+sleep 1
+OUTPUT=$(guest_sh "ctr task kill -s 9 lc-kill")
+EXIT_CODE=$(echo "$OUTPUT" | sed -n 's/^__MICRUN_EC__=//p' | tail -1)
+if [ "$EXIT_CODE" = "0" ] || echo "$OUTPUT" | grep -qiE "no running task|already stopped|not found"; then
+    record_result 0
+else
+    record_result 1
+fi
+fi
+guest_sh "ctr task delete lc-kill 2>/dev/null; ctr container delete lc-kill 2>/dev/null" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 5; then
+log_test "5. Create-delete cycle leaves no Xen domain or fd leak"
+
+FD_BEFORE=$(guest_payload "ls /proc/1/fd | wc -l" | tr -d '[:space:]')
+log_info "fd before: $FD_BEFORE"
+
+CYCLE_NAMES="lc-cycle-a lc-cycle-b lc-cycle-c"
+CYCLE_ATTACH_OK=1
+CYCLE_RUN_OK=1
+for name in $CYCLE_NAMES; do
+    RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach ${TEST_IMAGE} $name")
+    if [ "$RUN_EC" != "0" ]; then
+        log_warn "ctr run failed for $name (ec=$RUN_EC); leak cycle not exercised"
+        CYCLE_RUN_OK=0
+        continue
+    fi
+    sleep 1
+    # Non-TTY attach keeps stdout open after stdin EOF; bound it so the case
+    # still exercises IO without hanging the suite.
+    # Exercise attach so the cycle opens IO fds; do not fail the leak case
+    # on garbled UniProton banner (that is covered by the IO suite).
+    ATTACH_OUT=$(guest_payload "printf '\\nuname\\n' | timeout ${ATTACH_TIMEOUT} ctr task attach $name > /tmp/lc-attach.out 2>&1 || true; cat /tmp/lc-attach.out")
+    if ! echo "$ATTACH_OUT" | grep -qiE "UniProton|openEuler UniProton|uname"; then
+        log_warn "attach on $name produced no expected shell output"
+        log_warn "attach dump: $(echo "$ATTACH_OUT" | tr '\n' ' ' | tail -c 240)"
+        CYCLE_ATTACH_OK=0
+    fi
+    guest_sh "ctr task kill -s 9 $name 2>/dev/null; ctr task delete $name 2>/dev/null; ctr container delete $name 2>/dev/null" >/dev/null
+    sleep 1
+done
+
+FD_AFTER=$(guest_payload "ls /proc/1/fd | wc -l" | tr -d '[:space:]')
+log_info "fd after: $FD_AFTER attach_ok=$CYCLE_ATTACH_OK run_ok=$CYCLE_RUN_OK"
+
+DOMAINS=$(guest_payload "xl list" | awk 'NR > 1 && $1 != "Name" && $1 != "Domain-0" { c++ } END { print c+0 }')
+LEFT=$(guest_payload "ctr tasks ls" | awk 'NR > 1 && $1 ~ /^lc-cycle-/ { c++ } END { print c+0 }')
+
+# The fd counter is part of the verdict, not just a log line: this case is
+# the fd-leak regression. A small tolerance absorbs unrelated daemons
+# opening/closing fds concurrently on the guest.
+FD_TOLERANCE=16
+FD_OK=0
+if [ -n "$FD_BEFORE" ] && [ -n "$FD_AFTER" ] && [ "$FD_AFTER" -le $((FD_BEFORE + FD_TOLERANCE)) ]; then
+    FD_OK=1
+fi
+
+if [ "$DOMAINS" = "0" ] && [ "$LEFT" = "0" ] && [ "$CYCLE_RUN_OK" = "1" ] && [ "$FD_OK" = "1" ]; then
+    record_result 0
+else
+    log_warn "attach_ok=$CYCLE_ATTACH_OK run_ok=$CYCLE_RUN_OK fd: ${FD_BEFORE:-?} -> ${FD_AFTER:-?} (tolerance +${FD_TOLERANCE}) stale domains=$DOMAINS leftover_tasks=$LEFT"
+    record_result 1
+fi
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 6; then
+log_test "6. Auto-close timeout transitions container to STOPPED"
+
+# Timer starts after the client disconnects, not at ctr run --detach.
+RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close_timeout=10s ${TEST_IMAGE} lc-auto")
+if [ "$RUN_EC" != "0" ]; then
+    log_warn "ctr run failed (ec=$RUN_EC); auto-close path not exercised"
+    record_result 1
+else
+sleep 2
+BEFORE=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-auto" { print $3 }')
+log_info "before auto-close: $BEFORE"
+
+log_info "closing attach stdin to start auto-close timer"
+guest_sh "printf '\\n' | timeout 8 ctr task attach lc-auto >/dev/null 2>&1 || true" >/dev/null
+
+log_info "waiting ${AUTO_CLOSE_WAIT}s for auto-close timeout..."
+sleep "$AUTO_CLOSE_WAIT"
+
+AFTER=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-auto" { print $3 }')
+log_info "after auto-close: $AFTER"
+
+DOMAINS=$(guest_payload "xl list" | awk '$1 == "lc-auto" { c++ } END { print c+0 }')
+
+# Guest shim may leave a STOPPED task or delete it entirely. Either is
+# success as long as the Xen domain is gone. RUNNING before the timer fired
+# proves the container actually started (a failed run used to pass vacuously).
+if { [ "$AFTER" = "STOPPED" ] || [ -z "$AFTER" ]; } && [ "$DOMAINS" = "0" ] && { [ "$BEFORE" = "RUNNING" ] || [ "$BEFORE" = "CREATED" ]; }; then
+    record_result 0
+else
+    log_warn "task status: ${AFTER:-<gone>}, stale domains: $DOMAINS"
+    record_result 1
+fi
+guest_sh "ctr task delete lc-auto 2>/dev/null; ctr container delete lc-auto 2>/dev/null" >/dev/null
+fi
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 7; then
+log_test "7. Pause/resume container task"
+
+# Disable auto-close: the detached run starts a 10s auto-close timer, and
+# with SSH round-trip latency the pause below can arrive after the task
+# already auto-closed (pause=1, empty status), making this case flaky.
+guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-pause" >/dev/null
+sleep 2
+
+PAUSE_EXIT=$(guest_ec "ctr task pause lc-pause")
+RESUME_EXIT=$(guest_ec "ctr task resume lc-pause")
+STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-pause" { print $3 }')
+
+if [ "$PAUSE_EXIT" = "0" ] && [ "$RESUME_EXIT" = "0" ] && [ "$STATUS" = "RUNNING" ]; then
+    record_result 0
+else
+    log_warn "pause=$PAUSE_EXIT resume=$RESUME_EXIT status=$STATUS"
+    record_result 1
+fi
+guest_sh "ctr task kill -s 9 lc-pause 2>/dev/null; ctr task delete lc-pause 2>/dev/null; ctr container delete lc-pause 2>/dev/null" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 8; then
+log_test "8. Same name can be recreated after a full delete"
+
+guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-recreate" >/dev/null
+sleep 1
+guest_sh "ctr task kill -s 9 lc-recreate 2>/dev/null; ctr task delete lc-recreate 2>/dev/null; ctr container delete lc-recreate 2>/dev/null" >/dev/null
+sleep 1
+RECREATE_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-recreate")
+RECREATE_STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-recreate" { print $3 }')
+if [ "$RECREATE_EC" = "0" ] && [ "$RECREATE_STATUS" = "RUNNING" ]; then
+    record_result 0
+else
+    log_warn "recreate ec=$RECREATE_EC status=$RECREATE_STATUS"
+    record_result 1
+fi
+guest_sh "ctr task kill -s 9 lc-recreate 2>/dev/null; ctr task delete lc-recreate 2>/dev/null; ctr container delete lc-recreate 2>/dev/null" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 9; then
+log_test "9. Running task has a Xen domain that disappears after delete"
+
+RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-xen")
+if [ "$RUN_EC" != "0" ]; then
+    log_warn "ctr run failed (ec=$RUN_EC); domain lifecycle not exercised"
+    record_result 1
+else
+# Poll for the task to reach RUNNING instead of a blind fixed sleep: after
+# the previous case's teardown the containerd/micad path can still be
+# converging, and a blind sleep reported the task as missing on slow runs.
+TASK_WHILE=""
+i=0
+while [ "$i" -lt 10 ]; do
+    TASK_WHILE=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-xen" { print $3 }')
+    [ "$TASK_WHILE" = "RUNNING" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+XEN_WHILE=$(guest_payload "xl list" | awk '$1 == "lc-xen" { c++ } END { print c+0 }')
+guest_sh "ctr task kill -s 9 lc-xen 2>/dev/null" >/dev/null
+i=0
+while [ "$i" -lt 10 ]; do
+    st=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-xen" { print $3 }')
+    [ "$st" = "STOPPED" ] || [ -z "$st" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+guest_sh "ctr task delete lc-xen 2>/dev/null; ctr container delete lc-xen 2>/dev/null" >/dev/null
+XEN_AFTER=1
+i=0
+while [ "$i" -lt 10 ]; do
+    XEN_AFTER=$(guest_payload "xl list" | awk '$1 == "lc-xen" { c++ } END { print c+0 }')
+    [ "$XEN_AFTER" = "0" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+if [ "$TASK_WHILE" = "RUNNING" ] && [ "$XEN_WHILE" = "1" ] && [ "$XEN_AFTER" = "0" ]; then
+    record_result 0
+else
+    log_warn "task=$TASK_WHILE xen_while=$XEN_WHILE xen_after=$XEN_AFTER"
+    record_result 1
+fi
+fi
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 10; then
+log_test "10. Unknown runtime name fails cleanly"
+
+OUTPUT=$(guest_sh "ctr run --runtime io.containerd.not-a-runtime.v2 --detach ${TEST_IMAGE} lc-badrt")
+# Match only runtime-RESOLUTION errors. containerd 1.7 says 'failed to
+# resolve runtime path: runtime "…" binary not installed "…": file does not
+# exist'; other versions say "binary not found" / "unknown runtime". A bare
+# "failed" would also match a dead containerd ("failed to dial"), passing
+# this case while the whole engine is down; the positive counterpart (a
+# valid runtime must work) is every other case in this suite.
+if echo "$OUTPUT" | grep -qiE "failed to resolve runtime|binary not (installed|found)|unknown runtime|no runtime"; then
+    record_result 0
+else
+    log_warn "unexpected unknown-runtime output"
+    record_result 1
+fi
+guest_sh "ctr task delete lc-badrt 2>/dev/null; ctr container delete lc-badrt 2>/dev/null" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 11; then
+log_test "11. SIGTERM stops a running task without leaving a Xen domain"
+
+guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-term" >/dev/null
+# Poll for RUNNING before signalling (same convergence rationale as case 9).
+TERM_RUN=""
+i=0
+while [ "$i" -lt 10 ]; do
+    TERM_RUN=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-term" { print $3 }')
+    [ "$TERM_RUN" = "RUNNING" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+guest_sh "ctr task kill -s 15 lc-term" >/dev/null
+# Poll for the stopped+clean end state instead of a blind sleep.
+TERM_STATUS="RUNNING"
+TERM_XEN=1
+i=0
+while [ "$i" -lt 10 ]; do
+    TERM_STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-term" { print $3 }')
+    TERM_XEN=$(guest_payload "xl list" | awk '$1 == "lc-term" { c++ } END { print c+0 }')
+    { [ "$TERM_STATUS" = "STOPPED" ] || [ -z "$TERM_STATUS" ]; } && [ "$TERM_XEN" = "0" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+if [ "$TERM_RUN" = "RUNNING" ] && { [ "$TERM_STATUS" = "STOPPED" ] || [ -z "$TERM_STATUS" ]; } && [ "$TERM_XEN" = "0" ]; then
+    record_result 0
+else
+    log_warn "sigterm run=${TERM_RUN:-<none>} status=${TERM_STATUS:-<gone>} xen=$TERM_XEN"
+    record_result 1
+fi
+guest_sh "ctr task delete lc-term 2>/dev/null; ctr container delete lc-term 2>/dev/null" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 12; then
+log_test "12. Attach interaction answers; EOF stop leaves no domain behind"
+
+# ctr task attach binds the task to the attach client (foreground
+# semantics): when the attach client exits on stdin EOF it stops the task.
+# This case covers the interactive round-trip (acceptance #4) and verifies
+# the EOF-driven teardown is clean: task terminal AND Xen domain gone.
+# (Detached-reattach racing is covered by unit tests for the event-bus
+# generation guard; nerdctl/kubectl real detach needs the IO/K3s suites.)
+REATTACH_RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-reattach")
+if [ "$REATTACH_RUN_EC" != "0" ]; then
+    log_warn "ctr run failed (ec=$REATTACH_RUN_EC); attach path not exercised"
+    record_result 1
+    teardown_container lc-reattach
+else
+# Poll for RUNNING before attaching: a blind fixed sleep raced the task
+# registration on slow first boots (attach found no running task).
+REATTACH_READY=""
+i=0
+while [ "$i" -lt 10 ]; do
+    REATTACH_READY=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-reattach" { print $3 }')
+    [ "$REATTACH_READY" = "RUNNING" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+ATTACH_OUT=$(guest_payload "printf '\\nuname\\n' | timeout ${ATTACH_TIMEOUT} ctr task attach lc-reattach > /tmp/lc-reattach.out 2>&1 || true; cat /tmp/lc-reattach.out")
+sleep 3
+EOF_STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-reattach" { print $3 }')
+EOF_DOMAIN=$(guest_payload "xl list" | awk '$1 == "lc-reattach" { c++ } END { print c+0 }')
+
+# "UniProton [0-9]" (uname's version reply) or "command not found" (RPMSG
+# first-byte drop, known behavior) — never the echoed input or the boot
+# banner, which would pass with zero product output.
+if [ "$REATTACH_READY" = "RUNNING" ] && echo "$ATTACH_OUT" | grep -qiE "UniProton [0-9]|command not found" && { [ "$EOF_STATUS" = "STOPPED" ] || [ -z "$EOF_STATUS" ]; } && [ "$EOF_DOMAIN" = "0" ]; then
+    record_result 0
+else
+    log_warn "ready=$REATTACH_READY attach_out='$(echo "$ATTACH_OUT" | tr '\n' ' ' | tail -c 160)' status=${EOF_STATUS:-<gone>} domain=$EOF_DOMAIN"
+    record_result 1
+fi
+guest_sh "ctr task delete lc-reattach 2>/dev/null; ctr container delete lc-reattach 2>/dev/null" >/dev/null
+fi
+fi
+
+# ---------------------------------------------------------------------------
+if lc_selected 13; then
+log_test "13. Unmapped kill signal reports an error instead of fake success"
+
+# A signal micrun cannot deliver to the guest (e.g. SIGUSR1, or an image
+# STOPSIGNAL like SIGQUIT) must surface an error: a silent success makes the
+# caller wait out the whole grace period before the SIGKILL fallback, and
+# the task must stay RUNNING afterwards. (Signal-0 probing is covered by
+# unit tests: the ctr client rejects "--signal 0" before it reaches us.)
+SIG_RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-sig")
+SIG_READY=""
+if [ "$SIG_RUN_EC" = "0" ]; then
+    i=0
+    while [ "$i" -lt 10 ]; do
+        SIG_READY=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-sig" { print $3 }')
+        [ "$SIG_READY" = "RUNNING" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+fi
+if [ "$SIG_RUN_EC" != "0" ] || [ "$SIG_READY" != "RUNNING" ]; then
+    log_warn "ctr run ec=$SIG_RUN_EC ready=${SIG_READY:-<none>}; unmapped-signal path not exercised"
+    record_result 1
+else
+
+USR1_EC=$(guest_ec "ctr task kill --signal USR1 lc-sig")
+SIG_STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-sig" { print $3 }')
+
+if [ "$USR1_EC" != "0" ] && [ "$SIG_STATUS" = "RUNNING" ]; then
+    record_result 0
+else
+    log_warn "usr1_ec=$USR1_EC status=$SIG_STATUS"
+    record_result 1
+fi
+fi
+guest_sh "ctr task kill -s 9 lc-sig 2>/dev/null; ctr task delete lc-sig 2>/dev/null; ctr container delete lc-sig 2>/dev/null" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "============================================="
+echo "RESULTS: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
+echo "============================================="
+
+if [ "$FAIL_COUNT" -gt 0 ]; then
+    exit 1
+fi

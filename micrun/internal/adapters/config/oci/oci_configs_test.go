@@ -175,6 +175,97 @@ func TestBuildContainerConfigCopiesAnnotations(t *testing.T) {
 	}
 }
 
+// Spec acceptance 5 end-to-end at the config layer: an os=zephyr annotation
+// must select zephyr on the built config. The E2E case cannot distinguish
+// this from the default (it pins os=uniproton == DefaultOS).
+func TestBuildContainerConfigOSAnnotationSelectsZephyr(t *testing.T) {
+	bundle := t.TempDir()
+	rootfs := filepath.Join(bundle, "rootfs")
+	if err := os.MkdirAll(rootfs, 0o755); err != nil {
+		t.Fatalf("mkdir rootfs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, defs.DefaultFirmwareName), []byte("elf"), 0o644); err != nil {
+		t.Fatalf("write firmware: %v", err)
+	}
+
+	rc := NewRuntimeConfigWithHost(HostProfile{})
+	rc.SetStateDir(t.TempDir())
+	spec := specs.Spec{Annotations: map[string]string{
+		ann.OSAnnotation: "zephyr",
+	}}
+
+	cfg, err := BuildContainerConfig(context.Background(), ContainerConfigRequest{
+		ID:            "zephyr1",
+		Bundle:        bundle,
+		Spec:          spec,
+		ContainerType: cntr.SingleContainer,
+		RuntimeConfig: rc,
+	})
+	if err != nil {
+		t.Fatalf("BuildContainerConfig returned error: %v", err)
+	}
+	if cfg.OS != "zephyr" {
+		t.Fatalf("cfg.OS = %q, want zephyr (annotation must not be dropped)", cfg.OS)
+	}
+}
+
+// Spec acceptance 6: pin the min_memory_mb annotation parsing contract — a
+// valid value applies, an invalid/blank one leaves the config untouched
+// (ignore-with-default is the documented behavior E2E case 9 relies on).
+func TestApplyMemoryReservationFromAnnotation(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  uint32 // 0 = config untouched
+	}{
+		{name: "valid value applies", value: "48", want: 48},
+		{name: "invalid value ignored", value: "abc", want: 0},
+		{name: "negative value ignored", value: "-5", want: 0},
+		{name: "uint32 overflow ignored", value: "4294967296", want: 0},
+		{name: "blank value ignored", value: "  ", want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &cntr.ContainerConfig{}
+			applyMemoryReservationFromAnnotation(cfg, map[string]string{ann.ContainerMinMemMB: tc.value})
+			if got := cfg.MemoryReservationMiB(); got != tc.want {
+				t.Fatalf("MemoryReservationMiB = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// Annotations hold highest priority for values (runtime_annotation_config.go):
+// a min_memory_mb annotation overrides an OCI spec memory.reservation. Pins
+// the direction so docs and code cannot drift apart again.
+func TestApplyResourcesMinMemoryAnnotationOverridesSpecReservation(t *testing.T) {
+	reservation := int64(64 * 1024 * 1024)
+	spec := specs.Spec{
+		Linux: &specs.Linux{
+			Resources: &specs.LinuxResources{
+				Memory: &specs.LinuxMemory{Reservation: &reservation},
+			},
+		},
+		Annotations: map[string]string{ann.ContainerMinMemMB: "32"},
+	}
+
+	builder := &containerConfigBuilder{
+		request: ContainerConfigRequest{
+			Spec:          spec,
+			RuntimeConfig: NewRuntimeConfigWithHost(HostProfile{}),
+		},
+		annotations: spec.Annotations,
+		policy:      cntr.ResourcePolicyOrDefault(nil),
+	}
+	cfg := &cntr.ContainerConfig{ID: "prio", Resources: &specs.LinuxResources{}}
+	if err := builder.applyResources(context.Background(), cfg); err != nil {
+		t.Fatalf("applyResources returned error: %v", err)
+	}
+	if got := cfg.MemoryReservationMiB(); got != 32 {
+		t.Fatalf("MemoryReservationMiB = %d, want 32 (annotation overrides spec reservation)", got)
+	}
+}
+
 func TestResolveFirmwarePathUsesFallbackFirmware(t *testing.T) {
 	tmpDir := t.TempDir()
 	fwPath := filepath.Join(tmpDir, "default.elf")

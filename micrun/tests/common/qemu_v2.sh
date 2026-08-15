@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Never trigger GUI askpass prompts; fail fast instead (see remote.sh).
+unset SSH_ASKPASS SUDO_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
+
 # Enhanced QEMU testing utilities - Simplified fixed version
 # Focus on core functionality without complex quoting
 

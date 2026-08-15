@@ -136,7 +136,7 @@ K3s 回归已纳入统一测试项目。已有 K3s 环境时可直接跑类别�
 
 ```bash
 tests/run_all_tests.sh k3s
-tests/run_all_tests.sh k3s K3S-008
+tests/run_all_tests.sh k3s interaction
 tests/bin/test-k3s-cloud-edge
 tests/bin/test-k3s-interaction
 ```

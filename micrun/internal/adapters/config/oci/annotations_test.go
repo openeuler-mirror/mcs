@@ -116,6 +116,35 @@ func TestGetOSInfoAllowsNilGetter(t *testing.T) {
 	}
 }
 
+// Spec acceptance 5 (RTOS type selection): the os annotation must reach the
+// config verbatim. The E2E case pins os=uniproton, which equals DefaultOS, so
+// only a unit test can tell "annotation consumed" from "annotation dropped
+// and default used".
+func TestGetOSInfoReadsAnnotation(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        string
+	}{
+		{name: "zephyr selects zephyr", annotations: map[string]string{ann.OSAnnotation: "zephyr"}, want: "zephyr"},
+		{name: "explicit uniproton", annotations: map[string]string{ann.OSAnnotation: "uniproton"}, want: "uniproton"},
+		// Case is passed through untouched: the lowercase whitelist rejects
+		// the wrong-case value later with an actionable error instead of this
+		// layer silently folding it.
+		{name: "case preserved for validation", annotations: map[string]string{ann.OSAnnotation: "UniProton"}, want: "UniProton"},
+		{name: "missing falls back to default", annotations: map[string]string{}, want: defs.DefaultOS},
+		{name: "blank falls back to default", annotations: map[string]string{ann.OSAnnotation: "  "}, want: defs.DefaultOS},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			getter := func(key string) (string, bool) { return getAnnotation(key, tc.annotations) }
+			if got := getOSInfo(getter); got != tc.want {
+				t.Fatalf("getOSInfo = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestApplySandboxBoolAnnotationAllowsNilConfig(t *testing.T) {
 	applySandboxBoolAnnotation(nil, ann.RuntimeHugePageEnable, "true", func(cfg *cntr.SandboxConfig, value bool) {
 		t.Fatal("applier should not be called for nil config")

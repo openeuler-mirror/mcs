@@ -7,6 +7,7 @@
 
 ```bash
 micrun/tests/bin/test-qemu-smoke
+micrun/tests/bin/test-qemu-lifecycle
 micrun/tests/bin/test-io-qemu
 micrun/tests/bin/test-k3s-single-node
 micrun/tests/bin/test-k3s-cloud-edge
@@ -15,12 +16,15 @@ micrun/tests/bin/test-k3s-ota
 micrun/tests/run_all_tests.sh
 ```
 
-`micrun/tests/run_all_tests.sh k3s` 是 K3s 类别的统一入口。无 `test_id` 时默认
-包含 `K3S-008` 交互测试，即会覆盖 `RuntimeClass=micrun` Pod 创建、
+`micrun/tests/run_all_tests.sh k3s` 是 K3s 类别的统一入口。无场景参数时默认
+包含 `interaction` 交互测试，即会覆盖 `RuntimeClass=micrun` Pod 创建、
 `kubectl attach`、边侧 containerd task、Xen domain 和删除清理。若只想跑
-某个场景，可以传入 `K3S-000` 到 `K3S-009`。`K3S-009` 是 OTA 滚动升级测试，
-默认不随 K3s 类别全量执行；如需纳入默认 K3s 类别，设置
-`K3S_INCLUDE_OTA=true`。
+某个场景，传入语义化场景名：`preflight`（环境预检）、`runtimeclass`、
+`pod-lifecycle`、`deployment`（扩缩容）、`pod-logs`、`resource-limits`、
+`multi-node`、`self-healing`、`interaction`、`ota`。`ota` 是 OTA 滚动升级
+测试，默认不随 K3s 类别全量执行；如需纳入默认 K3s 类别，设置
+`K3S_INCLUDE_OTA=true`。（旧的 `K3S-000`～`K3S-009` 编号仍被接受为
+兼容别名。）
 
 ## 目录结构
 
@@ -32,6 +36,51 @@ micrun/tests/run_all_tests.sh
 | `k3s/` | K3s 单节点、云边测试和边侧准备脚本 |
 | `lib/` | 旧 shell helper 的兼容层 |
 | `mock_micad/` | mock micad 工具 |
+
+## 非交互认证（禁止弹窗、禁止问用户要密码）
+
+图形会话里裸 `ssh` / `sudo` 会走 `SSH_ASKPASS` / `SUDO_ASKPASS` 弹出密码框。
+所有测试入口必须保持非交互：
+
+```bash
+unset SSH_ASKPASS SUDO_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
+sudo -n true    # 宿主机 sudo 仅在已配置 NOPASSWD 时使用
+```
+
+`tests/common/qemu.sh` 只有在 `TEST_REMOTE_PASSWORD` 或 `QEMU_GUEST_PASSWORD`
+**非空** 时才走 `sshpass`。空值会调用裸 `ssh`，在桌面环境必弹窗。
+
+标准 oEE 镜像的 root 是构建期预设密码，shadow 的 lastchg 落在构建日——
+QEMU 默认 1970 RTC 下 pam_unix 认为“密码修改时间在未来”而拒绝一切密码
+登录（console 与 SSH 同因）。测试侧用纯 QEMU 参数
+`-rtc base=2026-08-17T00:00:00` 拨正 guest 时钟（见 `qemu_start_command`），
+预设密码因而在 console 可用。
+
+`qemu_start_background` 随后经串口 console socket 完成 guest 运行态准备
+（`tests/common/qemu_console_bootstrap.py`；这是 guest runtime
+preparation，不改动构建产物）：驱动以 expect 方式等待真实提示符
+（login / Password / shell），登录后用 `chpasswd -e` 把 root 密码改为
+`$QEMU_GUEST_PASSWORD`（默认 `micrun`，宿主机侧 `openssl passwd -6`
+预算哈希以绕过 guest 内 pam_pwquality 对弱密码的拒绝），打开
+`PermitRootLogin yes` 并重启 sshd。QEMU 的 socket chardev 只服务单个
+客户端，console 日志 tee 只在 bootstrap 结束后才挂接。
+
+个别镜像变体设了 `passwd-expire`，第一次 SSH 会变成
+`keyboard-interactive` 的 “New password” 多轮改密流程，`sshpass` 无法驱动。
+`qemu_wait_for_ssh` 会在普通认证连续失败后自动回退到 expect 流程
+（`tests/common/qemu_setup_password.exp`）：本地生成随机密码，驱动改密，
+写入 `$QEMU_GUEST_PASS_FILE`（默认 `/tmp/micrun-tests/guest.pass`），后续
+测试脚本自动复用。整个过程无需人工干预，也无需修改构建产物。
+
+如需手动指定 guest 密码，设置环境变量即可：
+
+```bash
+export QEMU_GUEST_PASSWORD="<your-password>"
+```
+
+`tests/common/env.sh` 会自动 `unset SSH_ASKPASS` 并设置
+`SSH_ASKPASS_REQUIRE=never`。
 
 ## QEMU Smoke
 
@@ -81,10 +130,29 @@ export QEMU_IMAGE_TAR="<path-to-stamped-output>/exports/local_mica-uniproton-app
 micrun/tests/bin/test-io-qemu
 ```
 
+选择单个或若干场景，不必重跑整套 15 个用例。guest 已在、shim 和镜像
+也已经部署时，用 `--reuse` 跳过 smoke、交叉编译和 63MB 镜像导入：
+
+```bash
+# 只跑 Test 5（nerdctl -i）和 Test 13（auto-close）
+IMAGE_PROFILE=shell micrun/tests/bin/test-io-qemu --reuse --case 5,13
+
+# 只跑 lifecycle 的 auto-close
+micrun/tests/bin/test-qemu-lifecycle --reuse --case auto-close
+```
+
+`--case` 接受编号或名称：`0-14`、`ctr-bg`、`notty`、`multi`、`auto-close`。
+也可用 `MICRUN_IO_CASES=1,10` / `MICRUN_LC_CASES=6,9`。`IMAGE_PROFILE=shell`
+会跳过套件开头的 profile probe。
+
 如果使用 `TEST_REMOTE_HOST=qemu-k3s`、`root@127.0.0.1` 或 `127.0.0.1`，
-入口会先调用 `test-qemu-smoke` 自动启动 QEMU，并通过 usernet SSH 转发访问
-guest。只使用 tap 时，请先手动启动 QEMU，并把 `TEST_REMOTE_HOST` 指向
-仓库示例地址或你的实际 guest 地址。
+全量入口会先调用 `test-qemu-smoke`。guest 已经能 SSH 时默认不再重启 QEMU
+（`QEMU_AUTO_START=false`），以免冲掉已设置的会话密码或弹出 askpass。
+`--case` / `--reuse` 默认跳过 smoke。只使用 tap 时，请先手动启动 QEMU，
+并把 `TEST_REMOTE_HOST` 指向仓库示例地址或你的实际 guest 地址。
+
+IO 用例若 attach 为空、stdout FIFO 打不开，或 task 停在 `CREATED` 删不掉，
+应视为 MicRun 代码问题，不要把这些失败改成跳过。
 
 ## K3s 测试
 

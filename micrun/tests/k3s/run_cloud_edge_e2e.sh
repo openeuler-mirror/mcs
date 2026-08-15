@@ -14,6 +14,9 @@ PAUSE_IMAGE="${K3S_PAUSE_IMAGE:-rancher/mirrored-pause:3.6}"
 PAUSE_IMAGE_CANONICAL="${K3S_PAUSE_IMAGE_CANONICAL:-docker.io/rancher/mirrored-pause:3.6}"
 IMAGE_TAR="${K3S_IMAGE_TAR:-/tmp/localhost_5000_mica-uniproton-app_xen-0.1.tar}"
 SOURCE_IMAGE_REF="${K3S_SOURCE_IMAGE_REF:-docker.io/local/mica-uniproton-app:xen-arm64-0.1}"
+# The default K3S_IMAGE_TAR ships the image under the local-registry name;
+# bridge from either name so the TEST_IMAGE check passes regardless.
+REGISTRY_IMAGE_REF="${K3S_REGISTRY_IMAGE_REF:-localhost:5000/mica-uniproton-app:xen-0.1}"
 CONTAINER_COMMAND="${K3S_CONTAINER_COMMAND:-/micrun-placeholder}"
 RUNTIME_CLASS_NAME="${K3S_RUNTIME_CLASS_NAME:-micrun}"
 POD_NAME="${K3S_E2E_POD_NAME:-rtos-cloud-demo}"
@@ -24,12 +27,17 @@ EDGE_CONTAINERD_MODE="${K3S_EDGE_CONTAINERD_MODE:-bundled}"
 EDGE_CONTAINERD_NS="${K3S_EDGE_CONTAINERD_NS:-k8s.io}"
 if [ "$EDGE_CONTAINERD_MODE" = "external" ]; then
     CONTAINERD_ADDRESS="${K3S_CONTAINERD_ADDRESS:-/run/containerd/containerd.sock}"
+    # External mode talks to the system containerd: use the plain ctr
+    # binary. The k3s-embedded `k3s ctr` subcommand is unavailable on some
+    # image builds ("No help topic for 'ctr'").
+    EDGE_CTR_BIN="${K3S_EDGE_CTR_BIN:-ctr}"
+    EDGE_CTR_SUBCOMMAND="${K3S_EDGE_CTR_SUBCOMMAND-}"
 else
     CONTAINERD_ADDRESS="${K3S_CONTAINERD_ADDRESS:-/run/k3s/containerd/containerd.sock}"
+    EDGE_CTR_BIN="${K3S_EDGE_CTR_BIN:-$K3S_BIN}"
+    EDGE_CTR_SUBCOMMAND="${K3S_EDGE_CTR_SUBCOMMAND-ctr}"
 fi
 CRI_ENDPOINT="${K3S_CRI_ENDPOINT:-unix://${CONTAINERD_ADDRESS}}"
-EDGE_CTR_BIN="${K3S_EDGE_CTR_BIN:-$K3S_BIN}"
-EDGE_CTR_SUBCOMMAND="${K3S_EDGE_CTR_SUBCOMMAND-ctr}"
 DEFAULT_KUBELET_ARGS="${K3S_DEFAULT_KUBELET_ARGS:---kubelet-arg=cgroups-per-qos=false --kubelet-arg=enforce-node-allocatable=}"
 KUBELET_ARGS="${K3S_KUBELET_ARGS-$DEFAULT_KUBELET_ARGS}"
 AUTO_CLOSE_TIMEOUT="${K3S_AUTO_CLOSE_TIMEOUT:-0}"
@@ -45,8 +53,12 @@ CLOUD_SERVER_NAME="${K3S_CLOUD_SERVER_NAME:-cloud-srv}"
 CLOUD_SERVER_IP="${K3S_CLOUD_SERVER_IP:-192.168.7.10}"
 CLOUD_SERVER_SNAPSHOTTER="${K3S_CLOUD_SERVER_SNAPSHOTTER:-native}"
 CLOUD_SERVER_EXTRA_ARGS="${K3S_CLOUD_SERVER_EXTRA_ARGS:-}"
-CLOUD_KUBECTL_BIN="${K3S_CLOUD_KUBECTL_BIN:-k3s}"
-CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-kubectl}"
+# The container ships a working kubectl with the server kubeconfig; use it
+# directly. Both "k3s <args>" and "k3s kubectl <args>" misbehave on the
+# k3s v1.27.15 CLI (exit 3 / exit 1), which made every cloud_kubectl wait
+# fail unconditionally.
+CLOUD_KUBECTL_BIN="${K3S_CLOUD_KUBECTL_BIN:-kubectl}"
+CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-}"
 CLOUD_NETWORK_NAME="${K3S_CLOUD_NETWORK_NAME:-micrun-cloud}"
 CLOUD_NETWORK_SUBNET="${K3S_CLOUD_NETWORK_SUBNET:-192.168.7.0/24}"
 CLOUD_NETWORK_GATEWAY="${K3S_CLOUD_NETWORK_GATEWAY:-192.168.7.1}"
@@ -113,6 +125,9 @@ wait_for_cloud_kubectl() {
         if cloud_kubectl "$@" >/dev/null 2>&1; then
             return 0
         fi
+        if [ "${K3S_DEBUG_WAIT:-0}" = "1" ]; then
+            log_info "wait retry $i: cloud_kubectl $* failed: $(cloud_kubectl "$@" 2>&1 | head -1)"
+        fi
         sleep "$sleep_seconds"
     done
 
@@ -144,6 +159,16 @@ ensure_local_requirements() {
     ip link show "$CLOUD_NETWORK_PARENT" >/dev/null 2>&1 || {
         log_error "network parent interface not found: $CLOUD_NETWORK_PARENT"
         exit 1
+    }
+
+    # The host side of the tap test network carries the macvlan gateway
+    # address; nothing else configures it (qemu-ifup only bridges), so add
+    # it idempotently or edge SSH and the cloud network stay unreachable.
+    ip -4 addr show "$CLOUD_NETWORK_PARENT" | grep -q "inet ${CLOUD_NETWORK_GATEWAY}/" || {
+        sudo -n ip addr add "$CLOUD_NETWORK_GATEWAY/24" dev "$CLOUD_NETWORK_PARENT" || {
+            log_error "failed to add $CLOUD_NETWORK_GATEWAY on $CLOUD_NETWORK_PARENT"
+            exit 1
+        }
     }
 }
 
@@ -206,7 +231,7 @@ start_cloud_server() {
         --snapshotter "$CLOUD_SERVER_SNAPSHOTTER" \
         "${extra_args[@]}" >/dev/null
 
-    wait_for_cloud_kubectl 90 2 get nodes || {
+    wait_for_cloud_kubectl "${K3S_SERVER_READY_RETRIES:-150}" 2 get nodes || {
         log_error "cloud K3s server did not become ready"
         docker logs "$CLOUD_SERVER_CONTAINER" 2>&1 | tail -n 200 || true
         exit 1
@@ -387,6 +412,7 @@ import_edge_images() {
         edge_ctr images import '$IMAGE_TAR'
         edge_ctr images tag '$PAUSE_IMAGE' '$PAUSE_IMAGE_CANONICAL' >/dev/null 2>&1 || true
         edge_ctr images tag '$PAUSE_IMAGE_CANONICAL' '$PAUSE_IMAGE' >/dev/null 2>&1 || true
+        edge_ctr images tag '$REGISTRY_IMAGE_REF' '$TEST_IMAGE' >/dev/null 2>&1 || true
         edge_ctr images tag '$SOURCE_IMAGE_REF' '$TEST_IMAGE' >/dev/null 2>&1 || true
         edge_ctr images ls -q | grep -Fx '$PAUSE_IMAGE_CANONICAL' >/dev/null
         edge_ctr images ls -q | grep -Fx '$TEST_IMAGE' >/dev/null
@@ -471,11 +497,20 @@ EOF
 }
 
 wait_for_cloud_pod() {
-    local i
+    local i restarts
 
     for i in $(seq 1 90); do
         if [ "$(cloud_kubectl get pod "$POD_NAME" \
             -o 'jsonpath={.status.phase}' 2>/dev/null || true)" = "Running" ]; then
+            # A crash-looping pod also reports phase=Running; require zero
+            # restarts so a workload that dies immediately and is rebuilt by
+            # kubelet cannot pass this wait.
+            restarts="$(cloud_kubectl get pod "$POD_NAME" \
+                -o 'jsonpath={.status.containerStatuses[0].restartCount}' 2>/dev/null || true)"
+            if [ -n "$restarts" ] && [ "$restarts" != "0" ]; then
+                sleep 4
+                continue
+            fi
             return 0
         fi
         sleep 2
@@ -534,7 +569,7 @@ cleanup_edge_pod_runtime_objects() {
     " >/dev/null
 }
 
-cleanup_cloud_pod() {
+delete_cloud_pod() {
     [ "$KEEP_POD" = "true" ] && return 0
     [ "$POD_CLEANUP_DONE" = "true" ] && return 0
 
@@ -547,31 +582,41 @@ cleanup_cloud_pod() {
         cloud_kubectl delete runtimeclass "$RUNTIME_CLASS_NAME" \
             --ignore-not-found=true >/dev/null 2>&1 || true
     fi
-
-    cleanup_edge_pod_runtime_objects
     POD_CLEANUP_DONE="true"
+}
+
+# cleanup_cloud_pod is the EXIT-trap path: it deletes the pod via Kubernetes
+# and then force-clears any leftover edge runtime objects (xl destroy / ctr
+# --force / state dirs). It must NOT be used by verify_delete_cleanup — the
+# verification exists to prove the PRODUCT cleaned up, and forcing first
+# would make the assertions vacuously green (scan item 2.3).
+cleanup_cloud_pod() {
+    delete_cloud_pod
+    cleanup_edge_pod_runtime_objects
 }
 
 verify_delete_cleanup() {
     [ "$KEEP_POD" = "true" ] && return 0
     [ -n "$CONTAINER_ID" ] || return 0
 
-    log_info "Cleaning cloud-edge RTOS pod"
-    cleanup_cloud_pod
+    log_info "Deleting cloud-edge RTOS pod via the product path (no edge force cleanup)"
+    delete_cloud_pod
 
     wait_for_remote "ctr -a '$CONTAINERD_ADDRESS' -n '$EDGE_CONTAINERD_NS' tasks ls | awk -v id='$CONTAINER_ID' '\$1 == id {found=1} END {exit found ? 1 : 0}'" 30 2 || {
-        log_error "edge containerd task still exists after cloud-edge cleanup: $CONTAINER_ID"
+        log_error "edge containerd task still exists after product-driven cleanup: $CONTAINER_ID"
+        log_error "this is a MicRun cleanup regression (the EXIT trap will force-clear the environment)"
         remote_output "$REMOTE_HOST" "ctr -a '$CONTAINERD_ADDRESS' -n '$EDGE_CONTAINERD_NS' tasks ls" || true
         exit 1
     }
 
     wait_for_remote "xl list | awk -v id='$CONTAINER_ID' 'NR>2 && \$1 == id {found=1} END {exit found ? 1 : 0}'" 30 2 || {
-        log_error "edge Xen domain still exists after cloud-edge cleanup: $CONTAINER_ID"
+        log_error "edge Xen domain still exists after product-driven cleanup: $CONTAINER_ID"
+        log_error "this is a MicRun cleanup regression (the EXIT trap will force-clear the environment)"
         remote_output "$REMOTE_HOST" "xl list" || true
         exit 1
     }
 
-    log_success "Cloud-edge RTOS pod cleanup validated"
+    log_success "Cloud-edge RTOS pod cleanup validated (product-driven)"
 }
 
 cleanup() {
