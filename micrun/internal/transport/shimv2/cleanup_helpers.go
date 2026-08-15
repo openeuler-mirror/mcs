@@ -24,7 +24,7 @@ func cleanupContainer(ctx context.Context, guestControl ports.GuestControl, deps
 
 	rootfs := filepath.Join(bundle, "rootfs")
 	if err := mount.UnmountAll(rootfs, 0); err != nil {
-		log.Errorf("failed to umount: %s", rootfs)
+		log.Errorf("failed to umount %s: %v", rootfs, err)
 		return err
 	}
 	return nil

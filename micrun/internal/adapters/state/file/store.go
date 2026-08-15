@@ -59,7 +59,7 @@ func (s *Store) Save(ctx context.Context, snapshot *ports.RuntimeSnapshot) error
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return writeFileAtomically(path, snapshot.Data, 0o644)
+	return fs.WriteFileAtomic(path, snapshot.Data, 0o644)
 }
 
 func (s *Store) Delete(ctx context.Context, namespace, taskID string) error {
@@ -180,43 +180,4 @@ func pathWithinRoot(root, path string) bool {
 
 func isDirectoryNotEmpty(err error) bool {
 	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
-}
-
-func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".runtime-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-
-	cleanupTemp := func() {
-		_ = os.Remove(tmpPath)
-	}
-
-	if _, err := tmp.Write(data); err != nil {
-		cleanupTemp()
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		cleanupTemp()
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanupTemp()
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanupTemp()
-		return err
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanupTemp()
-		return err
-	}
-
-	return fs.SyncDir(filepath.Dir(path))
 }

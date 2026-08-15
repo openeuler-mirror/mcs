@@ -20,7 +20,9 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 		return err
 	}
 
-	s.config = runtimeConfig
+	// s.config is already set by loadRuntimeConfig (create plan) under s.mu;
+	// do not write it again here — a redundant unlocked write would race with
+	// concurrent pod-container Creates sharing the same shim service.
 	log.Debugf("createSandboxContainer: containerType=%v bundlePath=%s rootfsPath=%s", containerType, bundlePath, rootfsPath)
 
 	if containerType != cntr.PodSandbox {
@@ -50,7 +52,12 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 		s.setSandboxTraits(sandbox)
 		if err := persistCreatedSandbox(ctx, sandbox); err != nil {
 			s.clearSandbox()
-			if cleanupErr := sandbox.Delete(ctx); cleanupErr != nil {
+			// Detach from RPC cancellation (same contract as
+			// createSandboxFromConfig's cleanup in sandbox_factory.go): if the
+			// Create client timed out, teardown must still run to completion —
+			// a canceled ctx makes Delete's guest calls fail immediately,
+			// leaking the domain, netns holder, and state files.
+			if cleanupErr := sandbox.Delete(context.WithoutCancel(ctx)); cleanupErr != nil {
 				log.Warnf("failed to cleanup sandbox %s after state persistence failure: %v", sandbox.SandboxID(), cleanupErr)
 			}
 			return err
@@ -98,6 +105,16 @@ func createSandbox(ctx context.Context, ocispec *specs.Spec,
 	sandbox, err := cntr.CreateSandbox(ctx, &sandboxConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	// CreateSandbox may restore a persisted holder and reclaim it, releasing
+	// the ephemeral holder from setupNetNS. Refresh annotations to the live
+	// network path so nerdctl/CNI do not keep the discarded holder's ns.
+	if liveNet := sandbox.GetNetNamespace(); liveNet != "" {
+		sandboxConfig.NetworkConfig.NetworkID = liveNet
+		sandboxConfig.NetworkConfig.HolderPid = sandbox.NetnsHolderPID()
+		sandboxConfig.NetworkConfig.NetworkCreated = true
+		propagateNetworkNamespaceAnnotation(ocispec, &sandboxConfig)
 	}
 
 	log.Debugf("Sandbox <%s> created.", sandbox.SandboxID())

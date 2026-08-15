@@ -97,6 +97,48 @@ func SyncDir(dir string) error {
 	return f.Sync()
 }
 
+// WriteFileAtomic writes data via a synced temp file + rename so readers
+// (including a restarted process) never observe a truncated or half-written
+// file. The parent directory is fsynced after the rename.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".runtime-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+
+	cleanupTemp := func() {
+		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		cleanupTemp()
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanupTemp()
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanupTemp()
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanupTemp()
+		return err
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanupTemp()
+		return err
+	}
+
+	return SyncDir(filepath.Dir(path))
+}
+
 func EnsureDir(path string, mode os.FileMode) error {
 	cleanPath, err := CleanAbsolutePath(path)
 	if err != nil {

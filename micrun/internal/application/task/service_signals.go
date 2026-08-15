@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"micrun/internal/application/exitstatus"
@@ -220,7 +221,16 @@ func (s *Service) Kill(ctx context.Context, runtime ports.TaskSignalRuntime, in 
 	if handler, ok := killSignalHandlers[action]; ok {
 		return handler(s, ctx, runtime, taskHandle, in.Signal)
 	}
-	return nil
+	if in.Signal == 0 {
+		// Signal 0 is a presence probe; an alive task answers success.
+		return nil
+	}
+	// The signal was never delivered to the guest. Reporting success here
+	// would make kubelet wait out the whole termination grace period
+	// believing the workload got a chance to shut down gracefully. Report
+	// it instead, mirroring Container.Signal which rejects unmapped signals
+	// rather than returning a misleading nil.
+	return fmt.Errorf("%w: kill signal %d is not mapped to a guest action", er.NotSupported, in.Signal)
 }
 
 type killSignalHandler func(*Service, context.Context, ports.TaskSignalRuntime, ports.Task, uint32) error

@@ -3,19 +3,17 @@ package shim
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	oci "micrun/internal/adapters/config/oci"
 	cntr "micrun/internal/domain/container"
 	"micrun/internal/support/timex"
 
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
-	shimv2 "github.com/containerd/containerd/runtime/v2/shim"
 )
 
 const (
 	channelSize = 128
-	okCode      = 0
-	exitCode    = 255
 )
 
 var (
@@ -26,21 +24,26 @@ var (
 // task manager plus auxiliary transport helpers.
 type shimService struct {
 	sync.Mutex
-	id          string
-	shimPid     uint32
-	namespace   string
-	config      *oci.RuntimeConfig
-	containers  map[string]*shimContainer
-	sandbox     cntr.SandboxTraits
-	ctx         context.Context
-	events      chan shimEvent
-	ec          chan exitEvent
-	publisher   shimv2.Publisher
-	ss          func()
-	runtimeDeps runtimeDependencies
-	processID   processIDProvider
-	shutdown    shutdownEffects
-	now         timex.Clock
-	tm          *taskManager
-	killedByAPI bool
+	sandboxMu sync.RWMutex
+	id        string
+	shimPid   uint32
+	namespace string
+	config    *oci.RuntimeConfig
+	// configFromCreate marks s.config as resolved by a Create RPC (with the
+	// pod's annotations/options applied). applyHostRuntimeConfig leaves it
+	// false: its host-only baseline exists for recovery and must not stop
+	// the first Create from overlaying per-pod runtime settings.
+	configFromCreate bool
+	containers       map[string]*shimContainer
+	sandbox          cntr.SandboxTraits
+	ctx              context.Context
+	events           chan shimEvent
+	ec               chan exitEvent
+	ss               func()
+	runtimeDeps      runtimeDependencies
+	processID        processIDProvider
+	shutdown         shutdownEffects
+	now              timex.Clock
+	tm               *taskManager
+	killedByAPI      atomic.Bool
 }

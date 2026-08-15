@@ -4,7 +4,6 @@ import (
 	"micrun/internal/ports"
 
 	"github.com/containerd/containerd/api/events"
-	eventstypes "github.com/containerd/containerd/api/events"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -13,7 +12,7 @@ func (m *taskManager) emitTaskCreated(req ports.TaskCreateRequest, checkpoint st
 		ContainerID: req.ID,
 		Bundle:      req.Bundle,
 		Rootfs:      req.Rootfs,
-		IO: &eventstypes.TaskIO{
+		IO: &events.TaskIO{
 			Stdin:    req.Stdin,
 			Stdout:   req.Stdout,
 			Stderr:   req.Stderr,

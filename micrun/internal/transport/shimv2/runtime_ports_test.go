@@ -59,6 +59,9 @@ func (f *fakeRuntimeSandbox) OpenTTYs(context.Context, string) (*os.File, *os.Fi
 func (f *fakeRuntimeSandbox) UpdateContainer(context.Context, string, specs.LinuxResources) error {
 	return nil
 }
+func (f *fakeRuntimeSandbox) WaitContainerExit(context.Context, string) (int32, error) {
+	return 0, nil
+}
 
 func TestRuntimeSandboxRejectsMissingSandboxTraits(t *testing.T) {
 	var sandbox runtimeSandbox

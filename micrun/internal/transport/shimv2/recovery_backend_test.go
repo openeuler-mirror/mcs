@@ -11,7 +11,15 @@ import (
 	cntr "micrun/internal/domain/container"
 
 	ctrannotations "github.com/containerd/containerd/pkg/cri/annotations"
-	podmanannotations "github.com/containers/podman/v4/pkg/annotations"
+)
+
+// Mirror the CRI-O annotation keys/values that the production code defines
+// locally (see oci/annotations.go) — use string literals to avoid importing
+// the podman module in tests.
+const (
+	testPodmanContainerType        = "io.kubernetes.cri-o.ContainerType"
+	testPodmanSandboxID            = "io.kubernetes.cri-o.SandboxID"
+	testPodmanContainerTypeSandbox = "sandbox"
 )
 
 func TestRecoveredTaskSandboxRole(t *testing.T) {
@@ -34,7 +42,7 @@ func TestRecoveredTaskSandboxRole(t *testing.T) {
 		},
 		"podman pod container cannot become sandbox": {
 			annotations: map[string]string{
-				podmanannotations.SandboxID: "pod-1",
+				testPodmanSandboxID: "pod-1",
 			},
 		},
 		"containerd sandbox remains sandbox": {
@@ -44,9 +52,34 @@ func TestRecoveredTaskSandboxRole(t *testing.T) {
 			canSandbox: true,
 			isSandbox:  true,
 		},
+		// Real containerd sandboxes carry BOTH annotations:
+		// DefaultCRIAnnotations writes sandbox-id (the sandbox's own id)
+		// unconditionally alongside container-type=sandbox.
+		"containerd sandbox with sandbox-id remains sandbox": {
+			annotations: map[string]string{
+				ctrannotations.ContainerType: ctrannotations.ContainerTypeSandbox,
+				ctrannotations.SandboxID:     "pod-1",
+			},
+			canSandbox: true,
+			isSandbox:  true,
+		},
+		"podman sandbox with sandbox-id remains sandbox": {
+			annotations: map[string]string{
+				testPodmanContainerType: testPodmanContainerTypeSandbox,
+				testPodmanSandboxID:     "pod-1",
+			},
+			canSandbox: true,
+			isSandbox:  true,
+		},
+		"containerd workload with container-type and sandbox-id stays pod container": {
+			annotations: map[string]string{
+				ctrannotations.ContainerType: ctrannotations.ContainerTypeContainer,
+				ctrannotations.SandboxID:     "pod-1",
+			},
+		},
 		"podman sandbox remains sandbox": {
 			annotations: map[string]string{
-				podmanannotations.ContainerType: podmanannotations.ContainerTypeSandbox,
+				testPodmanContainerType: testPodmanContainerTypeSandbox,
 			},
 			canSandbox: true,
 			isSandbox:  true,
@@ -70,13 +103,13 @@ func TestRecoveredTaskSandboxRole(t *testing.T) {
 }
 
 func TestRecoveredTaskFromContainerRejectsNilContainer(t *testing.T) {
-	if _, err := recoveredTaskFromContainer(nil, true); err == nil {
+	if _, err := recoveredTaskFromContainer(nil); err == nil {
 		t.Fatal("recoveredTaskFromContainer expected error for nil container")
 	}
 }
 
 func TestRecoveredTaskFromContainerRejectsEmptyID(t *testing.T) {
-	_, err := recoveredTaskFromContainer(recoveryContainer{}, true)
+	_, err := recoveredTaskFromContainer(recoveryContainer{})
 	if err == nil || !strings.Contains(err.Error(), "id is empty") {
 		t.Fatalf("recoveredTaskFromContainer error = %v, want empty id error", err)
 	}
@@ -84,32 +117,48 @@ func TestRecoveredTaskFromContainerRejectsEmptyID(t *testing.T) {
 
 func TestRecoveredTaskFromContainerMapsContainerFields(t *testing.T) {
 	task, err := recoveredTaskFromContainer(recoveryContainer{
-		id: "sandbox",
+		id:    "sandbox",
+		state: cntr.StateRunning,
 		annotations: map[string]string{
 			ctrannotations.ContainerType: ctrannotations.ContainerTypeSandbox,
 		},
-	}, true)
+	})
 	if err != nil {
 		t.Fatalf("recoveredTaskFromContainer returned error: %v", err)
 	}
-	if task.ID != "sandbox" || !task.IsRunning || !task.CanSandbox || !task.IsSandbox {
+	if task.ID != "sandbox" || !task.IsRunning || task.IsStopped || !task.CanSandbox || !task.IsSandbox {
 		t.Fatalf("unexpected recovered task: %+v", task)
+	}
+}
+
+func TestRecoveredTaskFromContainerMarksStoppedContainer(t *testing.T) {
+	task, err := recoveredTaskFromContainer(recoveryContainer{
+		id:    "stopped-container",
+		state: cntr.StateStopped,
+	})
+	if err != nil {
+		t.Fatalf("recoveredTaskFromContainer returned error: %v", err)
+	}
+	if task.IsRunning || !task.IsStopped {
+		t.Fatalf("expected stopped recovered task, got: %+v", task)
 	}
 }
 
 type recoveryContainer struct {
 	id          string
+	state       cntr.StateString
 	annotations map[string]string
 }
 
 func (c recoveryContainer) ID() string                        { return c.id }
 func (c recoveryContainer) GetAnnotations() map[string]string { return c.annotations }
 func (recoveryContainer) GetPid() int                         { return 0 }
+func (recoveryContainer) IsInfra() bool                       { return false }
 func (recoveryContainer) Sandbox() cntr.SandboxTraits         { return nil }
 func (recoveryContainer) GetMemoryLimit() uint64              { return 0 }
-func (recoveryContainer) Status() cntr.StateString            { return cntr.StateDown }
-func (recoveryContainer) State() *cntr.ContainerState {
-	return &cntr.ContainerState{State: cntr.StateDown}
+func (c recoveryContainer) Status() cntr.StateString          { return c.state }
+func (c recoveryContainer) State() *cntr.ContainerState {
+	return &cntr.ContainerState{State: c.state}
 }
 func (recoveryContainer) StateSnapshot() (cntr.ContainerState, error) {
 	return cntr.ContainerState{}, nil
@@ -121,7 +170,7 @@ func (recoveryContainer) Signal(context.Context, syscall.Signal) error {
 }
 
 func TestRecoveredTasksFromContainersAddsIndexContext(t *testing.T) {
-	_, err := recoveredTasksFromContainers([]cntr.ContainerTraits{nil}, true)
+	_, err := recoveredTasksFromContainers([]cntr.ContainerTraits{nil})
 	if err == nil || !strings.Contains(err.Error(), "recovered container[0]") {
 		t.Fatalf("recoveredTasksFromContainers error = %v, want indexed context", err)
 	}

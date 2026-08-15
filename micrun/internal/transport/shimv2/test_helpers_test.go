@@ -36,6 +36,7 @@ func (stubHypervisorControl) MemoryMB(context.Context) (uint32, uint32) {
 func (stubHypervisorControl) DomainState(context.Context, string) (string, error) {
 	return "running", nil
 }
+func (stubHypervisorControl) Destroy(context.Context, string) error              { return nil }
 func (stubHypervisorControl) Pause(context.Context, string) error                { return nil }
 func (stubHypervisorControl) Resume(context.Context, string) error               { return nil }
 func (stubHypervisorControl) SetVCPUCount(context.Context, string, uint32) error { return nil }

@@ -89,7 +89,7 @@ func (p *createPlan) annotations() map[string]string {
 
 func extractRootfs(r ports.TaskCreateRequest) cntr.RootFs {
 	rootfs := cntr.RootFs{}
-	if len(r.Rootfs) != 1 {
+	if len(r.Rootfs) != 1 || r.Rootfs[0] == nil {
 		return rootfs
 	}
 

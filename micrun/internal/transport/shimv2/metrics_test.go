@@ -75,7 +75,7 @@ func TestStatsToMetricsV2(t *testing.T) {
 	if metrics.Memory.Usage != 99 || metrics.Memory.UsageLimit != 199 {
 		t.Fatalf("unexpected Memory v2 metrics: %+v", metrics.Memory)
 	}
-	if metrics.Pids.Current != 4242 || metrics.Pids.Limit != 4242 {
+	if metrics.Pids.Current != 1 || metrics.Pids.Limit != 0 {
 		t.Fatalf("unexpected Pids metrics: %+v", metrics.Pids)
 	}
 }

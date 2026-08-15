@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"micrun/internal/ports"
+	"micrun/internal/support/fs"
 )
 
 func TestNewStore(t *testing.T) {
@@ -410,10 +411,10 @@ func TestWriteFileAtomicallyReplacesAndCleansTemp(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "runtime.json")
 
-	if err := writeFileAtomically(path, []byte(`{"v":1}`), 0o644); err != nil {
+	if err := fs.WriteFileAtomic(path, []byte(`{"v":1}`), 0o644); err != nil {
 		t.Fatalf("first write failed: %v", err)
 	}
-	if err := writeFileAtomically(path, []byte(`{"v":2}`), 0o644); err != nil {
+	if err := fs.WriteFileAtomic(path, []byte(`{"v":2}`), 0o644); err != nil {
 		t.Fatalf("second write failed: %v", err)
 	}
 

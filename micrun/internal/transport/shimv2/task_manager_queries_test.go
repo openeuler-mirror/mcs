@@ -204,8 +204,8 @@ func TestTaskManagerShutdownRunsInjectedEffects(t *testing.T) {
 	if removedSocket != "unix:///tmp/micrun-shim.sock" {
 		t.Fatalf("removed socket = %q, want injected address", removedSocket)
 	}
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0", exitCode)
+	if exitCode != -1 {
+		t.Fatalf("exit code = %d, want -1 (runShutdownEffects must not os.Exit inside the RPC handler)", exitCode)
 	}
 }
 
@@ -218,4 +218,44 @@ func assertSameMetricsAny(t *testing.T, got, want *ptypes.Any) {
 		t.Fatalf("metrics payload mismatch: got type %q len %d, want type %q len %d",
 			got.GetTypeUrl(), len(got.GetValue()), want.GetTypeUrl(), len(want.GetValue()))
 	}
+}
+
+// TestQueriesTaskPresenceUnderConcurrentMapWrites guards the task-presence
+// precheck in Pids/Stats/Connect: it must take the runtime lock like every
+// other containers-map access, otherwise a concurrent Create/Delete (the
+// locked writers) races an unlocked map read and the runtime fatals the
+// whole shim (all Xen domains orphaned). Run under -race.
+func TestQueriesTaskPresenceUnderConcurrentMapWrites(t *testing.T) {
+	service := newTaskRPCShimService()
+	manager, err := service.getTaskManager()
+	if err != nil {
+		t.Fatalf("getTaskManager() error = %v", err)
+	}
+
+	stop := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for {
+			service.Lock()
+			service.saveShimTask("demo", &shimContainer{id: "demo", status: tasktypes.Status_RUNNING})
+			service.deleteShimTask("demo")
+			service.Unlock()
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
+	}()
+
+	ctx := context.Background()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_, _ = manager.Pids(ctx, &taskAPI.PidsRequest{ID: "demo"})
+		_, _ = manager.Connect(ctx, &taskAPI.ConnectRequest{ID: "demo"})
+		_, _ = manager.Stats(ctx, &taskAPI.StatsRequest{ID: "demo"})
+	}
+	close(stop)
+	<-writerDone
 }
