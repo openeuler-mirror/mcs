@@ -4,16 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/hashicorp/go-multierror"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"micrun/internal/ports"
 	"micrun/internal/support/cpuset"
 	er "micrun/internal/support/errors"
+	"micrun/internal/support/lockutil"
 	log "micrun/internal/support/logger"
-	"os/exec"
 	"path/filepath"
 	"sync"
-
-	"github.com/hashicorp/go-multierror"
-	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 type Container struct {
@@ -26,9 +25,15 @@ type Container struct {
 	rootfs         RootFs
 	containerPath  string
 	state          ContainerState
-	infraCmd       *exec.Cmd
+	stateMu        sync.RWMutex // protects state field
 	exitNotifier   chan struct{}
 	exitNotifierMu sync.Mutex
+	registrationMu sync.Mutex
+	// startMu serializes Start invocations: two concurrent Starts would
+	// both pass the state check, double-start the guest, and the loser's
+	// failure rollback would destroy the winner's domain. Holding it also
+	// makes the failure rollback safe (no concurrent winner inside).
+	startMu sync.Mutex
 }
 
 type ContainerConfig struct {
@@ -128,6 +133,14 @@ func cleanupOrphanedContainer(ctx context.Context, guestCtl ports.GuestControl, 
 	if exists && !force {
 		return fmt.Errorf("sandbox state missing while client %s still exists", containerID)
 	}
+	// The sandbox metadata is gone but the Xen domain may still be running.
+	// Remove it (best-effort under force) before deleting the local state so
+	// the guest side does not leak a domain that can never be reached again.
+	if exists {
+		if rErr := guestCtl.Remove(ctx, containerID); rErr != nil && !force {
+			return fmt.Errorf("failed to remove orphaned guest %s: %w", containerID, rErr)
+		}
+	}
 	repo, err := stateRepositoryFromDependenciesChecked(deps)
 	if err != nil {
 		return err
@@ -146,7 +159,7 @@ func cleanupContainerInSandbox(ctx context.Context, sandbox *Sandbox, containerI
 	if _, err := sandbox.DeleteContainer(ctx, containerID); !tolerable(err, force) {
 		return err
 	}
-	if len(sandbox.containers) > 0 {
+	if sandbox.containerCount() > 0 {
 		return nil
 	}
 	if err := sandbox.Stop(ctx, force); err != nil && !force {
@@ -186,11 +199,27 @@ func (c *Container) GetPid() int {
 	return c.config.Pid
 }
 
+// IsInfra reports whether this container is the sandbox infra (pause) container.
+// Exported on ContainerTraits so the transport layer can distinguish a CRI
+// InfraOnly pod (sandbox id is the infra id, never registered in micad) from a
+// standalone sandbox when reconciling a duplicate Create.
+func (c *Container) IsInfra() bool {
+	return c.isInfra()
+}
+
 func (c *Container) GetMemoryLimit() uint64 {
 	if c == nil || c.config == nil {
 		return 0
 	}
-	return uint64(c.config.memoryLimitMB())
+	if c.sandbox == nil {
+		return uint64(c.config.memoryLimitMB())
+	}
+	// Resources.Memory.Limit is mutated by UpdateContainer under
+	// containersLock; read it under the same lock to avoid a torn read of
+	// the *int64 (setupMemory locks the same field for the same reason).
+	return lockutil.WithReadLockValue(&c.sandbox.containersLock, func() uint64 {
+		return uint64(c.config.memoryLimitMB())
+	})
 }
 
 func (c *Container) Sandbox() SandboxTraits {
@@ -212,10 +241,13 @@ func (c *Container) State() *ContainerState {
 	if c == nil {
 		return &ContainerState{State: StateDown}
 	}
-	if _, err := c.StateSnapshot(); err != nil {
+	snapshot, err := c.StateSnapshot()
+	if err != nil {
 		log.Warnf("failed to get container state snapshot for %s: %v", c.id, err)
 	}
-	return &c.state
+	// Return a copy so callers cannot mutate the internal state without the lock.
+	state := snapshot
+	return &state
 }
 
 func (c *Container) StateSnapshot() (ContainerState, error) {
@@ -223,9 +255,9 @@ func (c *Container) StateSnapshot() (ContainerState, error) {
 		return ContainerState{State: StateDown}, nil
 	}
 	if _, err := c.checkStateWithError(); err != nil {
-		return c.state, err
+		return c.snapshotState(), err
 	}
-	return c.state, nil
+	return c.snapshotState(), nil
 }
 
 func (c *Container) setVcpuAffinity(ctx context.Context, cpuSet cpuset.CPUSet) error {
@@ -247,11 +279,25 @@ func (c *Container) setVcpuAffinity(ctx context.Context, cpuSet cpuset.CPUSet) e
 
 	ret := result.ErrorOrNil()
 	if ret == nil {
-		c.config.VCPUNum = uint32(cpuSet.Size())
+		// ContainerConfig fields are shared with sandbox-wide readers
+		// (getSandboxCpusetStr, calculateSandboxVCPUs, json.Marshal in
+		// StoreSandbox). Protect the write under containersLock so those
+		// readers don't race on the string/uint32 assignment.
+		//
+		// SharedCPUPool only pins affinity onto the shared host cpuset; it
+		// must not rewrite VCPUNum/PCPUNum to the pool size (that would make
+		// every 1-vCPU guest look like N-vCPU and inflate sandbox totals).
+		// Exclusive mode still treats the pin set as the 1:1 vCPU footprint.
+		c.sandbox.containersLock.Lock()
+		sharedPool := c.sandbox.config != nil && c.sandbox.config.SharedCPUPool
 		if cpu := c.config.ensureCPU(); cpu != nil {
 			cpu.Cpus = cpuSet.String()
 		}
-		c.config.PCPUNum = int(c.config.VCPUNum)
+		if !sharedPool {
+			c.config.VCPUNum = uint32(cpuSet.Size())
+			c.config.PCPUNum = int(c.config.VCPUNum)
+		}
+		c.sandbox.containersLock.Unlock()
 	}
 	return ret
 }
@@ -282,15 +328,6 @@ func (c *Container) cpuUnset() bool {
 		return true
 	}
 	return c.config.cpuMask() == ""
-}
-
-func (c *Container) notOperational() bool {
-	operational, err := c.operational()
-	if err != nil {
-		log.Warnf("failed to check container %s operational state: %v", c.id, err)
-		return true
-	}
-	return !operational
 }
 
 func (c *Container) operational() (bool, error) {

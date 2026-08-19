@@ -6,13 +6,10 @@
 
 ## 架构
 
-![MicRun IO path](../assets/flowcharts/io-system-flow.png)
-
-下面的交互图突出 `nerdctl run -it`、attach、detach、reattach、`Ctrl-C` 和 `exit` 在同一条 UniProton shell 路径上的关系。
-
-![MicRun IO interaction map](../assets/flowcharts/micrun-io-interaction-map.png)
-
-下面的 Mermaid 图是当前 IO 主路径的可编辑版本。PNG 用于快速浏览，Mermaid 用于代码评审时检查路径是否仍和实现一致。
+[IO 链路图](../README.md#io-链路)给出 attach 客户端到 RTOS shell 的数据通路；
+[IO 交互细节图](../README.md#io-交互细节)突出 `nerdctl run -it`、attach、detach、
+reattach、`Ctrl-C` 和 `exit` 在同一条 UniProton shell 路径上的时序关系。
+本文下方的 Mermaid 图给出组件级 IO 主路径，评审时可对照实现检查。
 
 ```mermaid
 flowchart LR
@@ -71,7 +68,7 @@ flowchart LR
 ┌─────────────────────────────────────────────────────────────┐
 │                   Xen Hypervisor                            │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │       RTOS Container (Zephyr/UniProton)        │  │
+│  │           RTOS Container (Zephyr/UniProton)           │  │
 │  │              /dev/ttyRPMSG_<container>_0              │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
@@ -190,8 +187,6 @@ type Config struct {
 
 ## IO 模式分类：ctr/nerdctl 命令选项组合
 
-### 概述
-
 MicRun shim 支持 `ctr` 和 `nerdctl` 两种客户端工具，它们支持不同的命令选项：
 
 | 选项 | ctr | nerdctl | 说明 |
@@ -244,7 +239,7 @@ MicRun shim 支持 `ctr` 和 `nerdctl` 两种客户端工具，它们支持不�
 mode.IsTTY = r.Terminal
 
 // IsForeground: 前台模式（有 nerdctl 提供的 stdin FIFO = 前台）
-mode.IsForeground = (r.Stdin != "")
+mode.IsForeground = IsValidFIFOPath(r.Stdin) || IsValidFIFOPath(r.Stdout) || IsValidFIFOPath(r.Stderr)
 
 // HasStdin: 所有模式都支持输入（兼容 ctr）
 mode.HasStdin = true
@@ -257,7 +252,7 @@ mode.SupportsAttach = !mode.IsForeground || mode.IsTTY
 // - 后台模式支持 attach
 
 // SupportsDetach: TTY 模式
-mode.SupportsDetach = mode.IsTTY
+mode.SupportsDetach = r.Terminal && mode.HasStdin
 // - TTY 模式支持 Ctrl+P Ctrl+Q detach (nerdctl native mechanism)
 ```
 
@@ -276,8 +271,6 @@ mode.SupportsDetach = mode.IsTTY
 ```
 /run/containerd/io.containerd.runtime.v2.task/<namespace>/<container_id>/<stream>
 ```
-
-### attach/detach 行为总结
 
 ### 面向用户的统一交互语义
 
@@ -324,15 +317,8 @@ POSIX 进程/信号模型，所以需要把“终端会话”和“字节流输�
 | `exit` 是否总是退出容器 | 多数 Linux shell 直接退出进程 | 作为兼容兜底，仅当控制输入识别命中时生效 |
 
 这套规则的边界是：**detach 和 stop 永远分开**。`Ctrl+P Ctrl+Q` 不应该停止容器；
-`stop/kill/TTY Ctrl+C` 才表达停止意图。
-
-**attach 支持**：
-- **TTY 模式（1, 3, 4）**：支持多次 attach（detach 后可重新 attach）
-- **非 TTY 模式（2, 5, 6）**：支持 attach
-
-**detach 支持**：
-- **所有 TTY 模式（1, 3, 4）**：支持 `Ctrl+P Ctrl+Q` 进行 detach（nerdctl 原生机制）
-- **非 TTY 模式（2, 5, 6）**：不支持 detach（必须等待容器退出或 kill）
+`stop/kill/TTY Ctrl+C` 才表达停止意图。各模式的 attach/detach 能力见上方
+“MicRun 支持的 6 种 IO 模式”表。
 
 自定义 detach key 语法与容器工具的常见写法保持一致：使用逗号分隔的 `ctrl-x`
 片段，例如 `ctrl-p,ctrl-q` 或 `ctrl-],ctrl-^`。字母键支持 `ctrl-a` 到 `ctrl-z`；
@@ -380,7 +366,7 @@ nerdctl run -i -d localhost:5000/mica-uniproton-app:xen-0.1 test
 ### Shim 中使用
 
 ```go
-// internal/application/lifecycle/service.go
+// internal/application/lifecycle/service_wait.go
 
 if taskHandle.CanBeSandbox() {
     sandbox.Start(ctx)
@@ -478,18 +464,18 @@ bash tests/io/test_newline_fix_verify.sh
 
 ```
 +---------------------------------------------------------------+
-|                        Shim Process                           |
-|  - Continues running, responds to containerd API            |
-|  - Not affected by user exit or detach                      |
+|                         Shim Process                          |
+|  - Continues running, responds to containerd API              |
+|  - Not affected by user exit or detach                        |
 +---------------------------------------------------------------+
-|                        Sandbox                               |
-|  - Manages one RTOS container                               |
-|  - Stop (stops RTOS) on container exit                      |
-|  - Delete (removes resources) on Delete API                |
+|                            Sandbox                            |
+|  - Manages one RTOS container                                 |
+|  - Stop (stops RTOS) on container exit                        |
+|  - Delete (removes resources) on Delete API                   |
 +---------------------------------------------------------------+
-|                        RTOS (micad)                          |
-|  - Actually runs UniProton RTOS instance                    |
-|  - Controlled via libmica.Start/Stop                       |
+|                         RTOS (micad)                          |
+|  - Actually runs UniProton RTOS instance                      |
+|  - Controlled via libmica.Start/Stop                          |
 +---------------------------------------------------------------+
 ```
 
@@ -536,7 +522,7 @@ actions := interpreter.Interpret(stdinBytes)
 // EventExitCommand / EventDetach / EventInterrupt
 ```
 
-`Copier` 不再自行维护 exit、detach、interrupt、CRLF、backspace 的行状态；
+`Copier` 不维护 exit、detach、interrupt、CRLF、backspace 的行状态；
 它只负责执行 `InputInterpreter` 返回的动作并把领域事件映射到 IO EventBus。
 
 2. **事件处理器** (`internal/application/attach/service_events.go`):
@@ -595,7 +581,7 @@ func (s *Service) stopFromIOEvent(runtime ports.TaskAttachRuntime, taskHandle po
 `WithIOEventPolicies` 不是“替换全部”，而是“在默认策略上覆写/扩展”，
 因此不提供策略列表时仍保留默认行为。新增事件类型会继续参与订阅流程。
 
-3. **容器退出处理** (`internal/application/attach/service.go` + `internal/application/lifecycle/service.go`):
+4. **容器退出处理** (`internal/application/attach/service.go` + `internal/application/lifecycle/service_wait.go`):
 
 **重要**: `sandbox.Stop()` 必须在锁外部调用，否则会阻塞 State() API 导致 "context deadline exceeded" 错误。
 
@@ -606,7 +592,7 @@ func (s *Service) stopFromIOEvent(runtime ports.TaskAttachRuntime, taskHandle po
 - 更新 task 状态
 - 通过 runtime port 把 exit 事件上报回 transport
 
-4. **显式删除处理** (`internal/application/task/service.go`):
+5. **显式删除处理** (`internal/application/task/service.go`):
 
 ```go
 func (s *shimService) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
@@ -720,12 +706,9 @@ A: 在 RTOS shell 中输入 `exit` 命令并按回车，shim 会检测到该命�
 
 ### 问题背景
 
-在前面的章节中，我们已经实现了 1:1:1 生命周期模型（RTOS 停止 → Sandbox 停止 → Shim 继续运行）。然而，在实际测试中发现：
-
-- **后台模式** (`ctr task start -d`)：shim 正确保持运行
-- **前台模式** (`ctr task start`)：容器停止后 shim 也会退出
-
-这是否是一个 bug？答案是否定的。这是 containerd 的**设计行为**，而非实现缺陷。本节将详细解释这一设计决策，并提供官方文档和代码调用链作为佐证。
+1:1:1 生命周期模型（RTOS 停止 → Sandbox 停止 → Shim 继续运行）在两种启动模式下行为一致；
+差异只在 ctr 客户端：前台模式客户端与任务绑定，客户端退出会触发任务停止，后台模式不会。
+本节给出官方文档与代码调用链佐证。
 
 ### containerd 的前台/后台模式设计
 
@@ -752,11 +735,12 @@ Foreground mode (ctr task start):
 |  RTOS container|
 +--------------+
         |
-        | Container exits
+        | ctr client exits on EOF/Ctrl-C
         v
-+--------------+
-|  Shim exits  | <--- containerd cleans up shim
-+--------------+
++------------------+
+| Task stop        | <--- client-bound task stops (foreground semantics)
+| shim continues   |     per the 1:1:1 model, then exits when unused
++------------------+
 
 Background mode (ctr task start -d):
 +--------------+
@@ -871,18 +855,13 @@ ctr CLI:
 [shim 进程结束]
 ```
 
-**关键点**：
-- **containerd 不主动清理**：只有显式调用 Delete API 时才清理 shim
-- **前台/后台模式对 shim 来说没有区别**：两种模式下 shim 的生命周期行为一致
-- **区别在于 ctr CLI**：前台模式保持连接并等待，后台模式立即返回
-
 ### 前台模式 vs 后台模式的实际差异
 
 基于 containerd 源码分析和实际测试，**shim 的生命周期在两种模式下是一致的**：
 
 **共同点**：
 - shim 都会持续运行，响应 State、Delete、Exec 等 API 调用
-- 只有显式调用 `ctr container delete` 时才会清理 shim
+- 只有显式调用 `ctr container delete` 时才会清理 shim（containerd 不主动清理）
 - stdin 关闭都不会自动清理 shim
 
 **差异点**：
@@ -894,33 +873,19 @@ ctr CLI:
 | 用户退出方式 | `stop/kill`，或 shell 内输入 `exit` 兜底 | 需要 attach 后交互，或外部 `stop/kill` |
 | shim 生命周期 | **继续运行** | **继续运行** |
 
-**重要说明**：
-- 文档早期版本提到"前台模式下 shim 会退出"是不准确的
-- 对于 RTOS 容器，**1:1:1 生命周期模型在前后台模式都适用**
-- 区别仅在于用户交互方式，不影响 shim 的核心行为
-
 ### 总结
 
-1. **1:1:1 生命周期模型适用于前后台两种模式**，容器停止后 shim 继续运行
-2. **前台和后台模式的区别仅在于 ctr CLI 的行为**，不影响 shim 的生命周期
-3. **容器退出方式**：
+1. **容器退出方式**：
    - TTY 会话内按 `Ctrl+C` 触发 interrupt/stop，退出状态为 130
    - 使用 `ctr task kill -s SIGTERM` / `SIGKILL` 或 `nerdctl stop` 外部终止
    - 用户在 UniProton shell 内输入 "exit" 命令触发容器退出（交互式兜底）
    - stdin 关闭触发超时退出（**所有 IO 模式默认 30 秒超时**）
    - 所有方式都不触发 shim 清理
-4. **shim 清理仅在显式删除时发生**：`ctr container delete`
-5. **超时机制**：为防止资源泄漏，所有 IO 模式（TTY/Non-TTY、前台/后台）默认启用 30 秒超时。如需长期运行，需显式设置 `auto_close=false` 或 `auto_close_timeout=0` 注解
-6. **RTOS 容器的推荐使用方式**：
+2. **shim 清理仅在显式删除时发生**：`ctr container delete`
+3. **超时机制**：为防止资源泄漏，所有 IO 模式（TTY/Non-TTY、前台/后台）默认启用 30 秒超时。如需长期运行，需显式设置 `auto_close=false` 或 `auto_close_timeout=0` 注解
+4. **RTOS 容器的推荐使用方式**：
    - 开发调试：使用 `ctr task start`（前台，便于查看输出）
    - 生产环境：使用 `ctr task start -d`（后台，符合 daemon 模式）+ `auto_close=false` 注解
-
-### 参考文档
-
-1. [containerd Runtime v2 README](https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md) - containerd 官方 shim v2 规范
-2. [iximiuz - Implementing Container Runtime Shim](https://iximiuz.com/en/posts/implementing-container-runtime-shim/) - Shim 架构深度分析
-3. [云原生实验室 - Containerd shim 原理深入解读](https://icloudnative.io/posts/shim-shiminey-shim-shiminey/) - 中文 shim 原理解析
-4. [GitHub Issue #9727 - Containerd shim lifecycle discussion](https://github.com/containerd/containerd/issues/9727) - Shim 生命周期讨论
 
 ---
 
@@ -933,34 +898,26 @@ EventBus 是 IO 层和 shim 层之间的解耦机制。IO 层发布事件，shim
 ### 架构
 
 ```
-+---------------------------------------------------------------+
-|                        IO Layer                               |
-|  +-------------+  +-------------+  +-------------+            |
-|  |   Copier    |  |   Session   |  |  Publisher  |            |
-|  | - detect    |  | - manage    |  | - publish   |            |
-|  |   events    |  |   state     |  |   events    |            |
-|  +------+------+  +------+------+  +------+------+            |
-+--------+---------+--------+---------+--------+----------------+
-        |                 |                 |
-        |                 |                 v
-        |                 |         +---------------+
-        |                 |         |   EventBus    |
-        |                 |         | - subscribe   |
-        |                 |         | - dispatch    |
-        |                 |         +-------+-------+
-        |                 |                 |
-        |                 |      (subscribe)|
-        |                 |                 v
-+--------+---------+--------+---------+----+---------+------------+
-        |                 |                 |     +-----+----------+  |
-        v                 v                 v     |   Subscriber   |  |
-+-----------------------------------------+     |                 |  |
-|             Shim Layer                   |     +----------------+  |
-|  - Handle ExitCommandDetected            |                         |
-|  - Handle InterruptDetected              |                         |
-|  - Handle StdinClosed                    |                         |
-|  - Handle IOError                        |                         |
-+-----------------------------------------+---------------------------+
++----------------------------------------------------------------+
+|                          IO Layer                              |
+|  +-------------+   +-------------+   +-------------+           |
+|  |   Copier    |   |   Session   |   |  Publisher  |           |
+|  | - detect    |   | - manage    |   | - publish   |           |
+|  |   events    |   |   state     |   |   events    |           |
+|  +------+------+   +-------------+   +-------------+           |
+|         |                                                      |
+|         v                                                      |
+|  +----------------------------------------------------------+  |
+|  |                        EventBus                             |
+|  | - subscribe                    - dispatch                   |
+|  +----------------------------+-----------------------------+  |
+|                               |                                |
+|                               v (subscribe)                    |
+|  +----------------------------------------------------------+  |
+|  |                    Shim Layer (Subscriber)                  |
+|  |  Handle: ExitCommandDetected / InterruptDetected            |
+|  +----------------------------------------------------------+  |
++----------------------------------------------------------------+
 ```
 
 ### 事件类型
@@ -972,23 +929,15 @@ EventBus 是 IO 层和 shim 层之间的解耦机制。IO 层发布事件，shim
 | `IOError` | IO 操作发生错误 | shim 记录错误并处理 |
 | `TTYReady` | TTY 准备就绪 | shim 继续启动流程 |
 | `StdinClosed` | stdin FIFO 被客户端关闭 | shim 检测容器状态 |
+| `ClientAttached` | stdin FIFO 出现活跃写端（attach 客户端接入） | 应用层更新任务 attach 状态，auto-close 计时挂起 |
+| `ClientDetached` | 写端关闭（非 TTY EOF / create-time 无写端） | 应用层清除 attach 状态并启动 auto-close 宽限 |
 | `DetachDetected` | 用户输入 detach 序列 | shim 处理 detach |
 
 ### API 使用
 
-**发布事件**（IO 层）：
-
-```go
-import "micrun/internal/adapters/io"
-
-// 发布事件
-event := io.Event{
-    Type:        io.ExitCommandDetected,
-    ContainerID: containerID,
-    Data:        nil,
-}
-eventBus.Publish(event)
-```
+**事件命名映射**：IO 层（`internal/adapters/io`）使用 `io.ExitCommandDetected`
+等类型名；跨层订阅（`internal/ports`）使用 `ports.IOEventExitCommand` 等
+`IOEvent*` 类型。二者一一对应，应用层一律以 `ports.IOEvent*` 为权威。
 
 **订阅事件**（application 层）：
 
@@ -1196,25 +1145,6 @@ func GenerateStandardFIFOPath(namespace, containerID, stream string) string {
 
 ---
 
-### FIFO 重新打开
-
-当客户端 attach 到已运行的容器时，会创建新的 FIFO。`Session.Restart()` 负责平滑切换：
-
-```go
-// session.go 中的 Restart() 方法
-func (s *Session) RestartWithTTYs(freshTTYIn io.WriteCloser, freshTTYOut io.Reader) error {
-    // 1. 确保 FIFO 路径存在
-    // 2. 重新创建 session context / event bus
-    // 3. 打开 FIFO，并按需使用 fresh TTY
-    // 4. 启动候选 copier，成功后再提交到 session
-}
-```
-
-**事件驱动支持**：
-- 通过 EventBus 发布 `StdinClosed` 事件
-- 当 attach 客户端断开时，IO 层等待新的客户端连接
-- 新客户端连接后，调用 `Restart()` 或 `RestartWithTTYs()` 恢复 IO 会话
-
 ## 客户端兼容性
 
 ### ctr
@@ -1228,18 +1158,16 @@ func (s *Session) RestartWithTTYs(freshTTYIn io.WriteCloser, freshTTYOut io.Read
 - ✅ `nerdctl run -d` - 后台启动
 - ✅ `nerdctl attach` - 附加
 - ✅ `nerdctl run --detach-keys=ctrl-p,ctrl-q` - detach 支持
-- ⚠️ `binary://` 协议 - 需要额外支持（用于日志处理）
+- ✅ `binary://` 协议 - 用于日志处理（见 `adapters/io/binary.go`）
 
 ### Kubernetes (CRI)
 
 - ✅ 通过 CRI API 管理
 - ✅ attach/detach 由 kubelet 处理
 
-## 调试
+## 实现说明
 
-## 当前实现说明
-
-与最初版本相比，当前 IO 架构已经完成三层拆分：
+IO 架构为三层拆分：
 
 1. `internal/adapters/io`
    说明：只负责 IO 会话和字节流转发
@@ -1248,22 +1176,21 @@ func (s *Session) RestartWithTTYs(freshTTYIn io.WriteCloser, freshTTYOut io.Read
 3. `internal/application/attach`
    说明：负责 attach/detach/resize/stdin-close/exit-command 的业务语义
 
-IO 适配器内部已完成进一步拆分：
+IO 适配器内部的进一步拆分：
 
-- `internal/domain/console`：输入语义状态机，统一解释 TTY/non-TTY 下的 `exit`、`Ctrl+C`、`Ctrl+P Ctrl+Q`、CRLF、backspace
-- `internal/domain/console`：输出规范化状态机，统一处理 NUL 过滤和跨 chunk 换行压缩
+- `internal/domain/console`：输入语义状态机（统一解释 TTY/non-TTY 下的 `exit`、`Ctrl+C`、`Ctrl+P Ctrl+Q`、CRLF、backspace）与输出规范化状态机（NUL 过滤、跨 chunk 换行压缩）
 - `epoll_waiter.go`：`epollWaiter` 独立类型，封装 epoll 生命周期的创建/等待/信号/重启用/关闭，支持边沿触发（TTY stdout）和水平触发（stdin）两种模式
-- `copier_epoll.go`：从 ~275 行精简为 ~20 行，完全委托给 `ttyWaiter`/`stdinWaiter` 两个 `epollWaiter` 实例
+- `copier_epoll.go`：约 20 行，完全委托给 `ttyWaiter`/`stdinWaiter` 两个 `epollWaiter` 实例
 - `session.go`：通过 `Copier()` 暴露底层 copier，符合 Go 命名惯例
 
-这意味着：
+职责边界：
 
-- `Task` 句柄不再承载主要 attach 编排行为
-- transport 层不再直接持有事件处理器
-- `DetachDetected` 事件已经从“只在底层产生”变成“在应用层消费并转成明确行为”
-- 输入规则不再散落在 `Copier` 中；`Copier` 退回设备搬运层，领域状态机负责解释用户意图
-- `application/attach` 不再直接 import `internal/adapters/io`
-- 重新 attach / resize 时如果发现 `IOManager` 缺失，会通过统一 session factory 重新建立 session 和事件订阅，而不是只恢复字节流
+- `Task` 句柄不承载 attach 编排行为
+- transport 层不直接持有事件处理器
+- `DetachDetected` 事件在应用层消费并转为明确行为
+- `Copier` 是设备搬运层；领域状态机负责解释用户意图
+- `application/attach` 不直接 import `internal/adapters/io`
+- 重新 attach / resize 时若 `IOManager` 缺失，通过统一 session factory 重建 session 与事件订阅
 
 当前 `run -it`、`run -dt`、`attach`、`Ctrl-P Ctrl-Q`、`Ctrl-C`、`exit` 的主行为可以按下面的状态流理解：
 
@@ -1291,11 +1218,7 @@ stateDiagram-v2
 
 ### 常见问题
 
-**Q: 如何退出 RTOS 容器？**
-A: 在 RTOS shell 中输入 `exit` 命令并按回车。
-
-**Q: 输入 exit 后容器状态**
-A: 容器状态变为 `STOPPED`，但 shim 继续运行。要完全清理容器，需要执行 `ctr task delete` 和 `ctr container delete`。
+退出容器与 exit/shim 生命周期类问题见上文"Exit 命令处理和 1:1:1 生命周期"的常见问题小节。
 
 **Q: attach 后没有输出**
 A: 检查 FIFO 路径是否正确，TTY 是否已打开
@@ -1311,6 +1234,8 @@ A: 这是 TTY 输出处理和 RTOS 固件行为共同导致的问题。
 
 ## 参考文献
 
-1. [containerd Runtime v2 README](https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md)
+1. [containerd Runtime v2 README](https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md) - containerd 官方 shim v2 规范
 2. [containerd FIFO package](https://github.com/containerd/fifo)
-3. [Implementing Container Runtime Shim](https://iximiuz.com/en/posts/implementing-container-runtime-shim/)
+3. [iximiuz - Implementing Container Runtime Shim](https://iximiuz.com/en/posts/implementing-container-runtime-shim/) - Shim 架构深度分析
+4. [云原生实验室 - Containerd shim 原理深入解读](https://icloudnative.io/posts/shim-shiminey-shim-shiminey/) - 中文 shim 原理解析
+5. [GitHub Issue #9727 - Containerd shim lifecycle discussion](https://github.com/containerd/containerd/issues/9727) - Shim 生命周期讨论

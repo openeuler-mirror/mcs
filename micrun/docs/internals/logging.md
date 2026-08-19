@@ -2,19 +2,15 @@
 
 ## 1. 概述
 
-`MicRun` 日志系统遵循 `containerd shim v2` 规范，支持 `release` 和 `debug` 两种构建模式。
-
-### 1.1 重构目标
+`MicRun` 日志系统遵循 `containerd shim v2` 规范
+（[containerd Runtime v2 README - Logging](https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md#logging)），
+支持 `release` 和 `debug` 两种构建模式。设计目标：
 
 1. 遵循 `containerd shim v2` 日志规范
 2. 支持从配置文件读取日志配置
-3. 添加格式化日志函数（带 `f` 后缀的函数）
+3. 提供格式化日志函数（带 `f` 后缀的函数）
 4. 支持 `release/debug` 双模式，不同输出策略
 5. 自动添加 `namespace`（表示容器命名空间）和 `id`（表示容器名称）字段
-
-### 1.2 参考文档
-
-- [containerd Runtime v2 README - Logging](https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md#logging)
 
 ## 2. 架构设计
 
@@ -31,21 +27,6 @@ micrun/internal/support/logger/
 
 - `logger_release.go`: 使用 `// +build !debug` 或 `//go:build !debug`
 - `logger_debug.go`: 使用 `//go:build debug`
-
-### 2.3 重构前后对比
-
-| 方面 | 重构前 | 重构后 |
-|------|--------|--------|
-| **输出目标** | 仅 `stderr` | `containerd FIFO`（`release/debug`） + 文件（`debug`） |
-| **配置方式** | 代码硬编码 | 配置文件 `/etc/mica/micrun/config.json` |
-| **构建模式** | 单一模式 | `release/debug` 双模式分离 |
-| **字段注入** | 手动添加 | 自动通过 `context hook` 注入 |
-| **时间戳精度** | 秒 | 纳秒（匹配 `containerd`） |
-| **字段调整** | `timespace=...` | `time="..."` |
-| **字段更名** | `message=...` | `msg=...` |
-| **字段新增** | - | `id=... namespace=...` |
-| **调用位置** | 指向 `logger` 包装函数 | 指向实际调用源 |
-| **格式化函数** | 不支持 | 完整支持 `Xxxf` 系列 |
 
 ## 3. 日志格式
 
@@ -128,7 +109,7 @@ time="2026-01-09T15:04:08.123456789Z" level=info msg="cleanup recovered stale st
 
 **构建**：
 ```bash
-make release
+make build BUILD_TYPE=release
 # 或
 go build
 ```
@@ -141,7 +122,7 @@ go build
 
 **构建**：
 ```bash
-make debug
+make build          # BUILD_TYPE 默认为 debug
 # 或
 go build -tags=debug
 ```
@@ -172,15 +153,16 @@ go build -tags=debug
 | `color` | `boolean` | `false` | `debug` 版本是否显示颜色 |
 | `caller` | `boolean` | `true` | `debug` 版本是否显示调用栈信息 |
 
-### 5.2 环境变量
+### 5.3 环境变量
 
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
 | `MICRUN_LOG_CONFIG` | 覆盖日志配置文件路径 | `/etc/mica/micrun/config.json` |
 | `MICRUN_LOG_FILE` | 覆盖 debug 文件日志路径 | `/var/log/mica/mica-runtime.log` |
 | `MICRUN_CONTAINERD_LOG_PATH` | 覆盖 containerd 日志输出路径 | `./log` |
+| `CONTAINERD_NAMESPACE` | 当前容器命名空间（日志 `namespace` 字段默认值） | `default` |
 
-### 5.3 日志等级
+### 5.4 日志等级
 
 | 等级 | 说明 | Release 版本 | Debug 版本 |
 |------|------|--------------|------------|
@@ -286,7 +268,7 @@ func RestoreOutput() error
 ### 7.1 基本使用
 
 ```go
-import log "micrun/logger"
+import log "micrun/internal/support/logger"
 
 // 简单日志
 log.Info("Container created")
@@ -418,15 +400,9 @@ func (f *containerdFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 }
 ```
 
-## 9. 环境变量
+## 9. 故障排查
 
-| 环境变量 | 说明 | 默认值 |
-|----------|------|--------|
-| `CONTAINERD_NAMESPACE` | 当前容器命名空间 | `default` |
-
-## 10. 故障排查
-
-### 10.1 日志未输出
+### 9.1 日志未输出
 
 **问题**：日志没有显示在 `containerd` 日志中
 
@@ -435,7 +411,7 @@ func (f *containerdFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 2. 检查日志配置文件是否正确
 3. 使用 `debug` 版本查看详细日志
 
-### 10.2 配置文件无效
+### 9.2 配置文件无效
 
 **问题**：配置文件修改后没有生效
 
@@ -444,7 +420,7 @@ func (f *containerdFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 2. 检查配置文件路径是否正确（默认 `/etc/mica/micrun/config.json`）
 3. 检查文件权限
 
-### 10.3 `debug` 日志文件未创建
+### 9.3 `debug` 日志文件未创建
 
 **问题**：`debug` 版本运行时日志文件未创建
 
@@ -453,16 +429,6 @@ func (f *containerdFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 2. 检查目录权限
 3. 手动创建目录：`sudo mkdir -p /var/log/mica`
 
-## 11. 版本历史
-
-| 日期 | 版本 | 变更说明 |
-|------|------|----------|
-| 2026-02-03 | 1.4 | 新增 Trace 级别（仅 debug 编译生效，release 版本零开销） |
-| 2026-01-13 | 1.3 | 检查 |
-| 2026-01-12 | 1.2 | 添加重构前后对比章节 |
-| 2026-01-09 | 1.1 | 实现完成 |
-| 2026-01-09 | 1.0 | 初始设计 |
-
-## 12. 相关文档
+## 10. 相关文档
 
 - [containerd shim v2 规范](https://github.com/containerd/containerd/blob/main/core/runtime/v2/README.md)

@@ -71,7 +71,11 @@ ensure_swap() {
         mkswap "$SWAP_FILE"
     fi
 
-    swapon "$SWAP_FILE"
+    # Idempotent: a rerun with an already-active swap file must not fail
+    # with "Device or resource busy" under set -eu.
+    if ! swapon --show=NAME --noheadings 2>/dev/null | grep -Fxq "$SWAP_FILE"; then
+        swapon "$SWAP_FILE"
+    fi
 
     if ! grep -q "^$SWAP_FILE " /etc/fstab 2>/dev/null; then
         printf '%s\n' "$SWAP_FILE none swap sw 0 0" >> /etc/fstab

@@ -26,6 +26,15 @@ func (s *Service) Create(ctx context.Context, runtime ports.TaskCreateRuntime, i
 		return nil, err
 	}
 
+	// Claim before CreateTask: Delete can race a slow Xen/micad create, see
+	// no task yet, return NotFound, then Create registers a live domain the
+	// orchestrator already thinks is gone. Concurrent Create retries for the
+	// same id are serialized the same way.
+	if !s.claimLifecycle(req.ID) {
+		return nil, er.Wrapf(er.ContainerNotReady, "task %s has a lifecycle operation in progress", req.ID)
+	}
+	defer s.releaseLifecycle(req.ID)
+
 	taskHandle, err := createTaskHandle(ctx, runtime, req)
 	if err != nil {
 		return nil, err

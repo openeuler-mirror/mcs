@@ -5,6 +5,7 @@ import (
 	"fmt"
 	defs "micrun/internal/support/definitions"
 	"micrun/internal/support/fs"
+	log "micrun/internal/support/logger"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,6 +47,12 @@ func DiscoverMicrunConfigFiles() ([]MicrunConfigFile, error) {
 		if len(files) > 0 {
 			return files, nil
 		}
+		// The env dir exists but yielded no recognized config files (wrong
+		// extension, empty, etc.). Unlike a missing dir (which returns an
+		// error logged by the resolver), this silently falls through to the
+		// default config tree. Warn so an operator who set MICRUN_CONF_DIR
+		// gets a signal instead of a quiet config swap.
+		log.Warnf("MICRUN_CONF_DIR=%s yielded no config files; falling back to default config search", dirByEnv)
 	}
 
 	var aggregated []MicrunConfigFile

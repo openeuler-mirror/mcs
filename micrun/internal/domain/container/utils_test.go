@@ -5,26 +5,31 @@ import (
 	"encoding/json"
 	"micrun/internal/ports"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 )
 
 type stubGuestControl struct {
 	exists      bool
 	existsErr   error
+	removeErr   error
 	status      ports.GuestStatus
 	existsCalls int
+	removeCalls int
 	statusCalls int
 }
 
-func (s *stubGuestControl) Start(context.Context, string) error  { return nil }
-func (s *stubGuestControl) Stop(context.Context, string) error   { return nil }
-func (s *stubGuestControl) Remove(context.Context, string) error { return nil }
+func (s *stubGuestControl) Start(context.Context, string) error { return nil }
+func (s *stubGuestControl) Stop(context.Context, string) error  { return nil }
+func (s *stubGuestControl) Remove(context.Context, string) error {
+	s.removeCalls++
+	return s.removeErr
+}
 func (s *stubGuestControl) Pause(context.Context, string) error  { return nil }
 func (s *stubGuestControl) Resume(context.Context, string) error { return nil }
 
@@ -38,28 +43,61 @@ func (s *stubGuestControl) Status(context.Context, string) (ports.GuestStatus, e
 	return s.status, nil
 }
 
-func TestProcessExists(t *testing.T) {
-	t.Run("当前进程存在", func(t *testing.T) {
-		pid := os.Getpid()
-		assert.True(t, processExists(pid), "当前进程应该存在")
+// perIDGuestControl returns per-client-ID Status results, falling back to the
+// default status for unmapped ids.
+type perIDGuestControl struct {
+	stubGuestControl
+	statusByID map[string]ports.GuestStatus
+}
+
+func (s *perIDGuestControl) Status(_ context.Context, id string) (ports.GuestStatus, error) {
+	s.statusCalls++
+	if st, ok := s.statusByID[id]; ok {
+		return st, nil
+	}
+	return s.status, nil
+}
+
+func TestCheckShimCollision(t *testing.T) {
+	t.Run("无效 PID", func(t *testing.T) {
+		assert.NoError(t, checkShimCollision("sandbox-zero", 0))
+		assert.NoError(t, checkShimCollision("sandbox-neg", -1))
+	})
+
+	t.Run("shim 存活 - 同二进制进程", func(t *testing.T) {
+		// The test binary itself satisfies the identity check (same
+		// /proc/<pid>/exe target as os.Executable), so it stands in for a
+		// live shim instance.
+		err := checkShimCollision("sandbox-self", os.Getpid())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "another shim instance")
+	})
+
+	t.Run("PID 复用 - 外来进程不误判冲突", func(t *testing.T) {
+		// A live process running a different binary is a recycled PID, not a
+		// shim: collision must NOT be declared, or recovery/cleanup wedges
+		// until the unrelated process exits.
+		cmd := exec.Command("sleep", "30")
+		require.NoError(t, cmd.Start())
+		defer func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}()
+
+		assert.NoError(t, checkShimCollision("sandbox-recycled", cmd.Process.Pid))
 	})
 
 	t.Run("不存在的进程", func(t *testing.T) {
 		// 使用一个不太可能被占用的 PID
-		assert.False(t, processExists(99999), "不存在的进程应该返回 false")
-	})
-
-	t.Run("无效 PID", func(t *testing.T) {
-		assert.False(t, processExists(0), "PID 0 应该返回 false")
-		assert.False(t, processExists(-1), "负数 PID 应该返回 false")
+		assert.NoError(t, checkShimCollision("sandbox-dead", 99999))
 	})
 }
 
-func TestProcessExistsAfterSignalCheckTreatsPermissionDeniedAsAlive(t *testing.T) {
-	assert.True(t, processExistsAfterSignalCheck(1234, nil))
-	assert.True(t, processExistsAfterSignalCheck(1234, unix.EPERM))
-	assert.False(t, processExistsAfterSignalCheck(1234, unix.ESRCH))
-	assert.False(t, processExistsAfterSignalCheck(0, nil))
+// testValidateStateRepo returns a state repository backed by an in-memory
+// store and throwaway legacy roots for validateSandboxState tests.
+func testValidateStateRepo(t *testing.T) stateRepository {
+	t.Helper()
+	return stateRepositoryWithLegacyRoots(newMemoryStateStore(), t.TempDir(), t.TempDir())
 }
 
 func TestValidateSandboxState(t *testing.T) {
@@ -73,7 +111,7 @@ func TestValidateSandboxState(t *testing.T) {
 			State:   SandboxState{State: StateReady},
 		}
 
-		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl)
+		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl, nil, testValidateStateRepo(t))
 
 		// shim 存活，应该返回错误（另一个实例）
 		assert.False(t, result.Valid, "shim 存活时应该返回无效")
@@ -93,7 +131,7 @@ func TestValidateSandboxState(t *testing.T) {
 			State:   SandboxState{State: StateReady},
 		}
 
-		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl)
+		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl, nil, testValidateStateRepo(t))
 
 		// RTOS 不存在，应该标记需要清理
 		assert.False(t, result.Valid, "RTOS 不存在时应该返回无效")
@@ -101,6 +139,52 @@ func TestValidateSandboxState(t *testing.T) {
 		assert.NoError(t, err, "RTOS 不存在时不应返回错误")
 		assert.Equal(t, 1, guestCtl.existsCalls, "应该检查一次 guest 是否存在")
 		assert.Zero(t, guestCtl.statusCalls, "guest 不存在时不应继续查询状态")
+	})
+
+	t.Run("micad socket 消失但 Xen domain 存活 - 不清理", func(t *testing.T) {
+		// micad restart wipes /run/mica (Exists=false) while the Xen domain
+		// keeps running. State must be kept so recovery restores the task and
+		// the normal Down→Remove→re-register path cleans the domain, instead
+		// of deleting the state and orphaning the domain.
+		guestCtl := &stubGuestControl{exists: false}
+		hyp := &fakeHypervisorControl{name: "running"}
+		storage := &SandboxStorage{
+			ID:      "test-domain-alive-socket-gone",
+			ShimPID: 99999,
+			State:   SandboxState{State: StateRunning},
+		}
+
+		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl, hyp, testValidateStateRepo(t))
+
+		assert.NoError(t, err)
+		assert.True(t, result.Valid, "live domain must keep the sandbox recoverable")
+		assert.False(t, result.Cleanup, "cleanup would orphan the live Xen domain")
+	})
+
+	t.Run("CRI InfraOnly - sandbox id 无 domain 但 RTOS 容器仍在", func(t *testing.T) {
+		// Exists returns true only for the non-infra RTOS container id.
+		guestCtl := &stubGuestControl{exists: false}
+		// Override Exists via a custom stub that tracks ids — use exists=true
+		// for any call when we only probe rtos-1 (non-infra).
+		guestCtl.exists = true
+		storage := &SandboxStorage{
+			ID:      "pod-sandbox-infra-id",
+			ShimPID: 99999,
+			State:   SandboxState{State: StateRunning},
+			Config: SandboxConfig{
+				ContainerConfigs: map[string]*ContainerConfig{
+					"pod-sandbox-infra-id": {ID: "pod-sandbox-infra-id", IsInfra: true},
+					"rtos-workload":        {ID: "rtos-workload", IsInfra: false},
+				},
+			},
+		}
+
+		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl, nil, testValidateStateRepo(t))
+
+		assert.NoError(t, err)
+		assert.True(t, result.Valid, "non-infra RTOS still present should not be stale")
+		assert.False(t, result.Cleanup)
+		assert.Equal(t, 1, guestCtl.existsCalls, "should probe the non-infra RTOS id only")
 	})
 
 	t.Run("状态不一致仅记录，不阻断恢复", func(t *testing.T) {
@@ -116,7 +200,7 @@ func TestValidateSandboxState(t *testing.T) {
 			},
 		}
 
-		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl)
+		result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl, nil, testValidateStateRepo(t))
 
 		assert.True(t, result.Valid)
 		assert.False(t, result.Cleanup)
@@ -140,7 +224,7 @@ func TestValidateSandboxState(t *testing.T) {
 	})
 
 	t.Run("nil storage", func(t *testing.T) {
-		result, err := validateSandboxState(ctx, "test", nil, &stubGuestControl{})
+		result, err := validateSandboxState(ctx, "test", nil, &stubGuestControl{}, nil, testValidateStateRepo(t))
 
 		assert.False(t, result.Valid)
 		assert.False(t, result.Cleanup)
@@ -148,7 +232,7 @@ func TestValidateSandboxState(t *testing.T) {
 	})
 
 	t.Run("nil guest control", func(t *testing.T) {
-		result, err := validateSandboxState(ctx, "test", &SandboxStorage{}, nil)
+		result, err := validateSandboxState(ctx, "test", &SandboxStorage{}, nil, nil, testValidateStateRepo(t))
 
 		assert.False(t, result.Valid)
 		assert.False(t, result.Cleanup)
@@ -161,7 +245,7 @@ func TestValidateSandboxState(t *testing.T) {
 		result, err := validateSandboxState(ctx, "test", &SandboxStorage{
 			ID:    "test-invalid-state",
 			State: SandboxState{State: StateString("unknown")},
-		}, guestCtl)
+		}, guestCtl, nil, testValidateStateRepo(t))
 
 		assert.False(t, result.Valid)
 		assert.False(t, result.Cleanup)
@@ -245,5 +329,203 @@ func TestLoadSandboxWithValidation(t *testing.T) {
 		assert.Equal(t, testID, loadedStorage.ID)
 		assert.Equal(t, now, loadedStorage.CreatedAt)
 		assert.Equal(t, os.Getpid(), loadedStorage.ShimPID)
+	})
+}
+
+func TestValidateSandboxStateStoppedSandboxNotStale(t *testing.T) {
+	ctx := context.Background()
+	guestCtl := &stubGuestControl{exists: false}
+	storage := &SandboxStorage{
+		ID:      "test-all-stopped",
+		ShimPID: 99999,
+		State:   SandboxState{State: StateStopped},
+	}
+
+	result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl, nil, testValidateStateRepo(t))
+
+	assert.NoError(t, err)
+	assert.True(t, result.Valid, "全部停止的 sandbox 不应判为 stale（mica stop 会移除 client）")
+	assert.False(t, result.Cleanup)
+	assert.Zero(t, guestCtl.existsCalls, "已停止 sandbox 不应探测 micad")
+}
+
+func TestValidateSandboxStateAllContainersStoppedNotStale(t *testing.T) {
+	ctx := context.Background()
+	repo := stateRepositoryWithLegacyRoots(newMemoryStateStore(), t.TempDir(), t.TempDir())
+	sandboxID := "sandbox-containers-stopped"
+	containerID := "container-stopped"
+	containerPath := filepath.Join(sandboxID, containerID)
+	payload, err := json.Marshal(ContainerStorage{
+		ID:            containerID,
+		SandboxID:     sandboxID,
+		State:         ContainerState{State: StateStopped},
+		Config:        ContainerConfig{ID: containerID},
+		ContainerPath: containerPath,
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.store.Save(ctx, &ports.RuntimeSnapshot{
+		Namespace: runtimeStateNamespaceContainer,
+		TaskID:    containerSnapshotID(containerPath, containerID),
+		Data:      payload,
+	}))
+
+	guestCtl := &stubGuestControl{exists: false}
+	storage := &SandboxStorage{
+		ID:      sandboxID,
+		ShimPID: 99999,
+		State:   SandboxState{State: StateRunning},
+		Config: SandboxConfig{
+			ContainerConfigs: map[string]*ContainerConfig{
+				containerID: {ID: containerID},
+			},
+		},
+	}
+
+	result, err := validateSandboxState(ctx, sandboxID, storage, guestCtl, nil, repo)
+
+	assert.NoError(t, err)
+	assert.True(t, result.Valid, "容器按设计全部停止时不应判 stale")
+	assert.False(t, result.Cleanup)
+	assert.Zero(t, guestCtl.existsCalls, "已停止容器不应探测 micad")
+}
+
+// TestValidateSandboxStateInfraOnlyNotStale verifies that a CRI InfraOnly pod
+// sandbox (only infra container, sandbox id == infra id, no mica domain) is NOT
+// marked stale during recovery. Its sandbox id never registers in micad, so
+// absence is expected by design.
+func TestValidateSandboxStateInfraOnlyNotStale(t *testing.T) {
+	ctx := context.Background()
+	guestCtl := &stubGuestControl{exists: false}
+	storage := &SandboxStorage{
+		ID:      "pod-infra-only-id",
+		ShimPID: 99999,
+		State:   SandboxState{State: StateRunning},
+		Config: SandboxConfig{
+			ContainerConfigs: map[string]*ContainerConfig{
+				"pod-infra-only-id": {ID: "pod-infra-only-id", IsInfra: true},
+			},
+		},
+	}
+
+	result, err := validateSandboxState(ctx, storage.ID, storage, guestCtl, nil, testValidateStateRepo(t))
+
+	assert.NoError(t, err)
+	assert.True(t, result.Valid, "CRI InfraOnly sandbox should not be marked stale (sandbox id is infra, never in micad)")
+	assert.False(t, result.Cleanup, "InfraOnly sandbox state must not be deleted on recovery")
+}
+
+// TestCompareStoredAndLiveStateMultiContainer verifies that the sandbox state
+// correction probes ALL client ids, not just the first one. With one stopped
+// and one running container, the sandbox must stay Running.
+func TestCompareStoredAndLiveStateMultiContainer(t *testing.T) {
+	ctx := context.Background()
+	stoppedStatus := ports.GuestStatus{State: "Stopped", Stopped: true}
+	runningStatus := ports.GuestStatus{State: "Running", Running: true}
+
+	t.Run("one stopped + one running -> sandbox stays running", func(t *testing.T) {
+		guestCtl := &perIDGuestControl{
+			statusByID: map[string]ports.GuestStatus{
+				"cont-a": stoppedStatus,
+				"cont-b": runningStatus,
+			},
+		}
+		storage := &SandboxStorage{
+			ID:    "sandbox-mixed",
+			State: SandboxState{State: StateRunning},
+			Config: SandboxConfig{
+				ContainerConfigs: map[string]*ContainerConfig{
+					"cont-a": {ID: "cont-a"},
+					"cont-b": {ID: "cont-b"},
+				},
+			},
+		}
+		corrected := compareStoredAndLiveState(ctx, storage.ID, storage, guestCtl, stateRepository{})
+		assert.False(t, corrected, "sandbox with a running container must not be corrected to stopped")
+		assert.Equal(t, StateRunning, storage.State.State)
+		assert.Equal(t, 2, guestCtl.statusCalls, "should probe both client ids")
+	})
+
+	t.Run("all stopped -> sandbox corrected to stopped", func(t *testing.T) {
+		guestCtl := &perIDGuestControl{
+			statusByID: map[string]ports.GuestStatus{
+				"cont-a": stoppedStatus,
+				"cont-b": stoppedStatus,
+			},
+		}
+		storage := &SandboxStorage{
+			ID:    "sandbox-all-stopped",
+			State: SandboxState{State: StateRunning},
+			Config: SandboxConfig{
+				ContainerConfigs: map[string]*ContainerConfig{
+					"cont-a": {ID: "cont-a"},
+					"cont-b": {ID: "cont-b"},
+				},
+			},
+		}
+		corrected := compareStoredAndLiveState(ctx, storage.ID, storage, guestCtl, stateRepository{})
+		assert.True(t, corrected, "sandbox with all stopped containers should be corrected")
+		assert.Equal(t, StateStopped, storage.State.State)
+	})
+
+	t.Run("file=stopped, one running -> corrected to running", func(t *testing.T) {
+		guestCtl := &perIDGuestControl{
+			statusByID: map[string]ports.GuestStatus{
+				"cont-a": stoppedStatus,
+				"cont-b": runningStatus,
+			},
+		}
+		storage := &SandboxStorage{
+			ID:    "sandbox-revive",
+			State: SandboxState{State: StateStopped},
+			Config: SandboxConfig{
+				ContainerConfigs: map[string]*ContainerConfig{
+					"cont-a": {ID: "cont-a"},
+					"cont-b": {ID: "cont-b"},
+				},
+			},
+		}
+		corrected := compareStoredAndLiveState(ctx, storage.ID, storage, guestCtl, stateRepository{})
+		assert.True(t, corrected, "sandbox with a running container should be corrected to running")
+		assert.Equal(t, StateRunning, storage.State.State)
+	})
+
+	t.Run("all stopped but persisted paused -> sandbox stays running", func(t *testing.T) {
+		// Non-Xen Pause maps to mica stop: guest reports Stopped while the
+		// container snapshot still says paused. Recovery must not "correct"
+		// the sandbox to Stopped or Resume fails with SandboxNotReady.
+		repo := stateRepositoryWithLegacyRoots(newMemoryStateStore(), t.TempDir(), t.TempDir())
+		sandboxID := "sandbox-paused"
+		containerID := "cont-paused"
+		payload, err := json.Marshal(ContainerStorage{
+			ID:            containerID,
+			SandboxID:     sandboxID,
+			State:         ContainerState{State: StatePaused},
+			Config:        ContainerConfig{ID: containerID},
+			ContainerPath: filepath.Join(sandboxID, containerID),
+		})
+		require.NoError(t, err)
+		require.NoError(t, repo.store.Save(ctx, &ports.RuntimeSnapshot{
+			Namespace: runtimeStateNamespaceContainer,
+			TaskID:    containerSnapshotID(filepath.Join(sandboxID, containerID), containerID),
+			Data:      payload,
+		}))
+
+		guestCtl := &perIDGuestControl{
+			statusByID: map[string]ports.GuestStatus{
+				containerID: stoppedStatus,
+			},
+		}
+		storage := &SandboxStorage{
+			ID:    sandboxID,
+			State: SandboxState{State: StateRunning},
+			Config: SandboxConfig{
+				ContainerConfigs: map[string]*ContainerConfig{
+					containerID: {ID: containerID},
+				},
+			},
+		}
+		corrected := compareStoredAndLiveState(ctx, storage.ID, storage, guestCtl, repo)
+		assert.False(t, corrected, "paused container reporting stopped must keep sandbox running")
+		assert.Equal(t, StateRunning, storage.State.State)
 	})
 }

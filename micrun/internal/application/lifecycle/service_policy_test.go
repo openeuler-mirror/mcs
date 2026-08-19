@@ -36,6 +36,7 @@ func (p policyTask) ExitChan() chan struct{}         { return nil }
 func (p policyTask) IOExit()                         {}
 func (p policyTask) CanBeSandbox() bool              { return false }
 func (p policyTask) IsCriSandbox() bool              { return p.isCriSandbox }
+func (p policyTask) IsRecovered() bool               { return false }
 func (p policyTask) Annotations() map[string]string  { return p.annotations }
 func (p policyTask) IOManager() ports.IOManager      { return nil }
 func (p policyTask) SetIOManager(ports.IOManager)    {}
@@ -43,6 +44,7 @@ func (p policyTask) AttachInfo() *ports.AttachInfo   { return nil }
 func (p policyTask) SetAttachInfo(*ports.AttachInfo) {}
 func (p policyTask) SetStdinPipe(io.WriteCloser)     {}
 func (p policyTask) SetAttached(bool) bool           { return false }
+func (p policyTask) IsAttached() bool                { return false }
 
 func TestResolveWaitPolicyDisablesAutoCloseOnZeroTimeout(t *testing.T) {
 	policy := resolveWaitPolicy(policyTask{
@@ -250,5 +252,46 @@ func TestWaitPolicyDecisionForTaskZeroTimeoutDisablesAutoClose(t *testing.T) {
 	}
 	if decision.timeout != 0 {
 		t.Fatalf("expected timeout 0, got %v", decision.timeout)
+	}
+}
+
+func TestGetDurationAnnotationRejectsOverflowingSeconds(t *testing.T) {
+	// seconds*time.Second overflows for huge values and wraps to a small
+	// positive duration; it must fall back to the default instead of firing
+	// auto-close almost immediately.
+	for _, value := range []string{"18446744074", "9223372036854775807"} {
+		t.Run(value, func(t *testing.T) {
+			got, set := getDurationAnnotation(map[string]string{
+				ann.AutoCloseTimeout: value,
+			}, ann.AutoCloseTimeout, defaultAutoCloseTimeout)
+			if got != defaultAutoCloseTimeout {
+				t.Fatalf("duration = %v, want default %v", got, defaultAutoCloseTimeout)
+			}
+			if !set {
+				t.Fatal("set = false, want true")
+			}
+		})
+	}
+}
+
+func TestGetDurationAnnotationRejectsNegativeOverflowSeconds(t *testing.T) {
+	// A large negative bare integer (e.g. -18446744073) makes
+	// seconds*time.Second wrap to a small POSITIVE duration (~709ms),
+	// bypassing both the overflow guard (positive-only) and the
+	// negative-duration fallback. Without the fix this would fire auto-close
+	// almost immediately for what the user intended as "disabled".
+	for _, value := range []string{"-18446744073", "-9223372036854775808", "-9999999999"} {
+		t.Run(value, func(t *testing.T) {
+			got, set := getDurationAnnotation(map[string]string{
+				ann.AutoCloseTimeout: value,
+			}, ann.AutoCloseTimeout, defaultAutoCloseTimeout)
+			if got != defaultAutoCloseTimeout {
+				t.Fatalf("duration = %v, want default %v (value %s wrapped to a positive duration)",
+					got, defaultAutoCloseTimeout, value)
+			}
+			if !set {
+				t.Fatal("set = false, want true")
+			}
+		})
 	}
 }

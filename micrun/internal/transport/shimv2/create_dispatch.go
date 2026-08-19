@@ -39,7 +39,7 @@ func (p *createPlan) setupContainer(ctx context.Context, s *shimService) error {
 	case cntr.PodSandbox, cntr.SingleContainer:
 		return createSandboxContainer(ctx, s, p.containerType, p.request, p.ociSpec, p.runtimeConfig, p.bundlePath, p.rootfsPath, &p.rootfs)
 	case cntr.PodContainer:
-		return createPodContainer(ctx, s, p.request, p.ociSpec, p.bundlePath, p.rootfsPath, &p.rootfs)
+		return createPodContainer(ctx, s, p.request, p.ociSpec, p.bundlePath, p.rootfsPath, &p.rootfs, p.runtimeConfig)
 	default:
 		return fmt.Errorf("unsupported container type: %v", p.containerType)
 	}

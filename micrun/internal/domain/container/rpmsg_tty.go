@@ -7,6 +7,7 @@ import (
 	"micrun/internal/support/contextx"
 	defs "micrun/internal/support/definitions"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/perf"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,7 +102,17 @@ func retryableOpenError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// openTTYOnce uses unix.Open, whose failure is a raw unix.Errno (e.g.
+	// ENOENT when the RPMSG device node has not been created yet during RTOS
+	// bring-up). errors.Is(rawErrno, os.ErrNotExist) is FALSE because the
+	// os.ErrNotExist bridge lives only on *os.PathError/*os.SyscallError; the
+	// previous os.ErrNotExist-only check therefore misclassified ENOENT as
+	// non-retryable and made the open loop fail fast instead of retrying until
+	// the device appears. Check unix.ENOENT directly to cover the raw errno,
+	// and keep os.ErrNotExist as a defensive match for any os.OpenFile-based
+	// caller that returns a *os.PathError.
 	return errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, unix.ENOENT) ||
 		errors.Is(err, unix.ENXIO) ||
 		errors.Is(err, unix.EIO) ||
 		errors.Is(err, unix.EAGAIN) ||
@@ -116,74 +127,6 @@ func openTTYOnce(path string) (*os.File, error) {
 	// Keep TTY in non-blocking mode for the IO copier
 	// The new copier handles EAGAIN properly with retry logic
 	return os.NewFile(uintptr(fd), path), nil
-}
-
-// drainTTY reads and discards any data already present in the TTY buffer.
-// This prevents stale data from being read when we first attach to the TTY.
-// Uses a limited number of reads to avoid indefinite blocking when RTOS is continuously sending data.
-func drainTTY(file *os.File) {
-	log.Debugf("[TTY] drainTTY called")
-	const drainBufSize = 1024
-	const maxDrainReads = 5 // Limit number of drain reads to avoid indefinite loop
-	const drainThreshold = 4096
-	buf := make([]byte, drainBufSize)
-	drained := 0
-	readCount := 0
-	fd := file.Fd()
-
-	// Check current flags
-	oldFlags, err := unix.FcntlInt(fd, unix.F_GETFL, 0)
-	if err != nil {
-		log.Warnf("[TTY] Failed to get flags: %v", err)
-		return
-	}
-
-	// Set non-blocking
-	_, err = unix.FcntlInt(fd, unix.F_SETFL, oldFlags|unix.O_NONBLOCK)
-	if err != nil {
-		log.Warnf("[TTY] Failed to set non-blocking: %v", err)
-		return
-	}
-	defer func() {
-		// Restore original flags
-		_, _ = unix.FcntlInt(fd, unix.F_SETFL, oldFlags)
-	}()
-
-	// Read until we get EAGAIN or reach max read count
-	for readCount < maxDrainReads {
-		readCount++
-		// Use unix.Read directly on file descriptor to ensure non-blocking behavior
-		n, err := unix.Read(int(fd), buf)
-		if n > 0 {
-			drained += n
-			log.Debugf("[TTY] Drained %d bytes (read %d/%d)", n, readCount, maxDrainReads)
-			// Don't drain too much - might be legitimate data
-			if drained > drainThreshold {
-				log.Warnf("[TTY] Drained %d bytes, stopping to avoid dropping valid data", drained)
-				break
-			}
-			// Continue to next read (limited by maxDrainReads)
-			continue
-		}
-		if err != nil {
-			// EAGAIN means no more data (EWOULDBLOCK == EAGAIN on Linux)
-			if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
-				break
-			}
-			// Other errors - stop draining
-			log.Debugf("[TTY] Drain error: %v", err)
-			break
-		}
-		// n == 0 and err == nil - EOF
-		break
-	}
-
-	if drained > 0 {
-		log.Debugf("[TTY] Total drained %d bytes in %d reads", drained, readCount)
-	}
-	if readCount >= maxDrainReads {
-		log.Debugf("[TTY] Drain reached max read count (%d)", maxDrainReads)
-	}
 }
 
 // configureTTY configures the RPMSG TTY device for proper terminal behavior.
@@ -271,10 +214,15 @@ func cleanupStaleSymlink(path string) {
 	// Check if target file exists
 	if _, err := os.Stat(targetPath); err != nil {
 		if os.IsNotExist(err) {
-			// Target doesn't exist, remove stale symlink
-			log.Debugf("[TTY] Removing stale symlink %s -> %s", path, target)
-			if removeErr := os.Remove(path); removeErr != nil {
-				log.Warnf("[TTY] Failed to remove stale symlink %s: %v", path, removeErr)
+			// Target doesn't exist, remove stale symlink. Re-Lstat right before
+			// Remove to minimize the window where the target could be (re)created
+			// by a concurrent device hot-plug, avoiding removing a freshly-valid
+			// symlink. The caller's retry loop tolerates a transient miss.
+			if recheck, e := os.Lstat(path); e == nil && recheck.Mode()&os.ModeSymlink != 0 {
+				log.Debugf("[TTY] Removing stale symlink %s -> %s", path, target)
+				if removeErr := os.Remove(path); removeErr != nil {
+					log.Warnf("[TTY] Failed to remove stale symlink %s: %v", path, removeErr)
+				}
 			}
 		}
 	}
@@ -293,6 +241,12 @@ func dialTTY(ctx context.Context, containerID string) (stdin *os.File, stdout *o
 
 func dialTTYWithRoots(ctx context.Context, containerID string, roots []string) (stdin *os.File, stdout *os.File, openedPath string, err error) {
 	ctx = contextx.OrBackground(ctx)
+	perfT := perf.Start(nil, "dial_tty", containerID)
+	defer func() {
+		if err == nil {
+			perfT.Total()
+		}
+	}()
 	paths := buildCandidateTTYs(containerID, roots)
 	if len(paths) == 0 {
 		return nil, nil, "", fmt.Errorf("empty container id")
@@ -320,14 +274,24 @@ func dialTTYWithRoots(ctx context.Context, containerID string, roots []string) (
 	defer t.Stop()
 
 	for {
+		var (
+			lastErr      error
+			anyRetryable bool
+		)
 		for _, p := range paths {
 			log.Debugf("[TTY] Attempting to open TTY: %s", p)
 			in, openErr := openTTYOnce(p)
 			if openErr != nil {
+				lastErr = openErr
 				if retryableOpenError(openErr) {
+					anyRetryable = true
 					continue
 				}
-				return nil, nil, "", fmt.Errorf("open rpmsg tty %s: %w", p, openErr)
+				// Non-retryable error on this candidate root: keep probing
+				// the remaining roots — a permission-class failure on /dev
+				// must not hide a usable TTY under the state dir.
+				log.Warnf("[TTY] open %s failed (non-retryable): %v", p, openErr)
+				continue
 			}
 
 			// Configure TTY for proper terminal behavior
@@ -336,27 +300,37 @@ func dialTTYWithRoots(ctx context.Context, containerID string, roots []string) (
 				// Continue anyway - TTY may work with default settings
 			}
 
-			// Drain any stale data from TTY buffer
-			// This prevents reading old data when we first attach
-			drainTTY(in)
-
 			// Open stdout (same TTY device)
 			// We use the same underlying fd, so we don't need to configure again
 			out, openErr := openTTYOnce(p)
 			if openErr != nil {
 				in.Close()
+				lastErr = openErr
 				if retryableOpenError(openErr) {
+					anyRetryable = true
 					continue
 				}
-				return nil, nil, "", fmt.Errorf("open rpmsg tty %s (stdout): %w", p, openErr)
+				log.Warnf("[TTY] open %s failed (stdout, non-retryable): %v", p, openErr)
+				continue
 			}
 
 			log.Infof("[TTY] Opened RPMSG TTY for %s: %s", containerID, p)
 			return in, out, p, nil
 		}
 
+		// Every candidate root failed this round. Retrying only makes sense
+		// if at least one failure was transient (device not there yet):
+		// a round of only non-retryable errors (permissions, bad structure)
+		// will never succeed — fail fast instead of spinning until timeout.
+		if !anyRetryable {
+			return nil, nil, "", fmt.Errorf("open rpmsg tty for %s: %w", containerID, lastErr)
+		}
+
 		select {
 		case <-waitCtx.Done():
+			if lastErr != nil {
+				return nil, nil, "", fmt.Errorf("wait for rpmsg tty for %s: %v (last open error: %w)", containerID, waitCtx.Err(), lastErr)
+			}
 			return nil, nil, "", fmt.Errorf("wait for rpmsg tty for %s: %w", containerID, waitCtx.Err())
 		case <-t.C:
 		}

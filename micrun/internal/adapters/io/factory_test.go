@@ -97,8 +97,12 @@ func TestEventStreamSubscribeManyCancelsUnderlyingSubscribers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for merged event stream to close")
 	}
-	if count := eventSubscriberCount(bus, DetachDetected); count != 0 {
-		t.Fatalf("underlying detach subscriber count after cancel = %d, want 0", count)
+	deadline := time.Now().Add(time.Second)
+	for eventSubscriberCount(bus, DetachDetected) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("underlying detach subscriber count after cancel = %d, want 0", eventSubscriberCount(bus, DetachDetected))
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -204,6 +208,8 @@ func ioEventTypeMappings() []struct {
 		{ports.IOEventStdinClosed, StdinClosed},
 		{ports.IOEventDetach, DetachDetected},
 		{ports.IOEventInterrupt, InterruptDetected},
+		{ports.IOEventClientAttached, ClientAttached},
+		{ports.IOEventClientDetached, ClientDetached},
 	}
 }
 
@@ -287,5 +293,49 @@ func receiveIOEvent(t *testing.T, events ports.IOEventSubscriber) ports.IOEvent 
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for IO event")
 		return ports.IOEvent{}
+	}
+}
+
+// TestSubscribeManyClosesOutWhenForwarderCancelledWhileBlocked guards the
+// fan-in forwarder's cancellation path: when the subscriber stops draining
+// (e.g. the handler waits on a task lock held by a slow Delete — the K3s
+// pod-removal shape) the forwarder blocks sending into `out`; cancelling
+// the session context must still close `out`, otherwise the handler's pump
+// goroutine blocks on it forever (one leak per detach/reattach cycle on a
+// long-lived shim).
+func TestSubscribeManyClosesOutWhenForwarderCancelledWhileBlocked(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus := newEventBus(ctx, nil)
+	stream := &eventStream{ctx: ctx, bus: bus}
+
+	sub := stream.SubscribeMany(ports.IOEventDetach)
+
+	// 40 control events into a 16-slot source buffer plus a 16-slot out
+	// buffer with no reader: the forwarder parks in the blocked send into
+	// `out`. Publishing runs in its own goroutine because control-event
+	// delivery is bounded at 5s per stalled send.
+	publishStarted := make(chan struct{})
+	go func() {
+		close(publishStarted)
+		for i := 0; i < 40; i++ {
+			bus.Publish(Event{Type: DetachDetected, ContainerID: "container-fanin"})
+		}
+	}()
+	<-publishStarted
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	// Drain buffered events; the channel itself must end up closed.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-sub:
+			if !ok {
+				return // drained and closed: no leak
+			}
+		case <-time.After(time.Until(deadline)):
+			t.Fatal("out never closed after forwarder cancellation: subscriber pump goroutine leaks")
+		}
 	}
 }

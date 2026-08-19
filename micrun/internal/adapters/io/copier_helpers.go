@@ -69,6 +69,16 @@ func isBrokenPipe(err error) bool {
 	return errorTextContains(err, "broken pipe", "EPIPE")
 }
 
+func isENXIO(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ENXIO) {
+		return true
+	}
+	return errorTextContains(err, "ENXIO", "no such device or address")
+}
+
 func isEAGAIN(err error) bool {
 	if err == nil {
 		return false
@@ -77,6 +87,20 @@ func isEAGAIN(err error) bool {
 		return true
 	}
 	return errorTextContains(err, "EAGAIN", "resource temporarily unavailable")
+}
+
+// isEINTR reports whether err is an interrupted syscall. Raw syscalls
+// (unix.Read on the TTY fd) propagate EINTR without auto-retry, unlike
+// os.File.Read which the runtime restarts. Treating EINTR as fatal would
+// tear down a healthy copier on signal delivery (GC preemption, profiling).
+func isEINTR(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EINTR) {
+		return true
+	}
+	return errorTextContains(err, "EINTR", "interrupted system call")
 }
 
 func errorTextContains(err error, fragments ...string) bool {

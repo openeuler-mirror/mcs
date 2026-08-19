@@ -11,40 +11,65 @@ import (
 	"micrun/internal/support/sys"
 )
 
+// cfgVCPU is a lock-free snapshot of the fields containerVCPUs reads, taken
+// under containersLock so the calculation does not race with a concurrent
+// UpdateContainer/setVcpuAffinity writing the same *ContainerConfig.
+type cfgVCPU struct {
+	id      string
+	isInfra bool
+	vcpuNum uint32
+	cpu     *specs.LinuxCPU
+}
+
 func calculateSandboxVCPUs(ctx context.Context, s *Sandbox) (uint32, error) {
 	if s == nil || s.config == nil {
 		return 0, fmt.Errorf("sandbox or sandbox config is nil")
 	}
 
-	total := uint32(0)
+	// Snapshot the relevant config fields under RLock, then release before
+	// calling activeContainer (which takes its own RLock). Holding RLock
+	// across activeContainer would deadlock if a writer is waiting, because
+	// Go's RWMutex blocks new RLock callers while a Lock is queued. Copying
+	// the fields (not just the pointer) avoids racing with a concurrent
+	// writer that reassigns Resources.CPU or mutates VCPUNum.
+	s.containersLock.RLock()
+	snapshots := make([]cfgVCPU, 0, len(s.config.ContainerConfigs))
 	for id, cc := range s.config.ContainerConfigs {
 		if cc == nil {
+			s.containersLock.RUnlock()
 			return 0, fmt.Errorf("container config %q is nil", id)
 		}
-		active, err := s.activeContainer(ctx, cc.ID)
+		snap := cfgVCPU{id: cc.ID, isInfra: cc.IsInfra, vcpuNum: cc.VCPUNum}
+		if cc.Resources != nil {
+			snap.cpu = cloneLinuxCPU(cc.Resources.CPU)
+		}
+		snapshots = append(snapshots, snap)
+	}
+	s.containersLock.RUnlock()
+
+	total := uint32(0)
+	for _, snap := range snapshots {
+		active, err := s.activeContainer(ctx, snap.id)
 		if err != nil {
 			return 0, err
 		}
-		if cc.IsInfra || !active {
+		if snap.isInfra || !active {
 			continue
 		}
-		total += containerVCPUs(cc)
+		total += snap.vcpus()
 	}
 	return total, nil
 }
 
-func containerVCPUs(cc *ContainerConfig) uint32 {
-	if cc == nil {
-		return 0
+func (s cfgVCPU) vcpus() uint32 {
+	if s.vcpuNum > 0 {
+		return s.vcpuNum
 	}
-	if cc.VCPUNum > 0 {
-		return cc.VCPUNum
-	}
-	if cc.Resources != nil && cc.Resources.CPU != nil {
-		if v := vcpusFromQuota(cc.Resources.CPU); v > 0 {
+	if s.cpu != nil {
+		if v := vcpusFromQuota(s.cpu); v > 0 {
 			return v
 		}
-		if v := vcpusFromCPUSet(cc.Resources.CPU.Cpus); v > 0 {
+		if v := vcpusFromCPUSet(s.cpu.Cpus); v > 0 {
 			return v
 		}
 	}
@@ -70,44 +95,67 @@ func vcpusFromCPUSet(cpuStr string) uint32 {
 	return uint32(set.Size())
 }
 
+// cfgMemory is a lock-free snapshot of the fields containerMemory reads.
+type cfgMemory struct {
+	id       string
+	isInfra  bool
+	memory   *specs.LinuxMemory
+	hugepage []specs.LinuxHugepageLimit
+}
+
 func calculateSandboxMemory(ctx context.Context, s *Sandbox) (uint64, error) {
 	if s == nil || s.config == nil {
 		return 0, fmt.Errorf("sandbox or sandbox config is nil")
 	}
 
-	memorySandbox := uint64(0)
+	// Snapshot the relevant config fields under RLock, then release before
+	// calling activeContainer. See calculateSandboxVCPUs for the rationale.
+	s.containersLock.RLock()
+	hugePageSupport := s.config.HugePageSupport
+	snapshots := make([]cfgMemory, 0, len(s.config.ContainerConfigs))
 	for id, cc := range s.config.ContainerConfigs {
 		if cc == nil {
+			s.containersLock.RUnlock()
 			return 0, fmt.Errorf("container config %q is nil", id)
 		}
-		active, err := s.activeContainer(ctx, cc.ID)
+		snap := cfgMemory{id: cc.ID, isInfra: cc.IsInfra}
+		if cc.Resources != nil {
+			snap.memory = cloneLinuxMemory(cc.Resources.Memory)
+			if hugePageSupport && len(cc.Resources.HugepageLimits) > 0 {
+				snap.hugepage = append([]specs.LinuxHugepageLimit(nil), cc.Resources.HugepageLimits...)
+			}
+		}
+		snapshots = append(snapshots, snap)
+	}
+	s.containersLock.RUnlock()
+
+	memorySandbox := uint64(0)
+	for _, snap := range snapshots {
+		active, err := s.activeContainer(ctx, snap.id)
 		if err != nil {
 			return 0, err
 		}
-		if cc.IsInfra || !active {
+		if snap.isInfra || !active {
 			continue
 		}
-		memorySandbox += containerMemory(cc, s.config.HugePageSupport)
+		memorySandbox += snap.memoryMiB(hugePageSupport)
 	}
 	return memorySandbox, nil
 }
 
-func containerMemory(cc *ContainerConfig, hugePageSupport bool) uint64 {
-	if cc == nil {
-		return 0
-	}
-	if cc.Resources == nil || cc.Resources.Memory == nil {
+func (s cfgMemory) memoryMiB(hugePageSupport bool) uint64 {
+	if s.memory == nil {
 		return 0
 	}
 	var total uint64
-	m := cc.Resources.Memory
+	m := s.memory
 	if m.Limit != nil && *m.Limit > 0 {
 		limitMiB := uint64(*m.Limit >> 20)
 		total += limitMiB
 		log.Debugf("sandbox memory limit + %d MiB", limitMiB)
 	}
 	if hugePageSupport {
-		for _, lim := range cc.Resources.HugepageLimits {
+		for _, lim := range s.hugepage {
 			hpMiB := lim.Limit >> 20
 			log.Debugf("sandbox hugepage limit + %d MiB (%s)", hpMiB, lim.Pagesize)
 			total += hpMiB

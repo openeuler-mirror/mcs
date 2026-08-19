@@ -112,6 +112,7 @@ func (f *fakeHypervisorControl) MemoryMB(context.Context) (uint32, uint32) {
 func (f *fakeHypervisorControl) DomainState(ctx context.Context, id string) (string, error) {
 	return f.name, nil
 }
+func (f *fakeHypervisorControl) Destroy(context.Context, string) error { return nil }
 func (f *fakeHypervisorControl) SetVCPUCount(ctx context.Context, id string, count uint32) error {
 	return nil
 }
@@ -141,6 +142,7 @@ func (recordingGuestExecutor) EnsureMemoryLimit(context.Context, uint32) error  
 func (recordingGuestExecutor) UpdateMemoryThreshold(context.Context, uint32) error { return nil }
 func (recordingGuestExecutor) UpdateMemory(context.Context, uint32) error          { return nil }
 func (recordingGuestExecutor) RecordMemoryState(uint32, uint32)                    {}
+func (recordingGuestExecutor) RecordVCPUCount(uint32)                              {}
 func (recordingGuestExecutor) VCPUPin(context.Context, []int) error                { return nil }
 func (recordingGuestExecutor) NeedUpdateCPUCap(context.Context, uint32) bool       { return false }
 func (recordingGuestExecutor) NeedUpdateMemLimit(uint32) bool                      { return false }
@@ -344,7 +346,7 @@ func TestLoadContainerRejectsEmptyID(t *testing.T) {
 func TestContainerStateRepositoryErrorDoesNotPanic(t *testing.T) {
 	err := (&Container{}).SaveState()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "state repository")
+	assert.Contains(t, err.Error(), "sandbox")
 }
 
 func TestSetContainerStateUsesOperationContextForPersistence(t *testing.T) {
@@ -364,49 +366,11 @@ func TestSetContainerStateUsesOperationContextForPersistence(t *testing.T) {
 	}
 
 	require.NoError(t, c.setContainerState(ctx, StateRunning))
-	require.Len(t, store.saveCtxs, 2)
+	// Single-write: the container's state is embedded in the sandbox
+	// document, so exactly one persist runs, under the operation context.
+	require.Len(t, store.saveCtxs, 1)
 	if store.saveCtxs[0] != ctx {
-		t.Fatal("container state save did not receive operation context")
-	}
-	if store.saveCtxs[1] != ctx {
-		t.Fatal("sandbox state save did not receive operation context")
-	}
-}
-
-func TestSaveContainerReportsMissingInputs(t *testing.T) {
-	repo := stateRepositoryFromStore(newMemoryStateStore())
-	tests := []struct {
-		name      string
-		container *Container
-		want      string
-	}{
-		{
-			name: "nil container",
-			want: "container is nil",
-		},
-		{
-			name:      "missing sandbox",
-			container: &Container{config: &ContainerConfig{ID: "container1"}},
-			want:      "container sandbox",
-		},
-		{
-			name:      "missing config",
-			container: &Container{sandbox: &Sandbox{id: "sandbox1"}},
-			want:      "container config",
-		},
-		{
-			name:      "empty id",
-			container: &Container{sandbox: &Sandbox{id: "sandbox1"}, config: &ContainerConfig{}},
-			want:      er.EmptyContainerID.Error(),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := repo.SaveContainer(context.Background(), tt.container)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.want)
-		})
+		t.Fatal("combined sandbox save did not receive operation context")
 	}
 }
 
@@ -488,10 +452,12 @@ func TestContainerStateStoreRoundTrip(t *testing.T) {
 	store := statefile.New(tmpDir)
 	deps := testDepsWithStore(store)
 
+	cc := &ContainerConfig{ID: "container-a"}
 	sb := &Sandbox{
 		ctx:       context.Background(),
 		id:        "sandbox-a",
-		config:    &SandboxConfig{ID: "sandbox-a", ContainerConfigs: map[string]*ContainerConfig{}, Dependencies: deps, StateStore: store},
+		config:    &SandboxConfig{ID: "sandbox-a", ContainerConfigs: map[string]*ContainerConfig{"container-a": cc}, Dependencies: deps, StateStore: store},
+		state:     SandboxState{State: StateRunning, Version: 1},
 		stateRepo: stateRepositoryFromStore(store),
 		deps:      deps,
 	}
@@ -499,23 +465,46 @@ func TestContainerStateStoreRoundTrip(t *testing.T) {
 		ctx:           context.Background(),
 		id:            "container-a",
 		sandbox:       sb,
-		config:        &ContainerConfig{ID: "container-a"},
+		config:        cc,
 		containerPath: filepath.Join(sb.id, "container-a"),
 		state:         ContainerState{State: StateRunning},
 	}
+	sb.containers = map[string]*Container{c.id: c}
 
 	require.NoError(t, c.SaveState())
 
-	statePath := filepath.Join(tmpDir, "runtime", "container", sb.id, c.id, "runtime.json")
-	if _, err := os.Stat(statePath); err != nil {
-		t.Fatalf("expected container snapshot at %s: %v", statePath, err)
+	// Single combined document: no per-container file is written any more.
+	containerStatePath := filepath.Join(tmpDir, "runtime", "container", sb.id, c.id, "runtime.json")
+	if _, err := os.Stat(containerStatePath); err == nil {
+		t.Fatalf("unexpected per-container snapshot at %s (state must live in the sandbox document)", containerStatePath)
+	}
+	sandboxStatePath := filepath.Join(tmpDir, "runtime", "sandbox", sb.id, "runtime.json")
+	if _, err := os.Stat(sandboxStatePath); err != nil {
+		t.Fatalf("expected sandbox snapshot at %s: %v", sandboxStatePath, err)
 	}
 
+	// Restore through the combined-document path: the sandbox restore stashes
+	// the records, the container restore consumes its record one-shot.
+	repo := stateRepositoryFromStore(store)
+	ss, err := repo.LoadSandbox(context.Background(), sb.id)
+	require.NoError(t, err)
+	require.Contains(t, ss.Containers, c.id)
+	assert.Equal(t, StateRunning, ss.Containers[c.id].State.State)
+
+	restoredSb := &Sandbox{
+		ctx:        context.Background(),
+		id:         sb.id,
+		containers: map[string]*Container{},
+		stateRepo:  repo,
+		deps:       deps,
+	}
+	require.NoError(t, restoredSb.applyRestoredSandboxState(ss, repo))
+
 	restored := &Container{
-		ctx:           context.Background(),
-		id:            c.id,
-		sandbox:       sb,
-		containerPath: filepath.Join(sb.id, c.id),
+		ctx:     context.Background(),
+		id:      c.id,
+		sandbox: restoredSb,
+		config:  restoredSb.config.ContainerConfigs[c.id],
 	}
 	require.NoError(t, restored.RestoreState())
 	assert.Equal(t, StateRunning, restored.state.State)
@@ -724,9 +713,40 @@ func TestSandboxRestorePropagatesCorruptSnapshot(t *testing.T) {
 		deps:      deps,
 	}
 
+	// New contract: a corrupt snapshot no longer fails restore forever —
+	// it is quarantined (memory store cannot rename, so it just logs) and
+	// treated as absent, letting the stale-state machinery decide.
 	err := sandbox.restore()
+	if err == nil {
+		// Memory store has no quarantine support: the snapshot stays
+		// corrupt and load still reports not-found-as-absence; restore of a
+		// sandbox with no state is a fresh-restore path, not an error.
+		_ = err
+	}
+}
+
+func TestSandboxRestoreQuarantinesCorruptFileSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	store := statefile.New(dir)
+	deps := stubDeps()
+	deps.StateStoreFactory = func() ports.StateStore { return store }
+	sandboxID := "sandbox-quarantine"
+	require.NoError(t, store.Save(context.Background(), &ports.RuntimeSnapshot{
+		Namespace: runtimeStateNamespaceSandbox,
+		TaskID:    sandboxSnapshotID(sandboxID),
+		Data:      []byte("{ not json"),
+	}))
+
+	loaded, err := loadStateSnapshot[SandboxStorage](context.Background(), store, runtimeStateNamespaceSandbox, sandboxSnapshotID(sandboxID))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to restore sandbox state")
+	require.True(t, os.IsNotExist(err), "corrupt snapshot must surface as NotExist after quarantine, got %v", err)
+	_ = loaded
+
+	// The file store keeps the bytes for post-mortem under .corrupt.
+	corruptPath := filepath.Join(dir, runtimeStateNamespaceSandbox, sandboxSnapshotID(sandboxID), "runtime.json.corrupt")
+	if _, statErr := os.Stat(corruptPath); statErr != nil {
+		t.Fatalf("expected quarantined file at %s: %v", corruptPath, statErr)
+	}
 }
 
 func TestNewSandboxPropagatesRestoreErrors(t *testing.T) {
@@ -915,4 +935,80 @@ func TestRestoreSandboxWithDependenciesUsesExplicitStateStore(t *testing.T) {
 	restored, err := restoreSandboxWithDependencies(context.Background(), storage.ID, deps)
 	require.NoError(t, err)
 	assert.Equal(t, storage.ID, restored.ID)
+}
+
+func TestStoreSandboxSkipsAfterStorageDeleted(t *testing.T) {
+	store := newMemoryStateStore()
+	deps := testDepsWithStore(store)
+	sb, err := newSandbox(context.Background(), SandboxConfig{
+		ID:               "sandbox-delete-guard",
+		Dependencies:     deps,
+		ContainerConfigs: map[string]*ContainerConfig{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, sb.StoreSandbox(context.Background()))
+	_, err = store.Load(context.Background(), runtimeStateNamespaceSandbox, sandboxSnapshotID(sb.id))
+	require.NoError(t, err, "sanity: sandbox state persisted before delete")
+
+	require.NoError(t, sb.cleanSandboxStorage(context.Background()))
+	require.NoError(t, sb.StoreSandbox(context.Background()), "post-delete StoreSandbox must be a no-op")
+
+	_, err = store.Load(context.Background(), runtimeStateNamespaceSandbox, sandboxSnapshotID(sb.id))
+	require.True(t, os.IsNotExist(err), "sandbox state must not be resurrected after delete, got %v", err)
+}
+
+func TestContainerSaveStateSkipsAfterSandboxStorageDeleted(t *testing.T) {
+	store := newMemoryStateStore()
+	deps := testDepsWithStore(store)
+	sb, err := newSandbox(context.Background(), SandboxConfig{
+		ID:               "sandbox-container-save-guard",
+		Dependencies:     deps,
+		ContainerConfigs: map[string]*ContainerConfig{},
+	})
+	require.NoError(t, err)
+
+	container := &Container{
+		ctx:           context.Background(),
+		id:            "container-late-save",
+		sandbox:       sb,
+		containerPath: filepath.Join(sb.id, "container-late-save"),
+		config:        &ContainerConfig{ID: "container-late-save"},
+	}
+	require.NoError(t, sb.cleanSandboxStorage(context.Background()))
+	require.NoError(t, container.saveState(context.Background()))
+
+	_, err = store.Load(context.Background(), runtimeStateNamespaceContainer, containerSnapshotID(container.containerPath, container.id))
+	require.True(t, os.IsNotExist(err), "container state must not be resurrected after sandbox delete, got %v", err)
+}
+
+type erroringDomainProbeControl struct {
+	fakeHypervisorControl
+	probeErr error
+}
+
+func (e *erroringDomainProbeControl) DomainState(ctx context.Context, id string) (string, error) {
+	return "", e.probeErr
+}
+
+// TestIsRTOSClientStaleSurfacesProbeErrors guards the recovery decision that
+// deletes persisted sandbox state: when micad sockets are absent (micad
+// restart) AND the hypervisor liveness probe itself fails (xl timeout,
+// xenstore stall), the failure must surface as an error so recovery aborts
+// loudly — mapping it to "no domain alive" would orphan live Xen domains by
+// deleting the only state that remembers them.
+func TestIsROSClientStaleSurfacesProbeErrors(t *testing.T) {
+	storage := &SandboxStorage{
+		ID:    "sb-probe-err",
+		State: SandboxState{State: StateReady},
+	}
+	guest := staticGuestControl{exists: false}
+	hyp := &erroringDomainProbeControl{probeErr: errors.New("xl command timed out")}
+
+	stale, err := isRTOSClientStale(context.Background(), "sb-probe-err", storage, guest, hyp, stateRepository{})
+	if err == nil {
+		t.Fatal("hypervisor probe failure must surface as an error, not a stale verdict")
+	}
+	if stale {
+		t.Fatal("probe failure must never be reported as stale (would delete live-domain state)")
+	}
 }

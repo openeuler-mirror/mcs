@@ -28,6 +28,19 @@ require_remote_file() {
     remote "$REMOTE_HOST" "test -f '$path'"
 }
 
+# Cleanup on any exit (K3S_SINGLE_NODE_KEEP=true preserves the scene for
+# debugging). Without this the nohup'd k3s server, the rtos-demo pod, and
+# its Xen domain all leak on the guest and squeeze the memory the next
+# suite needs.
+single_node_cleanup() {
+    if [ "${K3S_SINGLE_NODE_KEEP:-false}" = "true" ]; then
+        return 0
+    fi
+    remote "$REMOTE_HOST" "$K3S_BIN kubectl delete pod rtos-demo --ignore-not-found=true --force --grace-period=0" >/dev/null 2>&1 || true
+    remote "$REMOTE_HOST" "pkill -f '$K3S_BIN server'" >/dev/null 2>&1 || true
+}
+trap single_node_cleanup EXIT
+
 wait_for_remote() {
     local command="$1"
     local retries="${2:-60}"
@@ -107,10 +120,16 @@ if [ -n "$AVAILABLE_MB" ] && [ "$AVAILABLE_MB" -lt "$MIN_AVAILABLE_MB" ] && [ "$
     exit 0
 fi
 
+HOST_UTC="\$(date -u '+%Y-%m-%d %H:%M:%S')"
 cat > /tmp/k3s-single-node-bootstrap.local.sh <<EOF
 #!/bin/sh
 set -eu
-date -u -s '2026-03-12 15:00:00' >/dev/null 2>&1 || true
+# Sync the guest clock to the host's current UTC time. A hardcoded past
+# timestamp drifts further every day and eventually breaks k3s cert/TLS
+# validation; same rationale as the -rtc pin in tests/common/qemu.sh.
+# ($HOST_UTC is unescaped on purpose: the heredoc is unquoted, so the host
+# expands the value into the guest script.)
+date -u -s "$HOST_UTC" >/dev/null 2>&1 || true
 pkill -9 -f '$K3S_BIN server' 2>/dev/null || true
 pkill -9 -f '$K3S_BIN agent' 2>/dev/null || true
 systemctl stop k3s 2>/dev/null || true
@@ -228,6 +247,12 @@ wait_for_remote "$K3S_BIN kubectl get pod rtos-demo -o jsonpath='{.status.phase}
     remote_output "$REMOTE_HOST" "tail -n 200 '$LOG_FILE'" || true
     exit 1
 }
+# A crash-looping pod still reports phase=Running; require zero restarts.
+single_node_restarts="$(remote_output "$REMOTE_HOST" "$K3S_BIN kubectl get pod rtos-demo -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null" 2>/dev/null | tr -d '[:space:]')"
+if [ -n "$single_node_restarts" ] && [ "$single_node_restarts" != "0" ]; then
+    log_error "rtos-demo restarted ${single_node_restarts}x before stabilization (crash-looping workload still shows Running)"
+    exit 1
+fi
 
 CONTAINER_ID="$(
     remote "$REMOTE_HOST" "$K3S_BIN kubectl get pod rtos-demo -o jsonpath='{.status.containerStatuses[0].containerID}'" |

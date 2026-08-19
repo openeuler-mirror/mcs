@@ -50,18 +50,31 @@ func (n *OutputNormalizer) Normalize(data []byte) []byte {
 		return data
 	}
 
+	// An empty chunk carries no bytes and must not affect normalizer state.
+	// Without this guard the fast-path branches below would clear
+	// lastLineEnding on an empty read, breaking line-ending compression
+	// across chunks when an empty slice intervenes.
+	if len(data) == 0 {
+		return data
+	}
+
 	if n.config.FilterNUL && !n.config.CompressLineEndings && bytes.IndexByte(data, 0) < 0 {
 		return data
 	}
 
 	if n.config.FilterNUL && n.config.CompressLineEndings {
-		if !n.pendingCR && bytes.IndexAny(data, "\r\n\x00") < 0 {
+		if !n.pendingCR && !bytes.ContainsAny(data, "\r\n\x00") {
+			// A block with no line-ending bytes breaks the run of consecutive
+			// line endings — clear the flag so the next block's leading
+			// line ending is not silently dropped.
+			n.lastLineEnding = false
 			return data
 		}
 	}
 
 	if n.config.CompressLineEndings && !n.config.FilterNUL {
 		if !n.pendingCR && !bytes.ContainsAny(data, "\r\n") {
+			n.lastLineEnding = false
 			return data
 		}
 	}

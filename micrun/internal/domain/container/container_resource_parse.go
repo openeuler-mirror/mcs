@@ -115,7 +115,6 @@ func logCPUResourceSummary(cfg *ContainerConfig) {
 		VCPUNum = %d (default=1，configurable)
 		CpusetCpus = %s (hard affinity)
 		MemoryLimit = %d MiB
-	}
 	`, cfg.cpuCapacity(), sharesVal, cfg.VCPUNum, cpusetVal, cfg.memoryLimitMB())
 }
 

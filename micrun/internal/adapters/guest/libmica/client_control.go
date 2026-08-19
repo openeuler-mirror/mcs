@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"micrun/internal/adapters/hypervisor/pedestal"
 	"micrun/internal/support/contextx"
@@ -25,8 +26,24 @@ func validateClientID(id string) error {
 	if id == "" {
 		return fmt.Errorf("empty client id is not allowed")
 	}
-	if len(id) > MaxNameLen {
-		return fmt.Errorf("client id %q exceeds mica limit (%d characters)", id, MaxNameLen)
+	// Reject path separators and NUL: the id is used in filepath.Join to
+	// build the per-client control socket path. A tampered state file
+	// carrying an id like "../../tmp/x" would redirect the path.
+	if strings.ContainsAny(id, `/\`) || strings.ContainsRune(id, '\x00') {
+		return fmt.Errorf("client id %q contains invalid path characters", id)
+	}
+	// Reject ids that micad would truncate: the daemon forces
+	// name[MAX_NAME_LEN-1] = '\0' and derives the per-client control socket
+	// path from the truncated name, so a full-length id would make every
+	// subsequent control operation fail with ENOENT.
+	if len(id) >= MaxNameLen {
+		return fmt.Errorf("client id %q exceeds mica limit (%d characters)", id, MaxNameLen-1)
+	}
+	// Whitespace breaks micad status column parsing (strings.Fields on the
+	// daemon side) and a leading dash makes xl subcommands parse the id as
+	// an option — same tampered-state threat model as the path separators.
+	if strings.ContainsFunc(id, unicode.IsSpace) || strings.HasPrefix(id, "-") {
+		return fmt.Errorf("client id %q contains whitespace or a leading dash", id)
 	}
 	return nil
 }
@@ -44,7 +61,23 @@ func Create(config MicaClientConf) error {
 }
 
 func CreateContext(ctx context.Context, config MicaClientConf) error {
+	ctx = contextx.OrBackground(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Same length rule as every control operation: micad truncates
+	// name[MAX_NAME_LEN-1] = '\0', so a full-length name would be
+	// registered as 65 chars while all later control sockets use the
+	// 66-char id — an uncontrollable, leaking client.
+	if err := validateClientID(strings.TrimRight(string(config.name[:]), "\x00")); err != nil {
+		return err
+	}
 	s := newMicaSocket(defs.MicaCreateSocketPath)
+	// create is synchronous on the daemon side (firmware loading, domain
+	// creation) and can take well beyond the default control timeout; give
+	// it the long budget so a slow-but-healthy daemon is not misreported as
+	// timed out (and retried while still executing).
+	s.timeout = defs.MicaSocketLongTimeout
 	return s.handleMsg(ctx, config.pack())
 }
 
@@ -67,6 +100,17 @@ func micaCtlImpl(ctx context.Context, cmd MicaCommand, id string, opts ...string
 	}
 
 	s := newMicaSocket(clientSocketPath(id))
+	// create/start/stop/rm are synchronous on the daemon side and can take
+	// well beyond the default control timeout (firmware load, domain
+	// lifecycle, remoteproc shutdown); give them a longer budget so a
+	// slow-but-healthy daemon is not misreported as timed out (and retried
+	// while still executing). Match on the wire command: MResume maps to
+	// MStart (full domain start) and MPause maps to MStop (remoteproc
+	// shutdown), so they are equally heavy and need the same budget.
+	switch micaWireCommand(cmd) {
+	case MCreate, MStart, MStop, MRemove:
+		s.timeout = defs.MicaSocketLongTimeout
+	}
 	return s.handleMsg(ctx, []byte(msg))
 }
 

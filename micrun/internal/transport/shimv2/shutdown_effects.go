@@ -47,7 +47,11 @@ func (s *shimService) runShutdownEffects() {
 			}
 		}
 	}
-	effects.exit(0)
+	// NOTE: no os.Exit here. runShutdownEffects runs inside the Shutdown
+	// ttrpc handler; exiting the process before the handler returns would
+	// drop the RPC response and any events still queued in the forwarder.
+	// s.ss() (the framework shutdown callback) cancels the serve context,
+	// after which the framework terminates the process normally.
 }
 
 func shouldWarnShutdownSocketRemoval(err error) bool {

@@ -8,6 +8,8 @@ type RecoveredTask struct {
 	CanSandbox bool
 	IsSandbox  bool
 	IsRunning  bool
+	IsPaused   bool // domain alive but scheduled out; distinct from IsRunning
+	IsStopped  bool
 }
 
 // RecoveryRuntime is the runtime-facing surface needed by the recovery service.

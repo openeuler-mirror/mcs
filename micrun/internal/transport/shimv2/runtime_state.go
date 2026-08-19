@@ -67,7 +67,12 @@ func (s *shimService) hasShimTasks() bool {
 }
 
 func (s *shimService) currentSandbox() (cntr.SandboxTraits, bool) {
-	if s == nil || validation.IsNil(s.sandbox) {
+	if s == nil {
+		return nil, false
+	}
+	s.sandboxMu.RLock()
+	defer s.sandboxMu.RUnlock()
+	if validation.IsNil(s.sandbox) {
 		return nil, false
 	}
 	return s.sandbox, true
@@ -77,6 +82,8 @@ func (s *shimService) setSandboxTraits(sandbox cntr.SandboxTraits) {
 	if s == nil {
 		return
 	}
+	s.sandboxMu.Lock()
+	defer s.sandboxMu.Unlock()
 	if validation.IsNil(sandbox) {
 		s.sandbox = nil
 		return

@@ -16,7 +16,7 @@ func (m *taskManager) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 	in := createInputFromTransport(r)
 	out, err := m.service.Create(ctx, m.create, in)
 	if err != nil {
-		return nil, err
+		return nil, micrunErrorToGRPC(err)
 	}
 
 	m.emitTaskCreated(in.Request, createTaskCheckpoint(r), out.Pid)
@@ -37,7 +37,7 @@ func (m *taskManager) Start(ctx context.Context, r *taskAPI.StartRequest) (*task
 	in := startInputFromTransport(r)
 	out, err := m.service.Start(ctx, m.start, in)
 	if err != nil {
-		return nil, grpcExecAwareRequestErrorWithFallback(r, err, errdefs.ToGRPC)
+		return nil, grpcExecAwareRequestErrorWithFallback(r, err, micrunErrorToGRPC)
 	}
 
 	m.emitTaskStarted(out.ContainerID, out.ExecID, out.Pid)
@@ -53,6 +53,13 @@ func (m *taskManager) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*ta
 	if err != nil {
 		return nil, grpcExecAwareRequestError(r, err)
 	}
+	if out.NotFound {
+		// The task was already deleted (concurrent Delete, or a retry after
+		// a client timeout). Return NotFound instead of a fabricated success
+		// with exit code 0 — the real exit status is gone and must not be
+		// misreported — and do not emit a second (bogus) TaskDelete event.
+		return nil, errdefs.ToGRPCf(errdefs.ErrNotFound, "task %s already deleted", in.ID)
+	}
 
 	exitedAt := timestamppb.New(out.ExitedAt)
 	m.emitTaskDeleted(out.ContainerID, out.ExitStatus, out.Pid, exitedAt)
@@ -66,7 +73,7 @@ func (m *taskManager) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptyp
 	}
 	out, err := m.service.Pause(ctx, m.signal, signalInputFromTransport(r))
 	if err != nil {
-		return nil, err
+		return nil, micrunErrorToGRPC(err)
 	}
 	if out.EmitEvent {
 		m.emitTaskPaused(out.ContainerID)
@@ -80,7 +87,7 @@ func (m *taskManager) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*pt
 	}
 	out, err := m.service.Resume(ctx, m.signal, signalInputFromTransport(r))
 	if err != nil {
-		return nil, err
+		return nil, micrunErrorToGRPC(err)
 	}
 	if out.EmitEvent {
 		m.emitTaskResumed(out.ContainerID)
@@ -127,7 +134,7 @@ func (m *taskManager) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) 
 		return nil, errdefs.ToGRPCf(errdefs.ErrInvalidArgument, "invalid update resources: %v", err)
 	}
 	if err := m.service.Update(ctx, m.io, in); err != nil {
-		return nil, err
+		return nil, micrunErrorToGRPC(err)
 	}
 	return emptyResponse, nil
 }

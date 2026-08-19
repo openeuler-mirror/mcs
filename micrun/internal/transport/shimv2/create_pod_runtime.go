@@ -17,7 +17,7 @@ import (
 
 func createPodContainer(ctx context.Context, s *shimService, r ports.TaskCreateRequest,
 	ociSpec *specs.Spec, bundlePath, rootfsPath string,
-	rootfs *cntr.RootFs) (err error) {
+	rootfs *cntr.RootFs, runtimeConfig *oci.RuntimeConfig) (err error) {
 	sandbox, ok := s.currentSandbox()
 	if !ok {
 		return fmt.Errorf("cannot start pod container %s: sandbox is not created", r.ID)
@@ -26,7 +26,10 @@ func createPodContainer(ctx context.Context, s *shimService, r ports.TaskCreateR
 	mergeSandboxMicrunAnnotations(ociSpec, sandbox)
 	return withMountedRootfs(rootfsPath, r.Rootfs, rootfs, func() error {
 		log.Debug("rootfs mounted for pod container, showing rootfs contents: ")
-		return createPodContainerInSandbox(ctx, sandbox, *ociSpec, *rootfs, r.ID, bundlePath, s.config, &s.runtimeDeps.resourcePolicy)
+		// Use the plan's freshly-loaded runtime config, not s.config: after a
+		// shim restart (recovery) s.config is never set, so pod container
+		// Create would fail with "runtime config is required".
+		return createPodContainerInSandbox(ctx, sandbox, *ociSpec, *rootfs, r.ID, bundlePath, runtimeConfig, &s.runtimeDeps.resourcePolicy)
 	})
 }
 

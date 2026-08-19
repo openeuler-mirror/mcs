@@ -6,16 +6,25 @@ import (
 	"io"
 	"os"
 	"sort"
+	"time"
 
 	"micrun/internal/ports"
 	er "micrun/internal/support/errors"
+	"micrun/internal/support/lockutil"
 	log "micrun/internal/support/logger"
 )
+
+// waitContainerExitPollInterval is how often WaitContainerExit re-probes
+// guest existence so a spontaneous domain crash is observed without relying
+// solely on the in-process exit notifier.
+const waitContainerExitPollInterval = time.Second
 
 func (s *Sandbox) GetAllContainers() []ContainerTraits {
 	if s == nil {
 		return nil
 	}
+	s.containersLock.RLock()
+	defer s.containersLock.RUnlock()
 	list := make([]ContainerTraits, 0, len(s.containers))
 	for _, c := range s.containers {
 		if c == nil {
@@ -66,9 +75,6 @@ func (s *Sandbox) GetAnnotations() map[string]string {
 	return annotations
 }
 
-func (s *Sandbox) Monitor() {
-}
-
 func (s *Sandbox) GetNetNamespace() string {
 	if s == nil || s.network == nil {
 		return ""
@@ -97,7 +103,25 @@ func (s *Sandbox) GetState() StateString {
 	if s == nil {
 		return StateDown
 	}
-	return s.state.State
+	return lockutil.WithReadLockValue(&s.stateMu, func() StateString {
+		return s.state.State
+	})
+}
+
+// snapshotState returns a consistent copy of the sandbox state for persistence.
+func (s *Sandbox) snapshotState() SandboxState {
+	return lockutil.WithReadLockValue(&s.stateMu, func() SandboxState {
+		return s.state
+	})
+}
+
+// transitionState validates a sandbox state transition under stateMu.
+// The underlying Transition reads s.state.State without a lock; this races
+// with setSandboxState writers.
+func (s *Sandbox) transitionState(old, new StateString) error {
+	return lockutil.WithReadLockValue(&s.stateMu, func() error {
+		return s.state.Transition(old, new)
+	})
 }
 
 func (s *Sandbox) StatusContainer(ctx context.Context, containerID string) (ContainerStatus, error) {
@@ -119,28 +143,33 @@ func (s *Sandbox) StatusContainer(ctx context.Context, containerID string) (Cont
 		log.Debugf("container %s not found in sandbox %s", containerID, s.id)
 		return cs, err
 	}
-	if _, err := c.ensureClientPresenceWithContext(ctx); err != nil {
-		return cs, err
-	}
 
+	// Status is a read-only query: it must NOT re-register the guest client
+	// (ensureClientPresenceWithContext would create a fresh Xen domain when
+	// the old one is gone). checkStateWithContext reports the real state and
+	// marks a missing guest as Down.
 	state, err := c.checkStateWithContext(ctx)
 	if err != nil {
 		return cs, err
-	}
-	if state == StateDown {
-		return cs, er.ContainerNotFound
 	}
 	if c.config == nil {
 		return cs, fmt.Errorf("container config is nil")
 	}
 
+	// Container is still registered in the sandbox map. Even when the guest
+	// domain is gone (StateDown), return a status so State/refresh can map
+	// Down→STOPPED. ContainerNotFound is reserved for ids absent from the map.
 	rootfs := c.config.Rootfs.Source
 	if c.config.Rootfs.Mounted {
 		rootfs = c.config.Rootfs.Target
 	}
 
 	cs.Spec = nil
-	cs.State = c.state
+	cs.State = c.snapshotState()
+	// Prefer the live check result so Down is visible even if snapshot lags.
+	if state != "" {
+		cs.State.State = state
+	}
 	cs.ID = c.id
 	cs.Rootfs = rootfs
 	cs.Pid = c.GetPid()
@@ -185,7 +214,7 @@ func (s *Sandbox) IOStream(ctx context.Context, containerID, taskID string) (io.
 	if err := requireContainerQueryID(containerID); err != nil {
 		return nil, nil, nil, err
 	}
-	if s.state.State != StateRunning {
+	if s.GetState() != StateRunning {
 		return nil, nil, nil, er.SandboxDown
 	}
 
@@ -230,11 +259,37 @@ func (s *Sandbox) WaitContainerExit(ctx context.Context, containerID string) (in
 
 	notifier := c.exitNotifierForState(state)
 
-	select {
-	case <-ctx.Done():
-		return okCode, ctx.Err()
-	case <-notifier:
+	// Re-check the state after capturing the notifier: the container may have
+	// transitioned to a terminal state between checkStateWithContext and
+	// exitNotifierForState, in which case the notifier we just created would
+	// never be closed. If the state is already terminal, return immediately.
+	if cur := c.currentState(); cur == StateStopped || cur == StateDown {
 		return okCode, nil
+	}
+
+	// Poll guest existence while waiting: the exit notifier only closes when
+	// some path calls setContainerState(Stopped/Down). A spontaneous domain
+	// crash (xl destroy) never does that on its own, so without polling the
+	// exit watcher would hang forever under auto_close=false / recovery.
+	ticker := time.NewTicker(waitContainerExitPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return okCode, ctx.Err()
+		case <-notifier:
+			return okCode, nil
+		case <-ticker.C:
+			cur, checkErr := c.checkStateWithContext(ctx)
+			if checkErr != nil {
+				// Transient guest RPC failure: keep waiting; do not treat as exit.
+				log.Debugf("WaitContainerExit poll for %s: %v", containerID, checkErr)
+				continue
+			}
+			if cur == StateStopped || cur == StateDown {
+				return okCode, nil
+			}
+		}
 	}
 }
 
@@ -250,7 +305,7 @@ func (s *Sandbox) WinResize(ctx context.Context, containerID string, height, wid
 	if err := requireContainerQueryID(containerID); err != nil {
 		return err
 	}
-	if s.state.State != StateRunning {
+	if s.GetState() != StateRunning {
 		return er.SandboxDown
 	}
 
@@ -273,7 +328,7 @@ func (s *Sandbox) OpenTTYs(ctx context.Context, containerID string) (stdin, stdo
 	if err := requireContainerQueryID(containerID); err != nil {
 		return nil, nil, err
 	}
-	if s.state.State != StateRunning {
+	if s.GetState() != StateRunning {
 		return nil, nil, er.SandboxDown
 	}
 
@@ -293,6 +348,8 @@ func (s *Sandbox) requireQuerySandbox() error {
 }
 
 func (s *Sandbox) queryContainer(containerID string) (*Container, error) {
+	s.containersLock.RLock()
+	defer s.containersLock.RUnlock()
 	c, ok := s.containers[containerID]
 	if !ok || c == nil {
 		return nil, er.ContainerNotFound
@@ -315,7 +372,9 @@ func (s *Sandbox) SetSandboxState(state StateString) error {
 	if !state.valid() {
 		return er.InvalidState
 	}
-	s.state.State = state
+	lockutil.WithLock(&s.stateMu, func() {
+		s.state.State = state
+	})
 	log.Debugf("SetSandboxState: sandbox %s state set to %s", s.id, state)
 	return nil
 }
@@ -327,7 +386,9 @@ func (s *Sandbox) setSandboxState(state StateString) error {
 	if !state.valid() {
 		return er.InvalidState
 	}
-	s.state.State = state
+	lockutil.WithLock(&s.stateMu, func() {
+		s.state.State = state
+	})
 	return nil
 }
 
@@ -335,7 +396,9 @@ func (s *Sandbox) notOperational() bool {
 	if s == nil {
 		return true
 	}
-	return s.state.State != StateReady && s.state.State != StateRunning
+	return lockutil.WithReadLockValue(&s.stateMu, func() bool {
+		return s.state.State != StateReady && s.state.State != StateRunning
+	})
 }
 
 func (s *Sandbox) activeContainer(ctx context.Context, containerID string) (bool, error) {
@@ -346,7 +409,9 @@ func (s *Sandbox) activeContainer(ctx context.Context, containerID string) (bool
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	s.containersLock.RLock()
 	c, ok := s.containers[containerID]
+	s.containersLock.RUnlock()
 	if !ok {
 		return true, nil
 	}

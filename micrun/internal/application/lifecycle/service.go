@@ -1,11 +1,15 @@
 package lifecycle
 
 import (
+	"context"
 	"errors"
 	"time"
 
 	attachapp "micrun/internal/application/attach"
+	"micrun/internal/ports"
+	"micrun/internal/support/panicsafe"
 	"micrun/internal/support/timex"
+	"micrun/internal/support/validation"
 )
 
 // Service centralizes task launch and exit-wait orchestration so transport only
@@ -57,4 +61,24 @@ func (s *Service) AttachService() *attachapp.Service {
 		return nil
 	}
 	return s.attach
+}
+
+// WatchExit spawns the exit-watcher goroutine for an already-running task
+// (used by the recovery path, which restores RUNNING tasks without going
+// through Start). Without this, a recovered task's exit channel is never
+// closed when the guest exits, so Wait RPCs block forever.
+//
+// Auto-close is explicitly disabled: a recovered task has no IO session in
+// this shim process, so IsAttached() is always false and the default 30s
+// auto-close timer would kill a long-running task whose client simply hasn't
+// reconnected yet.
+func (s *Service) WatchExit(ctx context.Context, runtime ports.TaskLifecycleRuntime, taskHandle ports.Task) {
+	if s == nil || validation.IsNil(runtime) || validation.IsNil(taskHandle) {
+		return
+	}
+	eventCtx := lifecycleEventContext(ctx, runtime)
+	panicsafe.Go("recovered task exit watcher", func() {
+		tc := newTaskContext(eventCtx, runtime, taskHandle)
+		_ = s.waitForExitWithPolicy(tc, waitPolicy{autoClose: false})
+	})
 }

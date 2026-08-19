@@ -1,6 +1,7 @@
 package libmica
 
 import (
+	"context"
 	"fmt"
 	er "micrun/internal/support/errors"
 	log "micrun/internal/support/logger"
@@ -9,9 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	defs "micrun/internal/support/definitions"
 )
+
+// serviceStartTimeout bounds a single `systemctl start micad` / `service
+// micad start` invocation during shim init.
+const serviceStartTimeout = 30 * time.Second
 
 // Constants
 const MICAD_PIDFILE = defs.MicadPidFile
@@ -53,7 +59,48 @@ func (osServiceCommandRunner) LookPath(file string) (string, error) {
 }
 
 func (osServiceCommandRunner) Run(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+	// Bounded: `systemctl start micad` runs during shim init / recovery. A
+	// hung service manager (unit stuck in activating, dbus wedged) would
+	// otherwise block the whole shim startup forever with no RPC serving.
+	ctx, cancel := context.WithTimeout(context.Background(), serviceStartTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Run()
+}
+
+// micadProcessName is the expected /proc/<pid>/comm prefix for the micad
+// daemon. The kernel truncates comm to 15 chars; "micad" (5) fits comfortably.
+const micadProcessName = "micad"
+
+// procCommReader reads /proc/<pid>/comm for a pid. It is a package-level
+// variable so tests can substitute a fake without touching the filesystem.
+var procCommReader = func(pid int) (string, error) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+// verifyMicadProcess checks that the live process at pid is actually micad.
+// kill(pid, 0) alone cannot tell a live micad apart from a PID that was
+// recycled to an unrelated process after micad crashed: the stale pidfile
+// would make every caller believe micad is alive, setupMicad would skip the
+// start path, and the shim would talk to a dead daemon forever. Read
+// /proc/<pid>/comm so a recycled PID is rejected and setupMicad re-starts
+// micad for real. This mirrors isLiveShimInstance (sandbox_loader) and
+// verifyHolderProcess (netns/holder_command).
+func verifyMicadProcess(pid int) error {
+	comm, err := procCommReader(pid)
+	if err != nil {
+		// The process exited between kill(0) and the read, /proc is unavailable,
+		// or the pid is a zombie (no comm): treat as "not micad" so the caller
+		// re-checks rather than trusting a stale pidfile.
+		return fmt.Errorf("micad pid %d identity unreadable: %w", pid, err)
+	}
+	if !strings.HasPrefix(comm, micadProcessName) {
+		return fmt.Errorf("pid %d is not micad (comm=%q), pidfile is stale", pid, comm)
+	}
+	return nil
 }
 
 // micadDetect checks if micad is already running by verifying the PID file
@@ -80,6 +127,15 @@ func micadDetect() (int, error) {
 		return pidFromFile, err
 	}
 
+	// kill(pid, 0) confirms only that SOME process owns the pid; it cannot
+	// detect PID reuse after micad crashed. Verify the process identity via
+	// /proc so a recycled PID (e.g. a worker process that inherited the
+	// number) is not mistaken for a live micad — otherwise setupMicad skips
+	// the start path and the shim stays wedged against a dead daemon.
+	if err := verifyMicadProcess(pidFromFile); err != nil {
+		return pidFromFile, err
+	}
+
 	return pidFromFile, nil
 }
 
@@ -92,7 +148,6 @@ func MicadDetect() (int, error) {
 
 // DaemonState ensures micad is running and returns the current daemon state.
 func DaemonState() (*MicaDaemonState, error) {
-	log.Info("DaemonState() called")
 	return daemonState(micadDetect, setupMicad, func() bool {
 		return validSocketPath(defs.MicaCreateSocketPath)
 	})

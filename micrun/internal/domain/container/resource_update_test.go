@@ -111,6 +111,9 @@ func TestResourceUpdateHelpersValidateExecutorOnlyWhenNeeded(t *testing.T) {
 	if err := updateCPUSet(context.Background(), nil, "0", "0"); err != nil {
 		t.Fatalf("same cpuset update error = %v, want nil", err)
 	}
+	if err := updateCPUSet(context.Background(), nil, "0-3", ""); err != nil {
+		t.Fatalf("empty new cpuset (unspecified update) error = %v, want nil", err)
+	}
 	if err := updateCPUSet(context.Background(), nil, "0", "1"); err == nil || !strings.Contains(err.Error(), "guest executor") {
 		t.Fatalf("cpuset update missing executor error = %v, want guest executor error", err)
 	}

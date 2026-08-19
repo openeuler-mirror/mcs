@@ -1,4 +1,4 @@
-.PHONY: all build fmt mock-micad clean-all build-vendor build-module vendor-update vendor-verify install remote help
+.PHONY: all build fmt test test-race test-all test-debug cover cover-html lint ci mock-micad client-arm64 clean-all build-vendor build-module vendor-update vendor-verify install remote help
 
 SHIM_NAME := io.containerd.mica.v2
 
@@ -69,14 +69,73 @@ build:
 fmt:
 	go fmt ./...
 
+# ---------------------------------------------------------------------------
+# Testing targets.
+#
+# `make ci` is the single local verification gate every contributor must run
+# before submitting (see docs/internals/testing.md). There is no hosted CI;
+# these targets are the contract.
+
+test:
+	@echo "🧪 Running unit tests (default build)..."
+	go test $(GO_TEST_FLAGS) -count=1 ./...
+
+test-race:
+	@echo "🧪 Running unit tests with race detector..."
+	go test $(GO_TEST_FLAGS) -count=1 -race ./...
+
+# test-debug runs the suite against the debug build variant (-tags debug),
+# which activates the debug logger and covers logger_release/debug pairs.
+test-debug:
+	@echo "🧪 Running unit tests (debug build variant)..."
+	go test $(GO_TEST_FLAGS) -count=1 -tags debug ./...
+
+test-all: test test-race test-debug
+
+cover:
+	@mkdir -p builds
+	@echo "📊 Running tests with coverage..."
+	go test $(GO_TEST_FLAGS) -count=1 -coverprofile=builds/coverage.out ./...
+	go tool cover -func=builds/coverage.out | tail -n 1
+	@echo "full per-function report: go tool cover -func=builds/coverage.out"
+
+cover-html: cover
+	go tool cover -html=builds/coverage.out -o builds/coverage.html
+	@echo "📊 Coverage report: builds/coverage.html"
+
+lint:
+	@echo "🔍 Lint: gofmt check + go vet..."
+	@out=$$(gofmt -l . 2>/dev/null | grep -v '^vendor/' || true); \
+	if [ -n "$$out" ]; then \
+		echo "gofmt required on:"; echo "$$out"; \
+		exit 1; \
+	fi
+	go vet $(GO_TEST_FLAGS) ./...
+	@echo "🔍 Lint: high-risk pattern gate (reliability.md patterns P1/P2)..."
+	@bash scripts/lint_patterns.sh
+
+# Pattern gate rationale: every rule below maps to a defect class that
+# shipped through review and only surfaced in later scan rounds (see
+# docs/internals/reliability.md). Mechanical enforcement replaces discipline.
+
+
+# Local CI gate: format check, vet, build, unit tests, race detector.
+ci: lint build test test-race
+	@echo "✅ Local verification gate passed (fmt/vet/build/test/race)"
+
 mock-micad:
 	@echo "🎭 Building and running mock_micad..."
 	cd tests/mock_micad && make run
 
+# Cross-compiled test client for the QEMU feature suite (Task.Update driver).
+client-arm64:
+	@echo "🔧 Building tests/containerd_client for arm64..."
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -o builds/containerd_client-arm64 ./tests/containerd_client
+
 clean-all:
 	@echo "🧹 Cleaning up all components..."
 	cd tests/mock_micad && make clean
-	cd tests/containerd_client && rm -f containerd_client
+	rm -f builds/containerd_client-arm64
 	rm -f $(BIN) $(BIN)-arm64
 
 # Vendor-specific build targets
@@ -147,6 +206,15 @@ help:
 	@echo "  make fmt                  - Format Go code"
 	@echo "  make mock-micad           - Run mock micad server"
 	@echo "  make clean-all            - Clean all build artifacts"
+	@echo ""
+	@echo "Testing Commands (run 'make ci' before submitting):"
+	@echo "  make ci                   - Full local gate: fmt+vet+build+test+race"
+	@echo "  make test                 - Unit tests (default build)"
+	@echo "  make test-race            - Unit tests with race detector"
+	@echo "  make test-debug           - Unit tests (debug build variant)"
+	@echo "  make test-all             - test + test-race + test-debug"
+	@echo "  make cover / cover-html   - Coverage report (builds/coverage.*)"
+	@echo "  make lint                 - gofmt check + go vet"
 	@echo ""
 	@echo "Build Mode Commands:"
 	@echo "  make build-vendor         - Build with vendor dependencies"

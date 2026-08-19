@@ -68,15 +68,3 @@ func BuildContainerConfig(ctx context.Context, request ContainerConfigRequest) (
 	}
 	return builder.build(ctx)
 }
-
-func ParseContainerCfg(ctx context.Context, id, bundle string, ocispec specs.Spec, ct cntr.ContainerType, fallbackFirmwarePath string, runtimeConfig *RuntimeConfig, resourcePolicy *cntr.ResourcePolicy) (*cntr.ContainerConfig, error) {
-	return BuildContainerConfig(ctx, ContainerConfigRequest{
-		ID:                   id,
-		Bundle:               bundle,
-		Spec:                 ocispec,
-		ContainerType:        ct,
-		FallbackFirmwarePath: fallbackFirmwarePath,
-		RuntimeConfig:        runtimeConfig,
-		ResourcePolicy:       resourcePolicy,
-	})
-}

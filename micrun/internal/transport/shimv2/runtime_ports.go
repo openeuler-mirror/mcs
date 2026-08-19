@@ -9,6 +9,7 @@ import (
 	ports "micrun/internal/ports"
 	"micrun/internal/support/contextx"
 	er "micrun/internal/support/errors"
+	log "micrun/internal/support/logger"
 	"micrun/internal/support/validation"
 
 	"github.com/containerd/containerd/api/types/task"
@@ -149,7 +150,7 @@ func (s *shimService) MarkKilledByAPI() {
 	if s == nil {
 		return
 	}
-	s.killedByAPI = true
+	s.killedByAPI.Store(true)
 }
 
 func (s *shimService) ReportTaskExit(task ports.Task, status int, exitedAt time.Time) {
@@ -167,7 +168,15 @@ func (s *shimService) ReportTaskExit(task ports.Task, status int, exitedAt time.
 		s.reportExit(event)
 		return
 	}
-	s.ec <- event
+	// Non-blocking send: a full exit channel (slow/down containerd publisher)
+	// must not block the waitForExit goroutine forever. Fall back to a direct
+	// synchronous publish so the exit event is still delivered.
+	select {
+	case s.ec <- event:
+	default:
+		log.Warnf("[SHIM] exit event channel full, publishing exit for %s synchronously", task.ID())
+		s.reportExit(event)
+	}
 }
 
 func (s *shimService) EmptyMetrics() *ptypes.Any {

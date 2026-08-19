@@ -27,20 +27,68 @@ func TestEnsureClientPresenceValidatesContainerAndGuestControl(t *testing.T) {
 	}
 }
 
-func TestEnsureClientPresenceReturnsGuestExistsError(t *testing.T) {
-	expected := errors.New("exists failed")
+func TestEnsureClientPresenceReturnsGuestRemoveError(t *testing.T) {
+	expected := errors.New("remove failed")
 	container := &Container{
 		ctx:    context.Background(),
 		id:     "container1",
 		config: &ContainerConfig{ID: "container1", OS: "uniproton"},
 		sandbox: &Sandbox{
-			guestControl: &stubGuestControl{existsErr: expected},
+			guestControl: &stubGuestControl{removeErr: expected},
 		},
 		state: ContainerState{State: StateDown},
 	}
 
 	if _, err := container.ensureClientPresence(); !errors.Is(err, expected) {
 		t.Fatalf("ensureClientPresence error = %v, want %v", err, expected)
+	}
+}
+
+func TestEnsureClientPresenceRemovesBeforeRegisterWhenDown(t *testing.T) {
+	guest := &stubGuestControl{}
+	createGuestCalled := false
+	store := newMemoryStateStore()
+	deps := testDepsWithStore(store)
+	deps.CreateGuest = func(context.Context, GuestClientConfig) error {
+		createGuestCalled = true
+		guest.exists = true
+		return nil
+	}
+	firmware := t.TempDir() + "/firmware.elf"
+	if err := os.WriteFile(firmware, []byte("fw"), 0o644); err != nil {
+		t.Fatalf("write firmware: %v", err)
+	}
+	container := &Container{
+		ctx:       context.Background(),
+		id:        "container1",
+		guestExec: recordingGuestExecutor{},
+		config: &ContainerConfig{
+			ID:           "container1",
+			OS:           "uniproton",
+			ImageAbsPath: firmware,
+		},
+		sandbox: &Sandbox{
+			id:           "sandbox1",
+			deps:         deps,
+			guestControl: guest,
+			stateRepo:    stateRepositoryFromStore(store),
+			config:       &SandboxConfig{ID: "sandbox1"},
+		},
+		state: ContainerState{State: StateDown},
+	}
+
+	state, err := container.ensureClientPresence()
+	if err != nil {
+		t.Fatalf("ensureClientPresence error = %v", err)
+	}
+	if guest.removeCalls != 1 {
+		t.Fatalf("Remove calls = %d, want 1 before register", guest.removeCalls)
+	}
+	if !createGuestCalled {
+		t.Fatal("expected CreateGuest after Remove")
+	}
+	if state != StateReady {
+		t.Fatalf("state = %s, want Ready", state)
 	}
 }
 

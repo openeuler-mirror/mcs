@@ -19,8 +19,8 @@ tap 网络脚本时，再确认 `tap0` 和 guest 网络都正常。随后用原�
 - 核对 quick-start 的 usernet SSH 转发、Xen 和 guest 网络是否真的就绪。
 - 在使用仓库 tap 脚本时，核对 `tap0`、`qemu-ifup`、sudo，以及边侧 SSH
   目标是否可访问，便于后续 IO 测试。
-- 在文档要求的环境里复现 `ctr task start -t`、attach、prompt 和 RTOS
-  shell 相关问题。
+- 在文档要求的环境里复现 `ctr container create -t` + `ctr task start`、attach、prompt
+  和 RTOS shell 相关问题。
 - 需要先判断问题是否已经在原生 `mica start qemu-uniproton-xen` 路径可复现，
   以免把 `micad` 或 RTOS 问题误判成 MicRun IO 回归。
 - 需要借助现有构建 `docker` 镜像或容器，把当前分支、历史提交或临时补丁版
@@ -51,6 +51,7 @@ tap 网络脚本时，再确认 `tap0` 和 guest 网络都正常。随后用原�
 ```bash
 MCS_REPO=<path-to-mcs-repo>
 QEMU_OUTPUT_DIR=<path-to-qemu-output-test-dir>
+STAMPED_OUTPUT=<path-to-timestamped-build-output>   # 含 micrun-files 的时间戳目录
 HOST_TAP_IFACE=${HOST_TAP_IFACE:-tap0}
 HOST_TAP_IP=${HOST_TAP_IP:-192.168.7.1}
 EDGE_IFACE=${EDGE_IFACE:-enp0s1}
@@ -60,6 +61,8 @@ EDGE_SSH=${EDGE_SSH_USER}@${EDGE_IP}
 SSH_FORWARD_PORT=${SSH_FORWARD_PORT:-10023}
 ```
 
+`QEMU_OUTPUT_DIR` 是复制好的 QEMU 启动产物目录（Image/xen/rootfs/dtb），
+`STAMPED_OUTPUT` 是构建侧含 `micrun-files` 的时间戳输出目录，二者不要混用。
 `192.168.7.0/24` 是仓库 QEMU/K3s 示例网段，不是必须写死的环境。若当前机器
 使用其他网段，保持脚本变量一致即可，提交记录中只保留变量名或占位值。
 
@@ -69,7 +72,9 @@ SSH_FORWARD_PORT=${SSH_FORWARD_PORT:-10023}
 测试网络、固定 guest 地址和 K3s 云边联调：
 
 ```bash
-ROOTFS="$(ls -t openeuler-image-qemu-aarch64-*.rootfs.cpio.gz | head -n1)"
+ROOTFS="$(ls -t openeuler-image-*.rootfs.cpio.gz | head -n1)"
+# DTB may be mcs-prefixed; keep a stable alias if tests expect the non-mcs name
+DTB="$(ls openeuler-image-*.qemuboot.dtb | head -n1)"
 sudo qemu-system-aarch64 \
   -device virtio-net-pci,netdev=net0 \
   -netdev tap,id=net0,ifname=tap0,script=/etc/qemu-ifup \
@@ -81,7 +86,7 @@ sudo qemu-system-aarch64 \
   -serial mon:stdio -nographic \
   -kernel xen-qemu-aarch64 \
   -append 'root=/dev/ram0 rw debugshell mem=1536M console=ttyAMA0,115200' \
-  -dtb openeuler-image-qemu-aarch64.qemuboot.dtb
+  -dtb "$DTB"
 ```
 
 需要宿主端 SSH 端口转发时，可以额外加 usernet 网卡。仓库自动化脚本
@@ -99,7 +104,7 @@ sudo qemu-system-aarch64 \
 
 不要把 usernet 和 tap 的网络现象混在一起判断。usernet 不会创建 `tap0`；
 tap 路径通常需要 sudo 和宿主机网络脚本。也不要为了测试解包或改写
-`openeuler-image-qemu-aarch64-*.rootfs.cpio.gz`，测试基线必须来自构建产物本身。
+`openeuler-image-*.rootfs.cpio.gz`，测试基线必须来自构建产物本身。
 
 ### 2. 在怀疑 MicRun 之前先查前置条件
 
@@ -149,15 +154,27 @@ DNS_SERVER="$HOST_TAP_IP" \
 如果一开始只能从串口进入 guest，就先在串口里把网络配好，再依赖 SSH 跑
 测试流程。
 
-### 5. 让 SSH 自动化可预测
+### 5. SSH 必须非交互（禁止弹窗、禁止问用户要密码）
 
-为了反复跑验证，尽早建立下面其中一种方式：
+图形会话里裸 `ssh`/`sudo` 会走 `SSH_ASKPASS` 弹出密码框。一律：
 
-- `root` 的 `authorized_keys` 可用
-- 或者一个不会在首次登录时强制改密的已知密码流程
+```bash
+unset SSH_ASKPASS SUDO_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
+sudo -n true          # 没有 NOPASSWD 就停，不要跑会弹窗的 sudo
+```
 
-第一次 `sshpass` 失败，不等于 guest 网络有问题。也可能只是系统要求首次
-登录改密码。
+仓库 `tests/common/qemu.sh` 只有在 `TEST_REMOTE_PASSWORD` /
+`QEMU_GUEST_PASSWORD` **非空** 时才用 `sshpass`；空值会走裸 `ssh`，必弹窗。
+
+当前 oEE 镜像允许空 root，但 `passwd-expire` 会让第一次 SSH 变成
+`keyboard-interactive` 的 “New password”。用 expect **本地生成**密码写进去，
+再 `export TEST_REMOTE_PASSWORD=...`。不要问用户要密码。
+
+新镜像可在 generate 后加 `IMAGE_FEATURES:append = " empty-root-password "`，
+跳过 expire。`sshpass` 仍需要非空密钥（QEMU usernet 默认 `micrun`）；
+不要传空字符串。若镜像仍有 `passwd-expire`，用 expect 写入本地生成的
+密码后再导出 `TEST_REMOTE_PASSWORD`。
 
 ### 6. 先验证平台，再做 MicRun IO 测试
 
@@ -259,9 +276,9 @@ MicRun FIFO 或 attach 逻辑查。这更像是 RTOS firmware 或 mica 侧 shell
 常用确认命令：
 
 ```bash
-strings output/test/micrun-files/uniproton.elf | \
+strings "$STAMPED_OUTPUT/micrun-files/uniproton.elf" | \
   grep -E 'openEuler UniProton #|support shell commond|shell init fail|shell is not yet initialized'
-sha256sum output/test/micrun-files/uniproton.elf rtos/arm64/qemu-uniproton-xen.elf
+sha256sum "$MCS_REPO/output/test/micrun-files/uniproton.elf" "$MCS_REPO/rtos/arm64/qemu-uniproton-xen.elf"
 ```
 
 如果要确认 guest 实际回了什么，优先在 RPMSG TTY symlink ready 之后，在
@@ -278,6 +295,10 @@ wait $pid || true
 
 如果 `Enter` 和 `help` 回来的原始字节完全一样，都是 `Hello, UniProton!`，
 就按 RTOS 侧行为处理，不要当成 MicRun 把 prompt 过滤掉了。
+
+RPMSG 嫁接路径上，banner 换行后偶发丢掉下一输入字节，或 help 文本被截断。
+这是 Linux/RTOS 交互问题，不是用例写错。场景断言以「壳在、命令有响应」
+为准（prompt + help 片段或 command-not-found），不要为截断加长 sleep。
 
 如果 hash 一致，且原生 mica 路径仍然只打印 `Hello`，说明当前构建使用的是
 同一份 RTOS 二进制，问题不在 MicRun shim 自身。

@@ -214,7 +214,7 @@ func TestInitializeDaemonModeHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := initializeDaemonMode(ctx, &shimService{}, nil, nil)
+	err := initializeDaemonMode(ctx, &shimService{}, nil, nil, nil)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("initializeDaemonMode error = %v, want context.Canceled", err)
@@ -224,7 +224,7 @@ func TestInitializeDaemonModeHonorsCanceledContext(t *testing.T) {
 func TestInitializeDaemonModeRejectsTypedNilRecoveryService(t *testing.T) {
 	var recovery *apprecovery.Service
 
-	err := initializeDaemonMode(context.Background(), &shimService{}, nil, recovery)
+	err := initializeDaemonMode(context.Background(), &shimService{}, nil, recovery, nil)
 
 	if !errors.Is(err, errRecoveryServiceRequired) {
 		t.Fatalf("initializeDaemonMode error = %v, want recovery service required", err)

@@ -17,11 +17,15 @@ type pidGoneFunc func(int) bool
 type pidExitWaitFunc func(int, time.Duration, time.Duration, pidGoneFunc) bool
 
 type pidTerminator struct {
-	signal       pidSignalFunc
-	gone         pidGoneFunc
-	waitForExit  pidExitWaitFunc
-	gracePeriod  time.Duration
-	pollInterval time.Duration
+	signal      pidSignalFunc
+	gone        pidGoneFunc
+	waitForExit pidExitWaitFunc
+	// verifyIdentity re-checks that pid still refers to the same process
+	// before the SIGKILL escalation, guarding against PID recycling during
+	// the grace-period poll. nil means skip the check.
+	verifyIdentity func(pid int) error
+	gracePeriod    time.Duration
+	pollInterval   time.Duration
 }
 
 const (
@@ -30,11 +34,12 @@ const (
 )
 
 var defaultPIDTerminator = pidTerminator{
-	signal:       syscall.Kill,
-	gone:         processGone,
-	waitForExit:  waitForPIDExit,
-	gracePeriod:  pidTerminationGracePeriod,
-	pollInterval: pidTerminationPollInterval,
+	signal:         syscall.Kill,
+	gone:           processGone,
+	waitForExit:    waitForPIDExit,
+	verifyIdentity: verifyHolderProcess,
+	gracePeriod:    pidTerminationGracePeriod,
+	pollInterval:   pidTerminationPollInterval,
 }
 
 func terminateByPID(pid int) error {
@@ -57,6 +62,17 @@ func terminateByPIDWith(pid int, terminator pidTerminator) error {
 
 	if terminator.waitForExit(pid, terminator.gracePeriod, terminator.pollInterval, terminator.gone) {
 		return nil
+	}
+
+	// Re-validate PID identity before SIGKILL: the holder may have exited
+	// and the kernel recycled the PID to an unrelated process during the
+	// grace-period poll. If the PID now belongs to a different process,
+	// skip the kill rather than risk terminating an innocent recycled PID.
+	if !terminator.gone(pid) && terminator.verifyIdentity != nil {
+		if verifyErr := terminator.verifyIdentity(pid); verifyErr != nil {
+			log.Debugf("netns holder pid %d identity changed during grace period (%v), skipping SIGKILL", pid, verifyErr)
+			return nil
+		}
 	}
 
 	if err := terminator.signal(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {

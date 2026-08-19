@@ -40,11 +40,31 @@ func (u linuxResourceUpdate) changes() (*ResourceChanges, bool) {
 		}
 	}
 
-	if mem := u.resources.Memory; mem != nil && mem.Limit != nil {
-		limitMiB := uint32(*mem.Limit >> 20)
-		res.MemoryMinMB = limitMiB
-		res.MemoryMaxMB = copyUint32(limitMiB)
-		hasUpdates = true
+	if mem := u.resources.Memory; mem != nil {
+		// A non-positive limit (cgroup "unlimited"/-1 semantics) must not be
+		// applied: bytesToMiB maps it to 0, which would push the guest
+		// memory down to 0 MiB — the exact opposite of "unlimited". Skip it.
+		if mem.Limit != nil && *mem.Limit > 0 {
+			limitMiB := bytesToMiB(mem.Limit)
+			res.MemoryMaxMB = copyUint32(limitMiB)
+			hasUpdates = true
+		}
+		// A memory reservation has no live counterpart on the mica control
+		// protocol: the only memory fields are Memory (current) and MaxMemory
+		// (threshold), both driven by Limit via EnsureMemoryLimit. A changed
+		// reservation is therefore config-only — applyTo persists it, and
+		// registerClient uses it as the initial memory the next time the guest
+		// domain is created (see the memoryReservationMB fallback there).
+		// hasUpdates is still set so that persistence actually runs.
+		//
+		// A non-positive reservation (cgroup "unlimited"/-1 semantics) must
+		// not be applied: bytesToMiB maps it to 0, which the guest would
+		// interpret as an explicit 0 MiB floor — allowing the balloon driver
+		// to shrink guest memory to 0 and OOM. Skip it, matching the Limit
+		// path above.
+		if mem.Reservation != nil && *mem.Reservation > 0 {
+			hasUpdates = true
+		}
 	}
 
 	return res, hasUpdates
@@ -73,10 +93,22 @@ func (u linuxResourceUpdate) applyTo(res *specs.LinuxResources) {
 		}
 	}
 
-	if mem := u.resources.Memory; mem != nil && mem.Limit != nil {
-		if res.Memory == nil {
-			res.Memory = &specs.LinuxMemory{}
+	// Match the > 0 guard in changes(): a non-positive Limit (cgroup
+	// "unlimited"/-1) must not be written to the config, or the guest never
+	// gets it but the config/disk records -1 — bytesToMiB(-1)=0 makes the
+	// restart path use the default memory instead of the real allocation.
+	if mem := u.resources.Memory; mem != nil {
+		if mem.Limit != nil && *mem.Limit > 0 {
+			if res.Memory == nil {
+				res.Memory = &specs.LinuxMemory{}
+			}
+			res.Memory.Limit = copyInt64(mem.Limit)
 		}
-		res.Memory.Limit = copyInt64(mem.Limit)
+		if mem.Reservation != nil && *mem.Reservation > 0 {
+			if res.Memory == nil {
+				res.Memory = &specs.LinuxMemory{}
+			}
+			res.Memory.Reservation = copyInt64(mem.Reservation)
+		}
 	}
 }

@@ -2,10 +2,11 @@ package io
 
 import (
 	"context"
-	"sync"
+	"reflect"
 
 	"micrun/internal/ports"
 	"micrun/internal/support/contextx"
+	"micrun/internal/support/panicsafe"
 )
 
 var _ ports.IOSessionFactory = (*SessionFactory)(nil)
@@ -50,8 +51,22 @@ func (f *SessionFactory) GenerateFIFOPath(namespace, containerID, stream string)
 }
 
 type eventStream struct {
-	ctx context.Context
-	bus *EventBus
+	ctx     context.Context
+	bus     *EventBus
+	session *Session
+}
+
+// Current reports whether this stream's bus is still the session's active
+// bus. A session restart (renewContext) closes the old bus and installs a
+// new one; events already queued on the old bus keep draining to old
+// subscribers, and handlers must not act on them.
+func (s *eventStream) Current() bool {
+	if s == nil || s.session == nil {
+		return false
+	}
+	s.session.mu.Lock()
+	defer s.session.mu.Unlock()
+	return s.session.eventBus != nil && s.session.eventBus == s.bus
 }
 
 type adapterEventSource struct {
@@ -87,7 +102,6 @@ func (s *eventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEve
 	}
 	ctx := s.context()
 
-	var wg sync.WaitGroup
 	unique := make(map[ports.IOEventType]struct{}, len(eventTypes))
 	sources := make([]adapterEventSource, 0, len(eventTypes))
 
@@ -109,37 +123,71 @@ func (s *eventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEve
 		return out
 	}
 
-	wg.Add(len(sources))
+	// Single forwarder goroutine multiplexing all sources: per-source
+	// goroutines used to race each other into `out`, so a ClientDetached
+	// published after a ClientAttached (serialized inside the copier) could
+	// overtake it after the fan-in, flipping the consumer's attached view
+	// (stuck-true suspends auto-close forever; stuck-false kills a live
+	// session after the grace window).
+	cases := make([]reflect.SelectCase, 0, len(sources)+1)
 	for _, source := range sources {
-		source := source
-		go func() {
-			defer wg.Done()
-			for event := range source.events {
-				converted := ports.IOEvent{
-					Type:        source.eventType,
-					ContainerID: event.ContainerID,
-					Err:         event.Err,
-					Timestamp:   event.Timestamp,
+		cases = append(cases, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(source.events),
+		})
+	}
+	cases = append(cases, reflect.SelectCase{
+		Dir:  reflect.SelectRecv,
+		Chan: reflect.ValueOf(ctx.Done()),
+	})
+	panicsafe.Go("io event fan-in", func() {
+		for {
+			chosen, val, ok := reflect.Select(cases)
+			if chosen == len(cases)-1 {
+				close(out)
+				return
+			}
+			if !ok {
+				cases[chosen].Chan = reflect.ValueOf(nil)
+				allDone := true
+				for _, c := range cases[:len(cases)-1] {
+					if c.Chan.IsValid() {
+						allDone = false
+						break
+					}
 				}
-				select {
-				case out <- converted:
-				case <-ctx.Done():
+				if allDone {
+					close(out)
 					return
 				}
+				continue
 			}
-		}()
-	}
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
+			event := val.Interface().(Event)
+			converted := ports.IOEvent{
+				Type:        sources[chosen].eventType,
+				ContainerID: event.ContainerID,
+				Err:         event.Err,
+				Timestamp:   event.Timestamp,
+			}
+			select {
+			case out <- converted:
+			case <-ctx.Done():
+				// The subscriber's pump blocks on `out` until it closes
+				// (its own context is the shim root, not this session
+				// context), so the cancelled sender must close `out` here —
+				// returning without closing leaks the pump goroutine.
+				close(out)
+				return
+			}
+		}
+	})
 
 	return out
 }
 
 func (s *eventStream) context() context.Context {
 	if s == nil {
-		return contextx.OrBackground(nil)
+		return context.Background()
 	}
 	return contextx.OrBackground(s.ctx)
 }
@@ -156,6 +204,8 @@ var ioEventTypeMappingTable = [...]ioEventTypeMapping{
 	{port: ports.IOEventStdinClosed, adapter: StdinClosed},
 	{port: ports.IOEventDetach, adapter: DetachDetected},
 	{port: ports.IOEventInterrupt, adapter: InterruptDetected},
+	{port: ports.IOEventClientAttached, adapter: ClientAttached},
+	{port: ports.IOEventClientDetached, adapter: ClientDetached},
 }
 
 func eventTypeToAdapter(eventType ports.IOEventType) (EventType, bool) {

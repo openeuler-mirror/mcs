@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"sync"
 
 	"micrun/internal/ports"
 	"micrun/internal/support/timex"
@@ -10,6 +11,13 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
+// Dependencies carries the adapter hooks the container domain calls.
+// StateStoreFactory and TTYDiscoveryRoots are the only fields mutated after
+// construction (every Create RPC re-runs configureRuntimePaths in the shim
+// layer) while attach/IO paths read them outside the Create lock, so their
+// accesses must go through SetRuntimePaths/StateStore/RPMSGTTYRoots, which
+// pathsMu synchronizes. Dependencies must stay pointer-shared, never copied
+// (the mutex makes it non-copyable; `go vet` copylocks enforces this).
 type Dependencies struct {
 	Now                      timex.Clock
 	StateStoreFactory        func() ports.StateStore
@@ -22,6 +30,42 @@ type Dependencies struct {
 	TTYDiscoveryRoots        func() []string
 	DefaultHypervisorControl func() ports.HypervisorControl
 	CreateGuest              func(ctx context.Context, conf GuestClientConfig) error
+
+	pathsMu sync.RWMutex
+}
+
+// SetRuntimePaths atomically swaps the two runtime-reconfigurable hooks.
+// Callers outside package container must use this instead of assigning the
+// fields directly once the Dependencies instance is shared.
+func (d *Dependencies) SetRuntimePaths(stateStoreFactory func() ports.StateStore, ttyRoots func() []string) {
+	d.pathsMu.Lock()
+	defer d.pathsMu.Unlock()
+	d.StateStoreFactory = stateStoreFactory
+	d.TTYDiscoveryRoots = ttyRoots
+}
+
+// StateStore builds a store via the (possibly swapped) factory under the
+// swap lock; nil when no factory is configured.
+func (d *Dependencies) StateStore() ports.StateStore {
+	d.pathsMu.RLock()
+	factory := d.StateStoreFactory
+	d.pathsMu.RUnlock()
+	if factory == nil {
+		return nil
+	}
+	return factory()
+}
+
+// RPMSGTTYRoots reads the (possibly swapped) TTY discovery roots under the
+// swap lock; nil when no hook is configured.
+func (d *Dependencies) RPMSGTTYRoots() []string {
+	d.pathsMu.RLock()
+	hook := d.TTYDiscoveryRoots
+	d.pathsMu.RUnlock()
+	if hook == nil {
+		return nil
+	}
+	return hook()
 }
 
 func (d *Dependencies) Validate() error {

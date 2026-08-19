@@ -3,12 +3,11 @@
 # 使用: ./run_all_tests.sh [category] [test_id]
 #
 # 示例:
-#   ./run_all_tests.sh              # 运行所有测试
-#   ./run_all_tests.sh io           # 运行 IO 测试
-#   ./run_all_tests.sh k3s          # 运行 K3s 测试
-#   ./run_all_tests.sh k3s K3S-008  # 运行 K3s 交互测试
-#   ./run_all_tests.sh k3s K3S-009  # 运行 K3s OTA 测试
-#   ./run_all_tests.sh io IO-001    # 运行指定测试
+#   ./run_all_tests.sh                  # 运行所有测试
+#   ./run_all_tests.sh io               # 运行 IO 测试
+#   ./run_all_tests.sh k3s              # 运行 K3s 测试
+#   ./run_all_tests.sh k3s interaction  # 运行 K3s 交互测试
+#   ./run_all_tests.sh k3s ota          # 运行 K3s OTA 测试
 
 set -e
 
@@ -49,15 +48,18 @@ MicRun 测试套件 - 全局入口
 
 参数:
   category    测试类别 (io, k3s, lifecycle, performance)
-  test_id     测试用例 ID (如 IO-001, K3S-001)
+  test_id     场景名。k3s 类别用语义名：preflight / runtimeclass /
+              pod-lifecycle / deployment / pod-logs / resource-limits /
+              multi-node / self-healing / interaction / ota
+              （旧 K3S-00x 编号仍作兼容别名）；lifecycle/performance
+              类别传 Go 测试名正则
 
 示例:
   $0                  # 运行所有测试
   $0 io               # 运行 IO 测试
   $0 k3s              # 运行 K3s 测试
-  $0 k3s K3S-008      # 运行 K3s 交互测试
-  $0 k3s K3S-009      # 运行 K3s OTA 滚动升级测试
-  $0 io IO-001        # 运行指定测试
+  $0 k3s interaction  # 运行 K3s 交互测试
+  $0 k3s ota          # 运行 K3s OTA 滚动升级测试
 
 测试类别:
   io         IO 测试 - 标准输入输出、TTY、回声抑制
@@ -72,8 +74,8 @@ MicRun 测试套件 - 全局入口
   IMAGE_PROFILE       镜像能力类型 (auto/shell/hello)
   QEMU_IMAGE_TAR      qemu 回归脚本使用的镜像 tar
   K3S_MASTER_NODE     K3s Master 节点
-  K3S_INCLUDE_INTERACTION  k3s 类别无 test_id 时是否包含 K3S-008 (默认: true)
-  K3S_INCLUDE_OTA     k3s 类别无 test_id 时是否包含 K3S-009 OTA (默认: false)
+  K3S_INCLUDE_INTERACTION  k3s 类别无 test_id 时是否包含 interaction 场景 (默认: true)
+  K3S_INCLUDE_OTA     k3s 类别无 test_id 时是否包含 ota 滚动升级场景 (默认: false)
   TEST_LOG_DIR        测试日志目录
   PERF_BENCHTIME      performance 类别的 Go benchmark 时长 (默认: 100ms)
   RUN_PERFORMANCE_TESTS=1  无参数运行全部测试时包含 performance 类别

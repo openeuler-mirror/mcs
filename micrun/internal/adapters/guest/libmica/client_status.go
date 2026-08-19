@@ -7,6 +7,7 @@ import (
 
 	"micrun/internal/support/contextx"
 	defs "micrun/internal/support/definitions"
+	log "micrun/internal/support/logger"
 )
 
 // MicaStatus represents the complete status of a MICA client.
@@ -242,6 +243,8 @@ func parseMicaServices(fields []string) []MicaService {
 			services = append(services, serviceUMT)
 		case strings.Contains(serviceStr, "debug"):
 			services = append(services, serviceDebug)
+		default:
+			log.Debugf("unrecognized mica service: %s", field)
 		}
 	}
 

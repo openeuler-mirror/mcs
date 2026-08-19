@@ -78,15 +78,22 @@ func detectXen() bool {
 
 func checkXenKos() error {
 	essentials := []string{"xen_gntalloc", "xen_gntdev", "xen_mcsback"}
-	for i, ko := range essentials {
+	autoLoaded := []string{}
+	for _, ko := range essentials {
 		loaded, err := sys.KoLoaded(ko)
 		if err != nil {
 			return err
 		}
-		if !loaded {
-			_ = sys.FindAndLoadKo(ko)
-			return fmt.Errorf("kernel module %s is not loaded", essentials[i])
+		if loaded {
+			continue
 		}
+		if loadErr := sys.FindAndLoadKo(ko); loadErr != nil {
+			return fmt.Errorf("kernel module %s is not loaded and could not be loaded: %w", ko, loadErr)
+		}
+		autoLoaded = append(autoLoaded, ko)
+	}
+	if len(autoLoaded) > 0 {
+		log.Debugf("auto-loaded xen kernel modules: %v", autoLoaded)
 	}
 	return nil
 }
@@ -111,17 +118,30 @@ func envFlagEnabled(name string) bool {
 	}
 }
 
+// hpsupport gates hugepage support. Currently disabled: enabling it requires
+// verifying the balloon-driver conflict handling across all supported pedestals.
 const hpsupport = false
 
-// for xen, if ballooning driver was enable, hugepage is not supported
-func (f *PedestalFacade) HugePageSupport(dynamicMem bool) bool {
-	if dynamicMem || f == nil || f.Type() != Xen {
+// HugePageSupport reports whether hugepages may be used. The parameter is the
+// sandbox's staticResource flag (static allocation => ballooning off), which
+// is the inverse of "dynamic memory (ballooning) enabled". For Xen, hugepages
+// are unsupported when memory ballooning is enabled, because the balloon
+// driver conflicts with hugepage allocation. When the hpsupport flag is
+// disabled, hugepage support is always reported as off.
+func (f *PedestalFacade) HugePageSupport(staticResource bool) bool {
+	dynamicMem := !staticResource
+	if !hpsupport || dynamicMem || f == nil || f.Type() != Xen {
 		return false
 	}
-
-	if ConflictKoLoaded, err := sys.KoLoaded(balloonDriverName); err != nil && hpsupport {
-		return !ConflictKoLoaded
+	// Determine whether the balloon driver is actually loaded. The previous
+	// implementation branched on `err != nil`, which acted only when the lookup
+	// FAILED and reported hugepage as supported precisely when the state could
+	// not be determined — the opposite of the intent. Query on success and be
+	// conservative (unsupported) when the lookup errors out.
+	conflictKoLoaded, err := sys.KoLoaded(balloonDriverName)
+	if err != nil {
+		log.Debugf("HugePageSupport: cannot determine balloon driver state: %v", err)
+		return false
 	}
-
-	return false
+	return !conflictKoLoaded
 }

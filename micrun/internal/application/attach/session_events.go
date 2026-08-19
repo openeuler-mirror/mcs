@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"micrun/internal/ports"
+	"micrun/internal/support/panicsafe"
 )
 
 func (s *Service) sessionEventTypesSnapshot() []ports.IOEventType {
@@ -39,6 +40,6 @@ func (s *Service) startSessionEventHandler(
 	if err != nil {
 		return err
 	}
-	go s.handleIOEvents(ctx, runtime, taskHandle, events)
+	panicsafe.Go("attach io event handler", func() { s.handleIOEvents(ctx, runtime, taskHandle, events, stream) })
 	return nil
 }

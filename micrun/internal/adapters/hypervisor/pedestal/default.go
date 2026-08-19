@@ -31,7 +31,10 @@ func (DefaultPedestal) MemLowThreshold() uint32 {
 }
 
 func (DefaultPedestal) MemHighThreshold(context.Context) uint32 {
-	v, _ := mem.VirtualMemory()
+	v, err := mem.VirtualMemory()
+	if err != nil || v == nil {
+		return 2
+	}
 	total := uint32(v.Total >> 20)
 	if total < 2 {
 		return 2
@@ -40,7 +43,10 @@ func (DefaultPedestal) MemHighThreshold(context.Context) uint32 {
 }
 
 func (DefaultPedestal) MemoryMB(context.Context) (free, total uint32) {
-	v, _ := mem.VirtualMemory()
+	v, err := mem.VirtualMemory()
+	if err != nil || v == nil {
+		return 0, 0
+	}
 	free = uint32(v.Free >> 20)
 	total = uint32(v.Total >> 20)
 	return

@@ -15,7 +15,7 @@ func TestPublishConsoleEventDispatchesMappedEvents(t *testing.T) {
 		ContainerID: "console-events",
 		EventBus:    bus,
 	})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 
 	exit := bus.Subscribe(ExitCommandDetected)
 	detach := bus.Subscribe(DetachDetected)
@@ -37,7 +37,7 @@ func TestPublishConsoleEventIgnoresUnknownEvents(t *testing.T) {
 		ContainerID: "unknown-console-event",
 		EventBus:    bus,
 	})
-	defer copier.finishStop(0)
+	defer copier.finishStop(0, false)
 	events := bus.Subscribe(ExitCommandDetected)
 
 	copier.publishConsoleEvent(console.EventKind(99))

@@ -17,7 +17,6 @@ import (
 	"micrun/internal/support/validation"
 
 	ctrannotations "github.com/containerd/containerd/pkg/cri/annotations"
-	podmanannotations "github.com/containers/podman/v4/pkg/annotations"
 )
 
 type shimRecoveryBackend struct {
@@ -34,8 +33,14 @@ func (s *shimService) recoveryBackend() shimRecoveryBackend {
 		guestControl:  s.runtimeDeps.guestControl,
 		containerDeps: s.runtimeDeps.containerDeps,
 	}
-	if s != nil && s.config != nil {
-		backend.containersDir = oci.ContainerCacheRoot(s.config.StateDir)
+	// Read s.config under the service lock: it is written by
+	// loadRuntimeConfig during Create RPCs, which may run concurrently
+	// with recovery.
+	s.Lock()
+	cfg := s.config
+	s.Unlock()
+	if cfg != nil {
+		backend.containersDir = oci.ContainerCacheRoot(cfg.StateDir)
 	}
 	return backend
 }
@@ -152,15 +157,10 @@ func (b shimRecoveryBackend) Restore(ctx context.Context, id string) (ports.Sand
 	}
 
 	sandboxState := sandbox.GetState()
-	isRunning := sandboxState == cntr.StateRunning
-	if isRunning {
-		log.Infof("[RESTORE] Sandbox %s is RUNNING, containers will be marked as RUNNING", id)
-	} else {
-		log.Infof("[RESTORE] Sandbox %s is %s, containers will be marked as CREATED", id, sandboxState)
-	}
+	log.Infof("[RESTORE] Sandbox %s persisted state is %s; each container is recovered from its own persisted state", id, sandboxState)
 
 	containers := sandbox.GetAllContainers()
-	restored, err := recoveredTasksFromContainers(containers, isRunning)
+	restored, err := recoveredTasksFromContainers(containers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -168,10 +168,10 @@ func (b shimRecoveryBackend) Restore(ctx context.Context, id string) (ports.Sand
 	return runtimeSandbox{SandboxTraits: sandbox}, restored, nil
 }
 
-func recoveredTasksFromContainers(containers []cntr.ContainerTraits, isRunning bool) ([]ports.RecoveredTask, error) {
+func recoveredTasksFromContainers(containers []cntr.ContainerTraits) ([]ports.RecoveredTask, error) {
 	restored := make([]ports.RecoveredTask, 0, len(containers))
 	for i, c := range containers {
-		task, err := recoveredTaskFromContainer(c, isRunning)
+		task, err := recoveredTaskFromContainer(c)
 		if err != nil {
 			return nil, fmt.Errorf("recovered container[%d]: %w", i, err)
 		}
@@ -180,7 +180,7 @@ func recoveredTasksFromContainers(containers []cntr.ContainerTraits, isRunning b
 	return restored, nil
 }
 
-func recoveredTaskFromContainer(container cntr.ContainerTraits, isRunning bool) (ports.RecoveredTask, error) {
+func recoveredTaskFromContainer(container cntr.ContainerTraits) (ports.RecoveredTask, error) {
 	if container == nil {
 		return ports.RecoveredTask{}, fmt.Errorf("recovered container is nil")
 	}
@@ -188,20 +188,40 @@ func recoveredTaskFromContainer(container cntr.ContainerTraits, isRunning bool) 
 		return ports.RecoveredTask{}, fmt.Errorf("recovered container id is empty")
 	}
 	canSandbox, isSandbox := recoveredTaskSandboxRole(container.GetAnnotations())
+	// Use the CONTAINER's own status, not the sandbox-level isRunning flag:
+	// a container that was created but not yet started (Ready) must recover
+	// as CREATED — marking it RUNNING would make the later Start RPC fail
+	// with AlreadyExists and wedge the container forever. Stopped/Down
+	// surfaces as STOPPED so Wait does not block on a channel nothing will
+	// ever close. Paused keeps task.Status_PAUSED so Resume is not skipped
+	// as already-running, while NeedsExitWatcher still covers the live domain.
+	status := container.Status()
+	isStopped := status == cntr.StateStopped || status == cntr.StateDown
+	isPaused := status == cntr.StatePaused
+	containerRunning := status == cntr.StateRunning
 	return ports.RecoveredTask{
 		ID:         container.ID(),
 		CanSandbox: canSandbox,
 		IsSandbox:  isSandbox,
-		IsRunning:  isRunning,
+		IsRunning:  containerRunning,
+		IsPaused:   isPaused,
+		IsStopped:  isStopped,
 	}, nil
 }
 
 func recoveredTaskSandboxRole(annotations map[string]string) (canSandbox bool, isSandbox bool) {
-	if hasRecoveredTaskAnnotation(annotations, oci.CRISandboxNameKeyList) {
-		return false, false
-	}
+	// container-type is authoritative and must be checked first: a real
+	// containerd CRI sandbox spec carries BOTH container-type=sandbox AND
+	// sandbox-id (DefaultCRIAnnotations writes sandbox-id unconditionally —
+	// for a sandbox it holds the sandbox's own id). Checking sandbox-id first
+	// misclassifies every recovered CRI pod sandbox as a pod container, whose
+	// Kill/Delete then only converges the infra container and leaks the whole
+	// guest domain as an orphan.
 	if isRecoveredCRISandbox(annotations) {
 		return true, true
+	}
+	if hasRecoveredTaskAnnotation(annotations, oci.CRISandboxNameKeyList) {
+		return false, false
 	}
 	return true, false
 }
@@ -216,8 +236,10 @@ func isRecoveredCRISandbox(annotations map[string]string) bool {
 }
 
 func isRecoveredCRISandboxType(containerType string) bool {
+	// Match both containerd CRI ("sandbox") and CRI-O/podman ("sandbox")
+	// container-type annotation values without importing the podman module.
 	return containerType == ctrannotations.ContainerTypeSandbox ||
-		containerType == podmanannotations.ContainerTypeSandbox
+		containerType == "sandbox"
 }
 
 func hasRecoveredTaskAnnotation(annotations map[string]string, keys []string) bool {

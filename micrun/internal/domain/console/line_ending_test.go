@@ -27,12 +27,3 @@ func TestInputLineEndingResetClearsPendingCR(t *testing.T) {
 		t.Fatalf("LF after reset result = %+v, want standalone line end", got)
 	}
 }
-
-func TestConvertLFToCRLFPreservesExistingCRLF(t *testing.T) {
-	got := convertLFToCRLF([]byte("a\nb\r\nc"))
-	want := "a\r\nb\r\nc"
-
-	if string(got) != want {
-		t.Fatalf("convertLFToCRLF = %q, want %q", got, want)
-	}
-}

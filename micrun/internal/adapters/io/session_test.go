@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -85,7 +86,7 @@ func TestFIFOOpenErrorIncludesCleanupErrors(t *testing.T) {
 }
 
 func TestNormalizeConfigAppliesScalarDefaults(t *testing.T) {
-	got := normalizeConfig(Config{ContainerID: "c1"})
+	got := normalizeConfig(Config{ContainerID: "c1", Terminal: true})
 	defaults := DefaultConfig()
 
 	if got.StdinBufSize != defaults.StdinBufSize {
@@ -100,8 +101,21 @@ func TestNormalizeConfigAppliesScalarDefaults(t *testing.T) {
 	if got.TTYWriteLineDelay != defaults.TTYWriteLineDelay {
 		t.Fatalf("TTYWriteLineDelay = %v, want %v", got.TTYWriteLineDelay, defaults.TTYWriteLineDelay)
 	}
-	if got.Terminal {
-		t.Fatal("Terminal should preserve the caller-provided false value")
+	if !got.Terminal {
+		t.Fatal("Terminal should preserve the caller-provided true value")
+	}
+}
+
+func TestNormalizeConfigDisablesPacingForNonTerminal(t *testing.T) {
+	got := normalizeConfig(Config{ContainerID: "c1"})
+	defaults := DefaultConfig()
+
+	if got.TTYWriteDelay != 0 {
+		t.Fatalf("TTYWriteDelay = %v, want 0 for non-terminal", got.TTYWriteDelay)
+	}
+	if got.TTYWriteLineDelay != defaults.TTYWriteLineDelay {
+		t.Fatalf("TTYWriteLineDelay = %v, want %v so piped commands stay separate",
+			got.TTYWriteLineDelay, defaults.TTYWriteLineDelay)
 	}
 	if got.FilterNUL {
 		t.Fatal("FilterNUL should preserve the caller-provided false value")
@@ -1007,5 +1021,142 @@ func assertContextDone(t *testing.T, ctx context.Context) {
 	case <-ctx.Done():
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for context cancellation")
+	}
+}
+
+func TestOpenNonBlockingFIFOWriterWithoutReader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stdout")
+	if err := syscall.Mkfifo(path, 0600); err != nil {
+		t.Fatalf("Mkfifo: %v", err)
+	}
+
+	// Detached start has no attach client yet. Opening O_WRONLY|O_NONBLOCK
+	// must still succeed so Start does not leave the task in CREATED.
+	fifo, err := openNonBlockingFIFO(path, syscall.O_WRONLY|syscall.O_NONBLOCK)
+	if err != nil {
+		t.Fatalf("openNonBlockingFIFO without reader: %v", err)
+	}
+	t.Cleanup(func() { _ = fifo.Close() })
+
+	if _, err := fifo.Write([]byte("hello")); !isBrokenPipe(err) && !isENXIO(err) {
+		t.Fatalf("write without reader err = %v, want EPIPE or ENXIO", err)
+	}
+}
+
+// --- Regression: worker-initiated copier death must not keep the session
+// claiming to run (scan 2.4). A fatal IO error stops the copier from its
+// own worker (stopFromWorker) — that path used to leave Session.started
+// true, so IsRunning lied and both EnsureAttach (no-op) and Restart
+// ("already started") refused to recover the session; the container stayed
+// deaf until Delete.
+
+func TestSessionNotRunningAfterWorkerInitiatedCopierDeath(t *testing.T) {
+	session, err := NewSession(Config{
+		Context:     context.Background(),
+		ContainerID: "c-worker-death",
+		StdinFIFO:   "binary://stdin",
+		StdoutFIFO:  "fd://1",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if err := session.Start(); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	t.Cleanup(session.Stop)
+
+	// Simulate a fatal IO error: the worker tear-down path, exactly what
+	// copier workers invoke after publishing IOError.
+	session.copier.stopFromWorker(true)
+
+	if session.IsRunning() {
+		t.Fatal("IsRunning reported true after the copier died from a worker: EnsureAttach would no-op and reattach would stay silent")
+	}
+}
+
+func TestSessionRestartRecoversAfterWorkerInitiatedCopierDeath(t *testing.T) {
+	session, err := NewSession(Config{
+		Context:     context.Background(),
+		ContainerID: "c-worker-death-restart",
+		StdinFIFO:   "binary://stdin",
+		StdoutFIFO:  "fd://1",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if err := session.Start(); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	t.Cleanup(session.Stop)
+
+	session.copier.stopFromWorker(true)
+
+	if err := session.Restart(); err != nil {
+		t.Fatalf("Restart after worker-initiated copier death returned error: %v (reattach stays broken until Delete)", err)
+	}
+	if !session.IsRunning() {
+		t.Fatal("restarted session should be running")
+	}
+}
+
+// A close-mode Stop (task Delete / final teardown) that loses the beginStop
+// CAS to a worker-side preserve-stop (detach detected in the copier) must
+// take over the preserved FIFO/TTY fds itself: no reattach follows a Delete
+// and no later Stop is guaranteed, so leaving preservedStreams set leaks the
+// fds until process exit.
+func TestCloseModeStopTakesOverWorkerPreservedStreams(t *testing.T) {
+	session, err := NewSession(Config{
+		ContainerID: "c1",
+		StdinFIFO:   "binary://stdin",
+		StdoutFIFO:  "binary://stdout",
+		StderrFIFO:  "binary://stderr",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if err := session.Start(); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	// The copier worker wins the stop CAS with streams preserved (detach).
+	session.copier.stopFromWorker(false)
+
+	session.Stop()
+
+	if session.preservedStreams {
+		t.Fatal("close-mode Stop left preservedStreams set after losing the CAS; preserved fds would leak until process exit")
+	}
+}
+
+// A reattach restart after a worker-side preserve-stop (whose detach event
+// never reached the session flag) must still treat the previous streams as
+// preserved: only then does the restart close the superseded FIFO/TTY fds
+// instead of merely releasing the cancel-pipe.
+func TestRestartAfterWorkerPreserveClosesSupersededStreams(t *testing.T) {
+	session, err := NewSession(Config{
+		ContainerID: "c2",
+		StdinFIFO:   "binary://stdin",
+		StdoutFIFO:  "binary://stdout",
+		StderrFIFO:  "binary://stderr",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if err := session.Start(); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	// Worker preserve-stop without the session flag being set (detach event
+	// still in flight when the reattach restarts).
+	session.copier.stopFromWorker(false)
+	session.preservedStreams = false
+
+	if err := session.Start(); err != nil {
+		t.Fatalf("restart Start returned error: %v", err)
+	}
+	session.Stop()
+	if session.preservedStreams {
+		t.Fatal("session left preservedStreams set after restart+stop")
 	}
 }

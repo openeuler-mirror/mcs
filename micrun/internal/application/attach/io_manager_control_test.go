@@ -80,6 +80,9 @@ func (f *fakeManagedIOManager) Restart() error           { return nil }
 func (f *fakeManagedIOManager) RestartWithTTYs(ttyIn io.WriteCloser, ttyOut io.Reader) error {
 	return nil
 }
+func (f *fakeManagedIOManager) RestartWithSubscriber(io.WriteCloser, io.Reader, func(ports.IOEventStream)) error {
+	return nil
+}
 func (f *fakeManagedIOManager) IsRunning() bool { return false }
 func (f *fakeManagedIOManager) EventStream() ports.IOEventStream {
 	return closedEventStream{}
@@ -107,6 +110,7 @@ func (t *ioManagerTaskHandle) ExitChan() chan struct{}              { return nil
 func (t *ioManagerTaskHandle) IOExit()                              {}
 func (t *ioManagerTaskHandle) CanBeSandbox() bool                   { return false }
 func (t *ioManagerTaskHandle) IsCriSandbox() bool                   { return false }
+func (t *ioManagerTaskHandle) IsRecovered() bool                    { return false }
 func (t *ioManagerTaskHandle) Annotations() map[string]string       { return nil }
 func (t *ioManagerTaskHandle) IOManager() ports.IOManager           { return t.manager }
 func (t *ioManagerTaskHandle) SetIOManager(manager ports.IOManager) { t.manager = manager }
@@ -114,3 +118,4 @@ func (t *ioManagerTaskHandle) AttachInfo() *ports.AttachInfo        { return nil
 func (t *ioManagerTaskHandle) SetAttachInfo(*ports.AttachInfo)      {}
 func (t *ioManagerTaskHandle) SetStdinPipe(io.WriteCloser)          {}
 func (t *ioManagerTaskHandle) SetAttached(bool) bool                { return false }
+func (t *ioManagerTaskHandle) IsAttached() bool                     { return false }

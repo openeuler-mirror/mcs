@@ -187,7 +187,7 @@ kubectl get nodes
 
 ## 边侧部署
 
-### 当前推荐模式: 构建内置 K3s Agent + 系统 containerd
+### 当前推荐模式：构建内置 K3s Agent + 系统 containerd
 
 标准 QEMU 云边测试必须使用 rootfs 构建产物中已经存在的 K3s。oEE 镜像中
 K3s 默认路径是 `/usr/bin/k3s`；如果该文件不存在，应回到构建配置补齐
@@ -464,6 +464,9 @@ micrun/tests/bin/test-k3s-interaction
 
 - 创建 `RuntimeClass micrun`
 - 创建带 `stdin: true` 和 `tty: false` 的 RTOS Pod
+- **`stdin: true` 不可省略**：未 attach 的 RTOS 任务默认在 30 秒后自动关闭
+  （auto-close）。如需无 stdin 的常驻任务，显式设置注解
+  `org.openeuler.micrun.container.auto_close_timeout: "0"` 禁用计时
 - 通过 `kubectl attach -i` 按行发送 `help`、`uname`
 - 匹配 UniProton shell 或 hello 输出
 - 核对边侧 containerd task

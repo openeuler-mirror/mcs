@@ -41,15 +41,18 @@ func TestMapVCPUUsageInfoPreservesPerDomainEntries(t *testing.T) {
 	}
 }
 
-func TestMapEssentialResourcesCarriesMemoryFloor(t *testing.T) {
+func TestMapEssentialResourcesCarriesPlannerDefaults(t *testing.T) {
 	resource := mapEssentialResources(&specs.Spec{}, func(*specs.Spec) *pedestal.EssentialResource {
 		return pedestal.InitResource()
 	})
 	if resource == nil {
 		t.Fatal("mapEssentialResources returned nil")
 	}
-	if resource.MemoryMinMB != 0 {
-		t.Fatalf("expected zero memory floor for empty spec, got %d", resource.MemoryMinMB)
+	if resource.MemoryMaxMB == nil {
+		t.Fatal("expected planner default memory maximum to be carried over")
+	}
+	if resource.VCPU == nil || *resource.VCPU != 1 {
+		t.Fatalf("expected planner default VCPU 1, got %v", resource.VCPU)
 	}
 }
 

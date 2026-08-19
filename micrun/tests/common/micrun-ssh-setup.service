@@ -1,0 +1,15 @@
+[Unit]
+Description=MicRun test guest SSH access setup
+DefaultDependencies=no
+Before=sshd.service
+WantedBy=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/init-ssh-setup
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

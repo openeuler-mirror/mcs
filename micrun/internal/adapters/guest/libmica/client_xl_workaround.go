@@ -45,15 +45,18 @@ func handleMicaUpdateWithXl(ctx context.Context, h hypervisorControl, id string,
 		}
 		return h.SetMaxMemory(ctx, id, memMB)
 	case MicaUpdateCPUWeight:
-		weight, err := strconv.Atoi(value)
+		// Parse as unsigned 32-bit: Atoi+uint32 cast would silently wrap
+		// out-of-range values (2^32+100 → 100, 2^32 → 0 → no-op query).
+		weight64, err := strconv.ParseUint(value, 10, 32)
 		if err != nil {
 			return fmt.Errorf("invalid CPU weight value %s: %w", value, err)
 		}
+		weight := uint32(weight64)
 		if weight < 1 {
 			log.Debugf("CPU weight must be >=1, got %d, forcing default 256", weight)
 			weight = 256
 		}
-		return h.SetCPUWeight(ctx, id, uint32(weight))
+		return h.SetCPUWeight(ctx, id, weight)
 	case MicaUpdateCPUCapacity:
 		capacity, err := parseMicaUint32Resource("CPU capacity", value)
 		if err != nil {
@@ -64,6 +67,9 @@ func handleMicaUpdateWithXl(ctx context.Context, h hypervisorControl, id string,
 		vcpuCount, err := parseMicaUint32Resource("VCPU count", value)
 		if err != nil {
 			return err
+		}
+		if vcpuCount == 0 {
+			return fmt.Errorf("VCPU count must be >= 1 for domain %s", id)
 		}
 		return h.SetVCPUCount(ctx, id, vcpuCount)
 	case MicaUpdatePCPUConstraints:

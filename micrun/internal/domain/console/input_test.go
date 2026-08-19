@@ -65,6 +65,7 @@ func TestTTYPartialDetachFlushesBufferedBytesOnce(t *testing.T) {
 
 	assertActions(t, actions, []Action{
 		{Kind: ActionWriteTTY, Data: []byte{16}},
+		{Kind: ActionTrackEcho, Data: []byte{16}},
 		{Kind: ActionLocalEcho, Data: []byte{'x'}},
 		{Kind: ActionTrackEcho, Data: []byte{'x'}},
 		{Kind: ActionWriteTTY, Data: []byte{'x'}},
@@ -79,6 +80,7 @@ func TestTTYPartialDetachReplaysInterruptSemantics(t *testing.T) {
 
 	assertActions(t, actions, []Action{
 		{Kind: ActionWriteTTY, Data: []byte{16}},
+		{Kind: ActionTrackEcho, Data: []byte{16}},
 		{Kind: ActionEmitEvent, Event: EventInterrupt, StopMode: ActionStopClose},
 	})
 }
@@ -90,6 +92,7 @@ func TestTTYDetachMismatchKeepsOverlappingPrefix(t *testing.T) {
 	actions := interpreter.Interpret([]byte{16})
 	assertActions(t, actions, []Action{
 		{Kind: ActionWriteTTY, Data: []byte{16}},
+		{Kind: ActionTrackEcho, Data: []byte{16}},
 	})
 
 	next := interpreter.Interpret([]byte{17})
@@ -184,6 +187,17 @@ func TestNonTTYCtrlCRemainsInputByte(t *testing.T) {
 
 	assertActions(t, actions, []Action{
 		{Kind: ActionWriteTTY, Data: []byte{0x03, '\r', '\n'}},
+	})
+}
+
+func TestNonTTYLineEndWritesCRLF(t *testing.T) {
+	interpreter := NewInputInterpreter(InputConfig{})
+
+	actions := interpreter.Interpret([]byte("help\n"))
+
+	assertActions(t, actions, []Action{
+		{Kind: ActionTrackEcho, Data: []byte("help")},
+		{Kind: ActionWriteTTY, Data: []byte("help\r\n")},
 	})
 }
 

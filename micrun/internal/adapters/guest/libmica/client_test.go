@@ -8,6 +8,7 @@ import (
 	defs "micrun/internal/support/definitions"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -523,44 +524,44 @@ func TestMicaExecutor_ReadResource(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.executor.ReadResource()
+	for i := range tests {
+		t.Run(tests[i].name, func(t *testing.T) {
+			got := tests[i].executor.ReadResource()
 
-			if got.CPUCapacity == nil || tt.want.CPUCapacity == nil {
-				if got.CPUCapacity != tt.want.CPUCapacity {
-					t.Errorf("ReadResource().CPUCapacity = %v, want %v", got.CPUCapacity, tt.want.CPUCapacity)
+			if got.CPUCapacity == nil || tests[i].want.CPUCapacity == nil {
+				if got.CPUCapacity != tests[i].want.CPUCapacity {
+					t.Errorf("ReadResource().CPUCapacity = %v, want %v", got.CPUCapacity, tests[i].want.CPUCapacity)
 				}
-			} else if *got.CPUCapacity != *tt.want.CPUCapacity {
-				t.Errorf("ReadResource().CPUCapacity = %v, want %v", *got.CPUCapacity, *tt.want.CPUCapacity)
+			} else if *got.CPUCapacity != *tests[i].want.CPUCapacity {
+				t.Errorf("ReadResource().CPUCapacity = %v, want %v", *got.CPUCapacity, *tests[i].want.CPUCapacity)
 			}
 
-			if got.VCPU == nil || tt.want.VCPU == nil {
-				if got.VCPU != tt.want.VCPU {
-					t.Errorf("ReadResource().VCPU = %v, want %v", got.VCPU, tt.want.VCPU)
+			if got.VCPU == nil || tests[i].want.VCPU == nil {
+				if got.VCPU != tests[i].want.VCPU {
+					t.Errorf("ReadResource().VCPU = %v, want %v", got.VCPU, tests[i].want.VCPU)
 				}
-			} else if *got.VCPU != *tt.want.VCPU {
-				t.Errorf("ReadResource().VCPU = %v, want %v", *got.VCPU, *tt.want.VCPU)
+			} else if *got.VCPU != *tests[i].want.VCPU {
+				t.Errorf("ReadResource().VCPU = %v, want %v", *got.VCPU, *tests[i].want.VCPU)
 			}
 
-			if got.CPUWeight == nil || tt.want.CPUWeight == nil {
-				if got.CPUWeight != tt.want.CPUWeight {
-					t.Errorf("ReadResource().CPUWeight = %v, want %v", got.CPUWeight, tt.want.CPUWeight)
+			if got.CPUWeight == nil || tests[i].want.CPUWeight == nil {
+				if got.CPUWeight != tests[i].want.CPUWeight {
+					t.Errorf("ReadResource().CPUWeight = %v, want %v", got.CPUWeight, tests[i].want.CPUWeight)
 				}
-			} else if *got.CPUWeight != *tt.want.CPUWeight {
-				t.Errorf("ReadResource().CPUWeight = %v, want %v", *got.CPUWeight, *tt.want.CPUWeight)
+			} else if *got.CPUWeight != *tests[i].want.CPUWeight {
+				t.Errorf("ReadResource().CPUWeight = %v, want %v", *got.CPUWeight, *tests[i].want.CPUWeight)
 			}
 
-			if got.MemoryMaxMB == nil || tt.want.MemoryMaxMB == nil {
-				if got.MemoryMaxMB != tt.want.MemoryMaxMB {
-					t.Errorf("ReadResource().MemoryMaxMB = %v, want %v", got.MemoryMaxMB, tt.want.MemoryMaxMB)
+			if got.MemoryMaxMB == nil || tests[i].want.MemoryMaxMB == nil {
+				if got.MemoryMaxMB != tests[i].want.MemoryMaxMB {
+					t.Errorf("ReadResource().MemoryMaxMB = %v, want %v", got.MemoryMaxMB, tests[i].want.MemoryMaxMB)
 				}
-			} else if *got.MemoryMaxMB != *tt.want.MemoryMaxMB {
-				t.Errorf("ReadResource().MemoryMaxMB = %v, want %v", *got.MemoryMaxMB, *tt.want.MemoryMaxMB)
+			} else if *got.MemoryMaxMB != *tests[i].want.MemoryMaxMB {
+				t.Errorf("ReadResource().MemoryMaxMB = %v, want %v", *got.MemoryMaxMB, *tests[i].want.MemoryMaxMB)
 			}
 
-			if got.ClientCPUSet != tt.want.ClientCPUSet {
-				t.Errorf("ReadResource().ClientCPUSet = %v, want %v", got.ClientCPUSet, tt.want.ClientCPUSet)
+			if got.ClientCPUSet != tests[i].want.ClientCPUSet {
+				t.Errorf("ReadResource().ClientCPUSet = %v, want %v", got.ClientCPUSet, tests[i].want.ClientCPUSet)
 			}
 		})
 	}
@@ -598,6 +599,17 @@ func TestMicaExecutor_MemoryTracking(t *testing.T) {
 	}
 	if !exec.NeedUpdateMemLimit(16) {
 		t.Fatalf("NeedUpdateMemLimit should be true when shrinking memory")
+	}
+
+	copy(exec.records.cpuStr[:], []byte("0-3"))
+	if exec.NeedUpdateCPUSet("0-3", "") {
+		t.Fatal("NeedUpdateCPUSet must treat empty new as unspecified, not a clear")
+	}
+	if exec.NeedUpdateCPUSet("1", "0-3") {
+		t.Fatal("NeedUpdateCPUSet should be false when recorded set already matches new")
+	}
+	if !exec.NeedUpdateCPUSet("0-3", "4-7") {
+		t.Fatal("NeedUpdateCPUSet should be true when recorded set differs from new")
 	}
 }
 
@@ -886,7 +898,13 @@ func TestMicaClientConfPackIncludesMaxFields(t *testing.T) {
 		offset += createMsgIntFieldSize
 	}
 
-	wantInts := []uint32{opts.VCPUs, opts.MaxVCPUs, opts.CPUWeight, opts.CPUCapacity, opts.MemoryMB, opts.MemoryMB}
+	// On ARM64, memoryThreshold equals memoryMB (no PoD). On other arches,
+	// it uses the caller-supplied threshold (opts.MemoryThreshold = 256).
+	wantThreshold := opts.MemoryThreshold
+	if runtime.GOARCH == "arm64" {
+		wantThreshold = opts.MemoryMB
+	}
+	wantInts := []uint32{opts.VCPUs, opts.MaxVCPUs, opts.CPUWeight, opts.CPUCapacity, opts.MemoryMB, wantThreshold}
 	if !reflect.DeepEqual(gotInts, wantInts) {
 		t.Fatalf("packed ints = %v, want %v", gotInts, wantInts)
 	}

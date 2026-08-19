@@ -54,6 +54,13 @@ func (c Control) DomainState(ctx context.Context, id string) (string, error) {
 	return "", ErrNotSupported
 }
 
+func (c Control) Destroy(ctx context.Context, id string) error {
+	if host := c.facade(); host != nil {
+		return host.Destroy(ctx, id)
+	}
+	return ErrNotSupported
+}
+
 func (c Control) Pause(ctx context.Context, id string) error {
 	if host := c.facade(); host != nil {
 		return host.Pause(ctx, id)

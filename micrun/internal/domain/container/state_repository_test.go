@@ -94,13 +94,15 @@ func TestLoadLegacyContainerStateReportsCorruptCandidate(t *testing.T) {
 		t.Fatalf("write corrupt legacy state: %v", err)
 	}
 
+	// New contract: a corrupt candidate no longer aborts the search — the
+	// remaining candidates are tried and the aggregate result is NotExist.
 	repo := stateRepositoryWithLegacyRoots(newMemoryStateStore(), t.TempDir(), legacyDir)
-	_, err := repo.loadLegacyContainerState(context.Background(), "container1", "container1", []string{legacyPath})
+	_, err := repo.loadLegacyContainerState(context.Background(), "container1", "container1", []string{legacyPath, filepath.Join(legacyDir, "other-state.json")})
 	if err == nil {
-		t.Fatal("loadLegacyContainerState returned nil error, want corrupt JSON error")
+		t.Fatal("loadLegacyContainerState returned nil error, want NotExist after skipping corrupt candidate")
 	}
-	if !strings.Contains(err.Error(), legacyPath) {
-		t.Fatalf("loadLegacyContainerState error = %v, want legacy path", err)
+	if !errors.Is(err, er.ContainerNotFound) && !os.IsNotExist(err) {
+		t.Fatalf("loadLegacyContainerState error = %v, want NotFound/NotExist", err)
 	}
 }
 
@@ -194,6 +196,40 @@ func TestSaveSandboxUsesInjectedMetadataSources(t *testing.T) {
 	}
 	if loaded.CreatedAt != 123 || loaded.ShimPID != 456 {
 		t.Fatalf("sandbox metadata = (createdAt=%d shimPID=%d), want (123, 456)", loaded.CreatedAt, loaded.ShimPID)
+	}
+}
+
+// A SaveSandbox that gets queued on persistMu behind the final Delete persist
+// must not resurrect the state file after cleanSandboxStorage removed it. The
+// caller-side checks in StoreSandbox run before persistMu is taken, so the
+// re-check must hold inside the critical section.
+func TestSaveSandboxSkipsWriteAfterStorageRemoved(t *testing.T) {
+	store := newMemoryStateStore()
+	repo := stateRepositoryFromStore(store)
+	sandbox := &Sandbox{
+		id:     "sandbox-removed",
+		config: &SandboxConfig{ID: "sandbox-removed"},
+		state:  SandboxState{State: StateReady},
+	}
+
+	if err := repo.SaveSandbox(context.Background(), sandbox); err != nil {
+		t.Fatalf("initial SaveSandbox returned error: %v", err)
+	}
+	if _, err := repo.LoadSandbox(context.Background(), sandbox.id); err != nil {
+		t.Fatalf("LoadSandbox after initial save returned error: %v", err)
+	}
+
+	// Simulate cleanSandboxStorage having completed: flag set, files deleted.
+	sandbox.storageRemoved.Store(true)
+	if err := repo.DeleteSandbox(context.Background(), sandbox.id); err != nil {
+		t.Fatalf("DeleteSandbox returned error: %v", err)
+	}
+
+	if err := repo.SaveSandbox(context.Background(), sandbox); err != nil {
+		t.Fatalf("SaveSandbox after storage removed returned error: %v", err)
+	}
+	if _, err := repo.LoadSandbox(context.Background(), sandbox.id); !errors.Is(err, er.SandboxNotFound) {
+		t.Fatalf("state resurrected by SaveSandbox after storage removal: err=%v", err)
 	}
 }
 

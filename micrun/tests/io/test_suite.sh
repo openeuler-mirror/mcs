@@ -17,9 +17,19 @@ expect_any_output() {
 
 failure_summary_line() {
   local output="$1"
+  local line
+
+  # Prefer the expect script's own marker over later nerdctl cleanup noise
+  # such as "failed to remove container ... created".
+  line="$(printf '%s\n' "$output" | grep -E \
+    'TTY_FAIL|ATTACH_DETACH_FAIL|TTY_UX_MATRIX_FAIL|CTR_AUTO_CLOSE_FAIL|CTR_MANUAL_EXIT_FAIL' | head -1)"
+  if [ -n "$line" ]; then
+    printf '%s\n' "$line"
+    return 0
+  fi
 
   printf '%s\n' "$output" | grep -E \
-    'TTY_FAIL|ATTACH_DETACH_FAIL|FATA|ERRO|failed to|connection refused|timeout' | head -1
+    'FATA|ERRO|failed to start IO|failed to start shim|connection refused|CREATE_EC=[1-9]|START_EC=[1-9]' | head -1
 }
 
 section_count() {
@@ -94,16 +104,16 @@ run_tty_expect_with_transient_retry() {
   cid="${cid_prefix}-$RANDOM"
   cleanup_container_id "$cid"
   out="$(run_tty_expect "$seconds" "$script" "$cid" 2>&1 || true)"
-  cleanup_all
+  cleanup_between_tests
   clean="$(printf '%s\n' "$out" | sanitize_command_output)"
 
   if is_transient_shim_bootstrap_failure "$clean"; then
     ensure_containerd || true
-    sleep 3
+    sleep 1
     cid="${cid_prefix}-$RANDOM"
     cleanup_container_id "$cid"
     out="$(run_tty_expect "$seconds" "$script" "$cid" 2>&1 || true)"
-    cleanup_all
+    cleanup_between_tests
     clean="$(printf '%s\n' "$out" | sanitize_command_output)"
   fi
 
@@ -129,7 +139,7 @@ run_shell_notty_probe() {
 
   remote_with_timeout 50 "
     nerdctl rm -f $cid 2>/dev/null || true
-    timeout 35 sh -c '(sleep ${UNIPROTON_INTERACTION_WAIT_SECS}; printf \"\\nhelp\\nuname\\n\"; sleep 8) | nerdctl run -i --rm --name $cid --network=${NERDCTL_NETWORK_MODE} --runtime io.containerd.mica.v2 -l org.openeuler.micrun.container.auto_close=false $IMAGE' 2>&1 || true
+    timeout 40 sh -c '(sleep 8; echo help; echo uname; sleep 5) | nerdctl run -i --rm --name $cid --network=${NERDCTL_NETWORK_MODE} --runtime io.containerd.mica.v2 $IMAGE' 2>&1 || true
   " 2>&1 || true
 }
 
@@ -143,16 +153,16 @@ run_probe_with_transient_retry() {
   cid="${cid_prefix}-$RANDOM"
   cleanup_container_id "$cid"
   out="$("$probe_func" "$cid")"
-  cleanup_all
+  cleanup_between_tests
   clean="$(printf '%s\n' "$out" | sanitize_command_output)"
 
   if is_transient_shim_bootstrap_failure "$clean"; then
     ensure_containerd || true
-    sleep 2
+    sleep 1
     cid="${cid_prefix}-$RANDOM"
     cleanup_container_id "$cid"
     out="$("$probe_func" "$cid")"
-    cleanup_all
+    cleanup_between_tests
     clean="$(printf '%s\n' "$out" | sanitize_command_output)"
   fi
 
@@ -192,22 +202,18 @@ test_shell_ctr_background() {
   local out
   local clean
   local cid="shell-bg-$RANDOM"
+  local create_ec
+  local start_ec
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   cleanup_container_id "$cid"
-  out="$(remote "
-    ctr container create --runtime io.containerd.mica.v2 $IMAGE $cid >/dev/null 2>&1
-    ctr task start -d $cid >/dev/null 2>&1
-    sleep 3
-    (sleep 8; printf '\nhelp\n'; sleep 6) | timeout 20 ctr task attach $cid 2>&1 || true
-    ctr task kill -s 9 $cid 2>/dev/null || true
-    ctr task delete $cid 2>/dev/null || true
-    ctr container delete $cid 2>/dev/null || true
-  " 2>&1)"
+  out="$(run_ctr_bg_attach "$cid" help)"
   clean="$(printf '%s\n' "$out" | sanitize_command_output)"
+  create_ec="$(printf '%s\n' "$clean" | sed -n 's/^CREATE_EC=//p' | tail -1)"
+  start_ec="$(printf '%s\n' "$clean" | sed -n 's/^START_EC=//p' | tail -1)"
 
-  if printf '%s\n' "$clean" | expect_shell_output &&
+  if [ "${create_ec:-1}" = "0" ] && [ "${start_ec:-1}" = "0" ] &&
+     printf '%s\n' "$clean" | expect_shell_output &&
      printf '%s\n' "$clean" | expect_shell_prompt_output; then
     echo -e "$PASS"
     return 0
@@ -217,7 +223,8 @@ test_shell_ctr_background() {
   local failure_line
   failure_line="$(failure_summary_line "$clean")"
   [ -n "$failure_line" ] && echo "  Failure: $failure_line"
-  echo "  Output: $(echo "$clean" | head -3)"
+  echo "  create=${create_ec:-?} start=${start_ec:-?}"
+  echo "  Output: $(printf '%s\n' "$clean" | awk '/^--- attach ---/{p=1;next} p' | tr '\n' ' ' | tail -c 240)"
   return 1
 }
 
@@ -227,8 +234,7 @@ test_shell_nerdctl_tty() {
   local clean
   local failure_line
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_tty_expect_with_transient_retry 75 "$SCRIPT_DIR/test_nerdctl_tty_run.exp" "micrun-tty")"
 
   if printf '%s\n' "$clean" | grep -q '^TTY_PASS$'; then
@@ -249,8 +255,7 @@ test_shell_nerdctl_attach_detach() {
   local clean
   local failure_line
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_tty_expect_with_transient_retry 75 "$SCRIPT_DIR/test_nerdctl_attach_detach.exp" "micrun-attach")"
 
   if printf '%s\n' "$clean" | grep -q '^ATTACH_DETACH_PASS$'; then
@@ -271,8 +276,7 @@ test_shell_nerdctl_tty_ux_matrix() {
   local clean
   local failure_line
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_tty_expect_with_transient_retry 180 "$SCRIPT_DIR/test_nerdctl_tty_ux_matrix.exp" "micrun-tty-ux")"
 
   if printf '%s\n' "$clean" | grep -q '^TTY_UX_MATRIX_PASS$'; then
@@ -291,12 +295,11 @@ test_shell_nerdctl_notty() {
   echo -n "Test 5: nerdctl non-TTY mode (-i)... "
   local clean
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_probe_with_transient_retry "shell-nerd-notty" run_shell_notty_probe)"
 
   if printf '%s\n' "$clean" | expect_shell_output &&
-     printf '%s\n' "$clean" | grep -q 'UniProton 24.03-LTS'; then
+     printf '%s\n' "$clean" | expect_shell_prompt_output; then
     echo -e "$PASS"
     return 0
   fi
@@ -316,8 +319,7 @@ test_shell_notty_xen_cleanup() {
   local clean
 
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
 
   before_count="$(xen_domain_count)"
   if [ "${before_count:-0}" != "0" ]; then
@@ -336,9 +338,12 @@ test_shell_notty_xen_cleanup() {
   after_list="$(xen_domain_list)"
   after_count="$(printf '%s\n' "$after_list" | sed '/^$/d' | wc -l | tr -d ' ')"
   after_norm="$(printf '%s\n' "$after_list" | sed '/^$/d' | sort | tr '\n' ' ')"
-  cleanup_all
+  cleanup_between_tests
 
-  if [ "${after_count:-0}" = "0" ]; then
+  # Require proof the container actually ran (shell response or banner):
+  # a failed run leaves no domain either, which used to pass vacuously.
+  if [ "${after_count:-0}" = "0" ] &&
+     printf '%s\n' "$clean" | grep -qiE 'Available commands|command not found|openEuler|UniProton'; then
     echo -e "$PASS"
     return 0
   fi
@@ -358,7 +363,7 @@ run_shell_nerdctl_create_start_stop_probe() {
     nerdctl rm -f $cid 2>/dev/null || true
     nerdctl create -i -t --name $cid --runtime io.containerd.mica.v2 --network=${NERDCTL_NETWORK_MODE} -l org.openeuler.micrun.container.auto_close=false $IMAGE
     nerdctl start $cid
-    sleep 6
+    sleep 3
     nid=\$(nerdctl inspect $cid | sed -n 's/.*\"Id\": \"\\([^\"]*\\)\".*/\\1/p' | head -1)
     echo '--- ps ---'
     nerdctl ps | grep -c $cid || true
@@ -398,8 +403,7 @@ test_shell_nerdctl_create_start_stop() {
   local post_containers
 
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_probe_with_transient_retry "shell-create" run_shell_nerdctl_create_start_stop_probe)"
 
   ps_count="$(printf '%s\n' "$clean" | section_count '--- ps ---')"
@@ -435,7 +439,7 @@ run_shell_ctr_lifecycle_status_probe() {
   remote_with_timeout 70 "
     ctr container create --runtime io.containerd.mica.v2 $IMAGE $cid >/dev/null
     ctr task start -d $cid >/dev/null
-    sleep 6
+    sleep 3
     echo '--- task ---'
     ctr task ls | awk '\$1 == \"$cid\" && \$3 == \"RUNNING\" { c++ } END { print c + 0 }'
     echo '--- container ---'
@@ -466,8 +470,7 @@ test_shell_ctr_lifecycle_status() {
   local post_xen
 
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_probe_with_transient_retry "shell-ctr-life" run_shell_ctr_lifecycle_status_probe)"
 
   task_count="$(printf '%s\n' "$clean" | section_count '--- task ---')"
@@ -500,7 +503,7 @@ run_shell_user_diagnostics_probe() {
     : > /var/log/mica/mica-runtime.log
     nerdctl rm -f $cid 2>/dev/null || true
     nerdctl run -dt --name $cid --runtime io.containerd.mica.v2 --network=${NERDCTL_NETWORK_MODE} -l org.openeuler.micrun.container.auto_close=false $IMAGE >/dev/null
-    sleep 6
+    sleep 3
     nid=\$(nerdctl inspect $cid | sed -n 's/.*\"Id\": \"\\([^\"]*\\)\".*/\\1/p' | head -1)
     echo '--- inspect ---'
     nerdctl inspect $cid | grep -c '\"Name\".*$cid\\|\"ID\"\\|\"Id\"' || true
@@ -533,8 +536,7 @@ test_shell_user_diagnostics() {
   local post_xen
 
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_probe_with_transient_retry "shell-diag" run_shell_user_diagnostics_probe)"
 
   inspect_count="$(printf '%s\n' "$clean" | section_count '--- inspect ---')"
@@ -569,22 +571,13 @@ test_shell_multiple_commands() {
   local matches
   local cid="shell-multi-$RANDOM"
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   cleanup_container_id "$cid"
-  out="$(remote "
-    ctr container create --runtime io.containerd.mica.v2 $IMAGE $cid >/dev/null 2>&1
-    ctr task start -d $cid >/dev/null 2>&1
-    sleep 3
-    (sleep 8; printf '\nhelp\nuname\nexit\n'; sleep 6) | timeout 20 ctr task attach $cid 2>&1 || true
-    ctr task kill -s 9 $cid 2>/dev/null || true
-    ctr task delete $cid 2>/dev/null || true
-    ctr container delete $cid 2>/dev/null || true
-  " 2>&1)"
+  out="$(run_ctr_bg_attach "$cid" help uname)"
   clean="$(printf '%s\n' "$out" | sanitize_command_output)"
 
   matches="$(printf '%s\n' "$clean" | count_shell_markers)"
-  if [ "$matches" -ge 2 ]; then
+  if [ "$matches" -ge 2 ] && printf '%s\n' "$clean" | expect_shell_output; then
     echo -e "$PASS"
     return 0
   fi
@@ -593,7 +586,7 @@ test_shell_multiple_commands() {
   local failure_line
   failure_line="$(failure_summary_line "$clean")"
   [ -n "$failure_line" ] && echo "  Failure: $failure_line"
-  echo "  Matches: $matches/2, Output: $(echo "$clean" | head -5)"
+  echo "  Matches: $matches, Output: $(echo "$clean" | head -5)"
   return 1
 }
 
@@ -602,13 +595,13 @@ test_shell_log_cleanliness() {
   local count
   local cid="shell-log-$RANDOM"
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   cleanup_container_id "$cid"
   count="$(remote "
     ctr container create --runtime io.containerd.mica.v2 $IMAGE $cid >/dev/null 2>&1
     ctr task start -d $cid >/dev/null 2>&1
     sleep 3
+    ctr task ls | awk -v c="$cid" '$1 == c {print $3; found=1} END {if (!found) print "GONE"}'
     echo help | timeout 8 ctr task attach $cid >/dev/null 2>&1 || true
     sleep 1
     tail -100 /var/log/mica/mica-runtime.log | grep -c 'stdin FIFO read' || echo 0
@@ -617,43 +610,58 @@ test_shell_log_cleanliness() {
     ctr container delete $cid 2>/dev/null || true
   " 2>/dev/null)"
 
+  run_state="$(echo "$count" | head -1 | tr -d '[:space:]')"
   count="$(echo "$count" | tr -d '\n ' | grep -oE '[0-9]+' | head -1 || echo 0)"
 
-  if [ "${count:-0}" -lt 5 ]; then
+  # GONE/STOPPED means the container never ran: vacuous pass guard.
+  if [ "$run_state" = "RUNNING" ] && [ "${count:-0}" -lt 5 ]; then
     echo -e "$PASS (${count} logs)"
     return 0
   fi
 
-  echo -e "$FAIL (${count} logs)"
+  echo -e "$FAIL (state=${run_state:-<none>}, ${count} logs)"
   return 1
 }
 
 test_shell_exit_command() {
   echo -n "Test 12: Exit command detection... "
   local out
+  local create_ec
+  local start_ec
+  local left
   local cid="shell-exit-$RANDOM"
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   cleanup_container_id "$cid"
-  out="$(remote "
-    ctr container create --runtime io.containerd.mica.v2 $IMAGE $cid >/dev/null 2>&1
-    ctr task start -d $cid >/dev/null 2>&1
-    sleep 3
-    (sleep 8; printf '\nhelp\nexit\n'; sleep 6) | timeout 20 ctr task attach $cid 2>&1 || true
-    sleep 2
-    ctr task ls | grep -c $cid || echo 0
+  out="$(remote_output "
+    set +e
+    ctr container create --runtime io.containerd.mica.v2 --annotation org.openeuler.micrun.container.auto_close=false $IMAGE $cid
+    echo CREATE_EC=\$?
+    ctr task start -d $cid
+    echo START_EC=\$?
+    i=0
+    while [ \$i -lt 12 ]; do
+      mica status 2>/dev/null | grep -q \"$cid.*rpmsg-tty\" && break
+      sleep 1
+      i=\$((i + 1))
+    done
+    (sleep ${UNIPROTON_INTERACTION_WAIT_SECS}; echo help; echo exit; sleep 3) | timeout 15 ctr task attach $cid >/dev/null 2>&1 || true
+    sleep 1
+    echo LEFT=\$(ctr task ls | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }')
     ctr task kill -s 9 $cid 2>/dev/null || true
     ctr task delete $cid 2>/dev/null || true
     ctr container delete $cid 2>/dev/null || true
-  " 2>/dev/null)"
+  ")"
+  create_ec="$(printf '%s\n' "$out" | sed -n 's/^CREATE_EC=//p' | tail -1)"
+  start_ec="$(printf '%s\n' "$out" | sed -n 's/^START_EC=//p' | tail -1)"
+  left="$(printf '%s\n' "$out" | sed -n 's/^LEFT=//p' | tail -1)"
 
-  if [ "$(echo "$out" | tr -d '\n' | grep -oE '[0-9]+' | tail -1 || echo 1)" -eq 0 ]; then
+  if [ "${create_ec:-1}" = "0" ] && [ "${start_ec:-1}" = "0" ] && [ "${left:-1}" = "0" ]; then
     echo -e "$PASS (container stopped)"
     return 0
   fi
 
-  echo -e "$FAIL (container still running)"
+  echo -e "$FAIL (create=${create_ec:-?} start=${start_ec:-?} left=${left:-?})"
   return 1
 }
 
@@ -663,8 +671,7 @@ test_shell_ctr_foreground_auto_close() {
   local failure_line
 
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_tty_expect_with_transient_retry 75 "$SCRIPT_DIR/test_ctr_foreground_auto_close.exp" "micrun-ctr-auto")"
 
   if printf '%s\n' "$clean" | grep -q '^CTR_AUTO_CLOSE_PASS$'; then
@@ -685,8 +692,7 @@ test_shell_ctr_foreground_manual_exit() {
   local failure_line
 
   ensure_containerd || true
-  cleanup_all
-  sleep 2
+  prepare_io_case
   clean="$(run_tty_expect_with_transient_retry 95 "$SCRIPT_DIR/test_ctr_foreground_manual_exit.exp" "micrun-ctr-exit")"
 
   if printf '%s\n' "$clean" | grep -q '^CTR_MANUAL_EXIT_PASS$'; then
@@ -766,7 +772,7 @@ test_hello_nerdctl_create_start() {
     nerdctl start hello-create >/tmp/hello-create-start.out 2>&1 || true
     cat /tmp/hello-create-start.out
     sleep 3
-    nerdctl ps | grep hello-create || true
+    nerdctl ps | grep -q hello-create && echo PS_OK || echo PS_MISS
     nerdctl rm -f hello-create >/tmp/hello-create-rm.out 2>&1 || true
     cat /tmp/hello-create-rm.out
     echo '--- tasks ---'
@@ -776,7 +782,10 @@ test_hello_nerdctl_create_start() {
   " 2>&1)"
   clean="$(printf '%s\n' "$out" | sanitize_command_output)"
 
-  if printf '%s\n' "$clean" | grep -q 'hello-create' &&
+  # PS_OK proves the container was listed as running; matching the raw
+  # name anywhere used to pass on error messages containing the name.
+  if printf '%s\n' "$clean" | grep -q 'PS_OK' &&
+     ! printf '%s\n' "$clean" | grep -q 'PS_MISS' &&
      cleanup_sections_are_zero "$clean"; then
     echo -e "$PASS"
     return 0
@@ -799,7 +808,7 @@ test_hello_nerdctl_detached_lifecycle() {
     ctr container delete hello-det 2>/dev/null || true
     nerdctl run -d --name hello-det --runtime io.containerd.mica.v2 --network=${NERDCTL_NETWORK_MODE} -l org.openeuler.micrun.container.auto_close_timeout=5s $IMAGE
     sleep 3
-    nerdctl ps | grep hello-det || true
+    nerdctl ps | grep -q hello-det && echo PS_OK || echo PS_MISS
     nerdctl rm -f hello-det >/tmp/hello-det-rm.out 2>&1 || true
     cat /tmp/hello-det-rm.out
     echo '--- tasks ---'
@@ -809,7 +818,8 @@ test_hello_nerdctl_detached_lifecycle() {
   " 2>&1)"
   clean="$(printf '%s\n' "$out" | sanitize_command_output)"
 
-  if printf '%s\n' "$clean" | grep -q 'hello-det' &&
+  if printf '%s\n' "$clean" | grep -q 'PS_OK' &&
+     ! printf '%s\n' "$clean" | grep -q 'PS_MISS' &&
      cleanup_sections_are_zero "$clean"; then
     echo -e "$PASS"
     return 0
@@ -828,16 +838,16 @@ test_hello_nerdctl_notty_output() {
   local observed_after_stdin
   cleanup_container_id "$cid"
   out="$(run_hello_notty_probe "$cid")"
-  cleanup_all
+  cleanup_between_tests
   clean="$(printf '%s\n' "$out" | sanitize_command_output)"
 
   if is_transient_shim_bootstrap_failure "$clean"; then
     ensure_containerd || true
-    sleep 2
+    sleep 1
     cid="hello-notty-$RANDOM"
     cleanup_container_id "$cid"
     out="$(run_hello_notty_probe "$cid")"
-    cleanup_all
+    cleanup_between_tests
     clean="$(printf '%s\n' "$out" | sanitize_command_output)"
   fi
 
@@ -902,6 +912,8 @@ test_hello_cleanup() {
     ctr container create --runtime io.containerd.mica.v2 $IMAGE t5 >/dev/null 2>&1
     ctr task start -d t5 >/dev/null 2>&1
     sleep 2
+    echo '--- run-state ---'
+    ctr task ls | awk '$1 == "t5" {print $3; found=1} END {if (!found) print "GONE"}' 
     ctr task kill -s 9 t5 >/dev/null 2>&1 || true
     ctr task delete t5 >/dev/null 2>&1 || true
     ctr container delete t5 >/dev/null 2>&1 || true
@@ -910,7 +922,11 @@ test_hello_cleanup() {
     ctr container ls | grep -c t5 || true
   " 2>/dev/null)"
 
-  if [ "$(echo "$out" | grep -oE '[0-9]+' | tail -2 | tr '\n' ' ')" = "0 0 " ]; then
+  # The cleanup verdict is only meaningful if the task was actually
+  # running first; a failed create/start left 0 residue and passed vacuously.
+  run_state="$(sed -n '/--- run-state ---/{n;p}' "$out" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$run_state" = "RUNNING" ] &&
+     [ "$(echo "$out" | grep -oE '[0-9]+' | tail -2 | tr '\n' ' ')" = "0 0 " ]; then
     echo -e "$PASS"
     return 0
   fi
@@ -928,6 +944,7 @@ test_hello_log_cleanliness() {
     ctr container create --runtime io.containerd.mica.v2 $IMAGE t6 >/dev/null 2>&1
     ctr task start -d t6 >/dev/null 2>&1
     sleep 3
+    ctr task ls | awk '$1 == "t6" {print $3; found=1} END {if (!found) print "GONE"}' 
     echo help | timeout 8 ctr task attach t6 >/dev/null 2>&1 || true
     sleep 1
     tail -100 /var/log/mica/mica-runtime.log | grep -c 'stdin FIFO read' || echo 0
@@ -936,16 +953,47 @@ test_hello_log_cleanliness() {
     ctr container delete t6 2>/dev/null || true
   " 2>/dev/null)"
 
+  run_state="$(echo "$count" | head -1 | tr -d '[:space:]')"
   count="$(echo "$count" | tr -d '\n ' | grep -oE '[0-9]+' | head -1 || echo 0)"
 
-  if [ "${count:-0}" -lt 5 ]; then
+  # GONE/STOPPED means the container never ran: the log-count check alone
+  # passed vacuously in that case.
+  if [ "$run_state" = "RUNNING" ] && [ "${count:-0}" -lt 5 ]; then
     echo -e "$PASS (${count} logs)"
     return 0
   fi
 
-  echo -e "$FAIL (${count} logs)"
+  echo -e "$FAIL (state=${run_state:-<none>}, ${count} logs)"
   return 1
 }
+
+# Select cases: MICRUN_IO_CASES=1,10 or args `1 10` / `auto-close`.
+# Empty means the full suite.
+MICRUN_IO_CASES="${MICRUN_IO_CASES:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --case|--cases)
+      if [ $# -lt 2 ]; then
+        echo "test_suite.sh: $1 requires a value" >&2
+        exit 2
+      fi
+      MICRUN_IO_CASES="${MICRUN_IO_CASES:+$MICRUN_IO_CASES,}$2"
+      shift 2
+      ;;
+    --help|-h)
+      echo "Usage: test_suite.sh [case ...]"
+      echo "  cases: 0-14 or native,ctr-bg,tty,attach-detach,ux,notty,notty-xen,"
+      echo "         nerdctl-lifecycle,ctr-lifecycle,diagnostics,multi,logs,"
+      echo "         exit,auto-close,manual-exit"
+      echo "  MICRUN_IO_CASES=1,10  same as args"
+      exit 0
+      ;;
+    *)
+      MICRUN_IO_CASES="${MICRUN_IO_CASES:+$MICRUN_IO_CASES,}$1"
+      shift
+      ;;
+  esac
+done
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║              MicRun IO Test Suite                          ║"
@@ -954,9 +1002,63 @@ echo ""
 echo "Remote: $REMOTE"
 echo "Image: $IMAGE"
 
+io_normalize_case() {
+  case "$1" in
+    native|0) echo 0 ;;
+    ctr-bg|background|1) echo 1 ;;
+    nerdctl-tty|tty|2) echo 2 ;;
+    attach-detach|3) echo 3 ;;
+    ux|ux-matrix|4) echo 4 ;;
+    notty|5) echo 5 ;;
+    notty-xen|6) echo 6 ;;
+    nerdctl-lifecycle|7) echo 7 ;;
+    ctr-lifecycle|8) echo 8 ;;
+    diagnostics|9) echo 9 ;;
+    multi|10) echo 10 ;;
+    logs|11) echo 11 ;;
+    exit|12) echo 12 ;;
+    auto-close|13) echo 13 ;;
+    manual-exit|14) echo 14 ;;
+    *) echo "$1" ;;
+  esac
+}
+
+io_case_selected() {
+  local want="$1"
+  local raw item
+  [ -z "${MICRUN_IO_CASES}" ] && return 0
+  IFS=', ' read -r -a raw <<< "${MICRUN_IO_CASES}"
+  for item in "${raw[@]}"; do
+    item="$(echo "$item" | tr -d '[:space:]')"
+    [ -z "$item" ] && continue
+    [ "$(io_normalize_case "$item")" = "$want" ] && return 0
+  done
+  return 1
+}
+
+io_run() {
+  local id="$1"
+  local fn="$2"
+  io_case_selected "$id" || return 0
+  if "$fn"; then
+    pass=$((pass + 1))
+  else
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+      skip=$((skip + 1))
+    else
+      fail=$((fail + 1))
+    fi
+  fi
+}
+
 ensure_containerd || true
-cleanup_all
-sleep 2
+if [ -n "${MICRUN_IO_CASES}" ]; then
+  echo "Cases: ${MICRUN_IO_CASES}"
+  cleanup_between_tests
+else
+  cleanup_all
+fi
 
 profile="$(detect_image_profile)"
 echo "Profile: ${profile}"
@@ -966,41 +1068,32 @@ pass=0
 fail=0
 skip=0
 
-if test_native_mica_shell_preflight; then
-  pass=$((pass + 1))
-else
-  rc=$?
-  if [ "$rc" -eq 2 ]; then
-    skip=$((skip + 1))
-  else
-    fail=$((fail + 1))
-  fi
-fi
-
 if image_profile_is_shell_family; then
-  if test_shell_ctr_background; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_nerdctl_tty; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_nerdctl_attach_detach; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_nerdctl_tty_ux_matrix; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_nerdctl_notty; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_notty_xen_cleanup; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_nerdctl_create_start_stop; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_ctr_lifecycle_status; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_user_diagnostics; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_multiple_commands; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_log_cleanliness; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_exit_command; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_ctr_foreground_auto_close; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_shell_ctr_foreground_manual_exit; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+  io_run 0 test_native_mica_shell_preflight
+  io_run 1 test_shell_ctr_background
+  io_run 2 test_shell_nerdctl_tty
+  io_run 3 test_shell_nerdctl_attach_detach
+  io_run 4 test_shell_nerdctl_tty_ux_matrix
+  io_run 5 test_shell_nerdctl_notty
+  io_run 6 test_shell_notty_xen_cleanup
+  io_run 7 test_shell_nerdctl_create_start_stop
+  io_run 8 test_shell_ctr_lifecycle_status
+  io_run 9 test_shell_user_diagnostics
+  io_run 10 test_shell_multiple_commands
+  io_run 11 test_shell_log_cleanliness
+  io_run 12 test_shell_exit_command
+  io_run 13 test_shell_ctr_foreground_auto_close
+  io_run 14 test_shell_ctr_foreground_manual_exit
 elif image_profile_is "hello"; then
-  if test_hello_ctr_background_running; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_hello_ctr_foreground_output; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_hello_nerdctl_create_start; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_hello_nerdctl_detached_lifecycle; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_hello_nerdctl_notty_output; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_hello_attach_input_path; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_hello_cleanup; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
-  if test_hello_log_cleanliness; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+  io_run 0 test_native_mica_shell_preflight
+  io_run 1 test_hello_ctr_background_running
+  io_run 2 test_hello_ctr_foreground_output
+  io_run 3 test_hello_nerdctl_create_start
+  io_run 4 test_hello_nerdctl_detached_lifecycle
+  io_run 5 test_hello_nerdctl_notty_output
+  io_run 6 test_hello_attach_input_path
+  io_run 7 test_hello_cleanup
+  io_run 8 test_hello_log_cleanliness
 else
   echo -e "${FAIL}"
   echo "Unknown image profile. Probe output:"
@@ -1015,7 +1108,11 @@ echo "╠═══════════════════════�
 printf "║  Passed: %-3d Failed: %-3d Skipped: %-3d                     ║\n" "$pass" "$fail" "$skip"
 echo "╚════════════════════════════════════════════════════════════╝"
 
-cleanup_all
+if [ -n "${MICRUN_IO_CASES}" ]; then
+  cleanup_between_tests
+else
+  cleanup_all
+fi
 
 if [ "$fail" -ne 0 ]; then
   exit "$fail"

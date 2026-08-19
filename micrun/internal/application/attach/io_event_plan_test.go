@@ -87,6 +87,26 @@ func TestServiceResolveIOEventPolicy(t *testing.T) {
 			want: ioEventPlan{},
 		},
 		{
+			name:      "live client marks attached",
+			task:      "task-a",
+			wantMatch: true,
+			event: ports.IOEvent{
+				Type:        ports.IOEventClientAttached,
+				ContainerID: "task-a",
+			},
+			want: ioEventPlan{},
+		},
+		{
+			name:      "create-time EOF clears attached",
+			task:      "task-a",
+			wantMatch: true,
+			event: ports.IOEvent{
+				Type:        ports.IOEventClientDetached,
+				ContainerID: "task-a",
+			},
+			want: ioEventPlan{},
+		},
+		{
 			name:      "tty ready is ignored by attach service",
 			task:      "task-a",
 			wantMatch: false,
@@ -423,6 +443,8 @@ func TestDefaultIOEventPoliciesAreCheckedAndValidated(t *testing.T) {
 		mustMakeIOEventPolicy(ports.IOEventStdinClosed, handleIOEventStdinClosed),
 		mustMakeIOEventPolicy(ports.IOEventDetach, handleIOEventDetach),
 		mustMakeIOEventPolicy(ports.IOEventError, handleIOEventReportError),
+		mustMakeIOEventPolicy(ports.IOEventClientAttached, handleIOEventClientAttached),
+		mustMakeIOEventPolicy(ports.IOEventClientDetached, handleIOEventClientDetached),
 	}
 	validated, err := buildIOEventPoliciesByTypeChecked(defaultPolicies)
 	if err != nil {

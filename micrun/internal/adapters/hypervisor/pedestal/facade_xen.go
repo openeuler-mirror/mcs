@@ -6,14 +6,14 @@ import "context"
 // These methods are available on all platforms but return ErrNotSupported
 // when not running on Xen.
 
-// DomainState reads the domain state from xenstore.
+// DomainState resolves the domain state via xl list.
 // Returns "running" if domain is active and ready, otherwise returns the actual state.
 // Returns ErrNotSupported if not running on Xen.
 func (f *PedestalFacade) DomainState(ctx context.Context, clientID string) (string, error) {
 	if f.impl.Type() != Xen {
 		return "", ErrNotSupported
 	}
-	return xenStoreReadDomainState(ctx, clientID)
+	return xlListDomainState(ctx, clientID)
 }
 
 // ConsolePath resolves the PTY path published by xl console for a given domain.
@@ -41,6 +41,15 @@ func (f *PedestalFacade) DomainID(ctx context.Context, clientID string) (int, er
 		return 0, ErrNotSupported
 	}
 	return domainID(ctx, clientID)
+}
+
+// Destroy forcefully destroys a Xen domain via xl destroy.
+// Returns ErrNotSupported if not running on Xen.
+func (f *PedestalFacade) Destroy(ctx context.Context, clientID string) error {
+	if f.impl.Type() != Xen {
+		return ErrNotSupported
+	}
+	return xlDestroy(ctx, clientID)
 }
 
 // SetVCPUCount sets the number of VCPUs for a domain.

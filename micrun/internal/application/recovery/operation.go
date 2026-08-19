@@ -39,7 +39,7 @@ func newRecoveryOperation(ctx context.Context, runtime ports.RecoveryRuntime, ba
 	}, true, nil
 }
 
-func (op recoveryOperation) run() error {
+func (op recoveryOperation) runWithExitWatcher(exitWatcher func(task ports.Task)) error {
 	op.cleanupOrphans()
 
 	sandbox, restoredTasks, err := op.backend.Restore(op.ctx, op.runtime.RuntimeID())
@@ -48,7 +48,7 @@ func (op recoveryOperation) run() error {
 	}
 	op.runtime.SetSandbox(sandbox)
 
-	return restoreRecoveredTasks(op.ctx, op.runtime, restoredTasks, op.taskFactory)
+	return restoreRecoveredTasks(op.ctx, op.runtime, restoredTasks, op.taskFactory, exitWatcher)
 }
 
 func (op recoveryOperation) cleanupOrphans() {

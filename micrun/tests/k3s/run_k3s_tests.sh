@@ -1,6 +1,19 @@
 #!/bin/bash
 # MicRun K3s 云化测试套件入口
-# 使用: ./run_k3s_tests.sh [test_id]
+# 使用: ./run_k3s_tests.sh [scenario]
+#
+# scenario 用语义名（无参数 = 跑通用集）：
+#   preflight        环境预检
+#   runtimeclass     RuntimeClass 创建
+#   pod-lifecycle    Pod 启动/停止
+#   deployment       Deployment 扩缩容
+#   pod-logs         Pod 日志获取
+#   resource-limits  资源限制
+#   multi-node       多节点部署
+#   self-healing     故障恢复
+#   interaction      RuntimeClass Pod 交互与清理（kubectl attach）
+#   ota              Deployment OTA 滚动升级
+# 旧的 K3S-00x 编号仍可用（兼容别名，见 canonical_test_id）。
 
 set -e
 
@@ -10,7 +23,6 @@ source "${SCRIPT_DIR}/../test-env.sh"
 
 # 测试配置
 CATEGORY="K3s 云化"
-TEST_PREFIX="K3S"
 
 # 结果存储
 declare -a TEST_NAMES=()
@@ -82,17 +94,37 @@ deployment_spec_overrides() {
     printf '%s\n' "${lines[@]}"
 }
 
+# 场景选择器使用语义名（preflight / runtimeclass / pod-lifecycle /
+# deployment / pod-logs / resource-limits / multi-node / self-healing /
+# interaction / ota）。旧的 K3S-00x 编号仍被接受为兼容别名，进入 main 时
+# 统一归一化为语义名。
+canonical_test_id() {
+    case "$1" in
+        K3S-000) echo "preflight" ;;
+        K3S-001) echo "runtimeclass" ;;
+        K3S-002) echo "pod-lifecycle" ;;
+        K3S-003) echo "deployment" ;;
+        K3S-004) echo "pod-logs" ;;
+        K3S-005) echo "resource-limits" ;;
+        K3S-006) echo "multi-node" ;;
+        K3S-007) echo "self-healing" ;;
+        K3S-008) echo "interaction" ;;
+        K3S-009) echo "ota" ;;
+        *) echo "$1" ;;
+    esac
+}
+
 interaction_uses_direct_control_plane() {
     local test_id="$1"
     local mode="${K3S_INTERACTION_MODE:-auto}"
 
-    if [ "$test_id" = "K3S-009" ]; then
+    if [ "$test_id" = "ota" ]; then
         command -v docker >/dev/null 2>&1 &&
             [ "$(docker inspect -f '{{.State.Running}}' "$K3S_CLOUD_SERVER_CONTAINER" 2>/dev/null || true)" = "true" ]
         return
     fi
 
-    [ "$test_id" = "K3S-008" ] || return 1
+    [ "$test_id" = "interaction" ] || return 1
 
     case "$mode" in
         cloud|local)
@@ -141,15 +173,15 @@ cleanup_k3s() {
 # 测试用例
 # ============================================
 
-# K3S-000: 环境预检
+# preflight: 环境预检
 test_k3s_000_preflight() {
-    log_test "K3S-000: 环境预检"
+    log_test "preflight: 环境预检"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
 
     if ! remote_kubectl "$node" "version --client" >/dev/null 2>&1; then
         local end=$(date +%s)
-        record_result "K3S-000: 环境预检" "FAIL" "kubectl/k3s kubectl 不可用" "$((end - start))"
+        record_result "preflight: 环境预检" "FAIL" "kubectl/k3s kubectl 不可用" "$((end - start))"
         echo -e "$FAIL"
         return
     fi
@@ -176,23 +208,23 @@ test_k3s_000_preflight() {
     local time=$((end - start))
 
     if [ -z "$node_count" ] || [ "$node_count" -lt 1 ]; then
-        record_result "K3S-000: 环境预检" "FAIL" "未发现可用节点" "$time"
+        record_result "preflight: 环境预检" "FAIL" "未发现可用节点" "$time"
         echo -e "$FAIL"
     elif [ "${K3S_REQUIRE_PAUSE_IMAGE}" = "true" ] && [ "$pause_check" = "pause镜像缺失" ]; then
-        record_result "K3S-000: 环境预检" "FAIL" "$details" "$time"
+        record_result "preflight: 环境预检" "FAIL" "$details" "$time"
         echo -e "$FAIL"
     elif [ -n "$not_ready" ] && [ "${K3S_SINGLE_NODE}" != "true" ]; then
-        record_result "K3S-000: 环境预检" "FAIL" "$details" "$time"
+        record_result "preflight: 环境预检" "FAIL" "$details" "$time"
         echo -e "$FAIL"
     else
-        record_result "K3S-000: 环境预检" "PASS" "$details" "$time"
+        record_result "preflight: 环境预检" "PASS" "$details" "$time"
         echo -e "$PASS"
     fi
 }
 
-# K3S-001: RuntimeClass 创建
+# runtimeclass: RuntimeClass 创建
 test_k3s_001_runtimeclass() {
-    log_test "K3S-001: RuntimeClass 创建"
+    log_test "runtimeclass: RuntimeClass 创建"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
     local pod_overrides
@@ -217,17 +249,17 @@ EOF
     local time=$((end - start))
 
     if [ "$result" -eq 1 ]; then
-        record_result "K3S-001: RuntimeClass 创建" "PASS" "RuntimeClass 已创建" "$time"
+        record_result "runtimeclass: RuntimeClass 创建" "PASS" "RuntimeClass 已创建" "$time"
         echo -e "$PASS"
     else
-        record_result "K3S-001: RuntimeClass 创建" "FAIL" "RuntimeClass 创建失败" "$time"
+        record_result "runtimeclass: RuntimeClass 创建" "FAIL" "RuntimeClass 创建失败" "$time"
         echo -e "$FAIL"
     fi
 }
 
-# K3S-002: Pod 启动/停止
+# pod-lifecycle: Pod 启动/停止
 test_k3s_002_pod_lifecycle() {
-    log_test "K3S-002: Pod 启动/停止"
+    log_test "pod-lifecycle: Pod 启动/停止"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
     local pod_name="test-pod-lifecycle"
@@ -271,17 +303,17 @@ EOF
     local time=$((end - start))
 
     if [ "$status" = "Running" ] || [ "$status" = "Succeeded" ]; then
-        record_result "K3S-002: Pod 启动/停止" "PASS" "Pod 状态: $status" "$time"
+        record_result "pod-lifecycle: Pod 启动/停止" "PASS" "Pod 状态: $status" "$time"
         echo -e "$PASS"
     else
-        record_result "K3S-002: Pod 启动/停止" "FAIL" "$details" "$time"
+        record_result "pod-lifecycle: Pod 启动/停止" "FAIL" "$details" "$time"
         echo -e "$FAIL"
     fi
 }
 
-# K3S-003: Deployment 扩缩容
+# deployment: Deployment 扩缩容
 test_k3s_003_deployment() {
-    log_test "K3S-003: Deployment 扩缩容"
+    log_test "deployment: Deployment 扩缩容"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
     local deploy_name="test-deployment"
@@ -337,17 +369,17 @@ EOF
     local time=$((end - start))
 
     if [ "$replicas" = "2" ] && [ "$scaled_replicas" = "3" ]; then
-        record_result "K3S-003: Deployment 扩缩容" "PASS" "2→3 副本成功" "$time"
+        record_result "deployment: Deployment 扩缩容" "PASS" "2→3 副本成功" "$time"
         echo -e "$PASS"
     else
-        record_result "K3S-003: Deployment 扩缩容" "FAIL" "副本数: $replicas → $scaled_replicas" "$time"
+        record_result "deployment: Deployment 扩缩容" "FAIL" "副本数: $replicas → $scaled_replicas" "$time"
         echo -e "$FAIL"
     fi
 }
 
-# K3S-004: Pod 日志获取
+# pod-logs: Pod 日志获取
 test_k3s_004_pod_logs() {
-    log_test "K3S-004: Pod 日志获取"
+    log_test "pod-logs: Pod 日志获取"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
     local pod_name="test-logs"
@@ -387,17 +419,17 @@ EOF
     local time=$((end - start))
 
     if [ -n "$logs" ]; then
-        record_result "K3S-004: Pod 日志获取" "PASS" "日志长度: ${#logs} 字节" "$time"
+        record_result "pod-logs: Pod 日志获取" "PASS" "日志长度: ${#logs} 字节" "$time"
         echo -e "$PASS"
     else
-        record_result "K3S-004: Pod 日志获取" "FAIL" "无日志输出" "$time"
+        record_result "pod-logs: Pod 日志获取" "FAIL" "无日志输出" "$time"
         echo -e "$FAIL"
     fi
 }
 
-# K3S-005: 资源限制
+# resource-limits: 资源限制
 test_k3s_005_resource_limits() {
-    log_test "K3S-005: 资源限制"
+    log_test "resource-limits: 资源限制"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
     local pod_name="test-resources"
@@ -440,17 +472,17 @@ EOF
     local time=$((end - start))
 
     if [ "$status" = "Running" ] || [ "$status" = "Succeeded" ]; then
-        record_result "K3S-005: 资源限制" "PASS" "资源限制已应用" "$time"
+        record_result "resource-limits: 资源限制" "PASS" "资源限制已应用" "$time"
         echo -e "$PASS"
     else
-        record_result "K3S-005: 资源限制" "FAIL" "Pod 状态: ${status:-Unknown}" "$time"
+        record_result "resource-limits: 资源限制" "FAIL" "Pod 状态: ${status:-Unknown}" "$time"
         echo -e "$FAIL"
     fi
 }
 
-# K3S-006: 多节点部署（云边协同）
+# multi-node: 多节点部署（云边协同）
 test_k3s_006_multi_node() {
-    log_test "K3S-006: 多节点部署"
+    log_test "multi-node: 多节点部署"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
 
@@ -461,17 +493,17 @@ test_k3s_006_multi_node() {
     local time=$((end - start))
 
     if [ "$node_count" -ge 2 ]; then
-        record_result "K3S-006: 多节点部署" "PASS" "集群节点数: $node_count" "$time"
+        record_result "multi-node: 多节点部署" "PASS" "集群节点数: $node_count" "$time"
         echo -e "$PASS"
     else
-        record_result "K3S-006: 多节点部署" "SKIP" "需要至少 2 个节点 (当前: $node_count)" "$time"
+        record_result "multi-node: 多节点部署" "SKIP" "需要至少 2 个节点 (当前: $node_count)" "$time"
         echo -e "$SKIP"
     fi
 }
 
-# K3S-007: 故障恢复
+# self-healing: 故障恢复
 test_k3s_007_self_healing() {
-    log_test "K3S-007: 故障恢复"
+    log_test "self-healing: 故障恢复"
     local start=$(date +%s)
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
     local deploy_name="test-healing"
@@ -531,17 +563,17 @@ EOF
     local time=$((end - start))
 
     if [ "$initial_replicas" = "$healed_replicas" ] && [ "$healed_replicas" = "2" ]; then
-        record_result "K3S-007: 故障恢复" "PASS" "Pod 已自动重建" "$time"
+        record_result "self-healing: 故障恢复" "PASS" "Pod 已自动重建" "$time"
         echo -e "$PASS"
     else
-        record_result "K3S-007: 故障恢复" "FAIL" "副本数: $initial_replicas → $healed_replicas" "$time"
+        record_result "self-healing: 故障恢复" "FAIL" "副本数: $initial_replicas → $healed_replicas" "$time"
         echo -e "$FAIL"
     fi
 }
 
-# K3S-008: RuntimeClass Pod 交互与清理
+# interaction: RuntimeClass Pod 交互与清理
 test_k3s_008_interaction() {
-    log_test "K3S-008: RuntimeClass Pod 交互与清理"
+    log_test "interaction: RuntimeClass Pod 交互与清理"
     local start
     local end
     local time
@@ -551,20 +583,20 @@ test_k3s_008_interaction() {
     out="$(bash "${SCRIPT_DIR}/run_interaction_e2e.sh" 2>&1)" && {
         end=$(date +%s)
         time=$((end - start))
-        record_result "K3S-008: RuntimeClass Pod 交互与清理" "PASS" "kubectl attach、edge task、Xen domain 与删除清理通过" "$time"
+        record_result "interaction: RuntimeClass Pod 交互与清理" "PASS" "kubectl attach、edge task、Xen domain 与删除清理通过" "$time"
         echo -e "$PASS"
         return
     }
 
     end=$(date +%s)
     time=$((end - start))
-    record_result "K3S-008: RuntimeClass Pod 交互与清理" "FAIL" "$(printf '%s\n' "$out" | tail -n 20)" "$time"
+    record_result "interaction: RuntimeClass Pod 交互与清理" "FAIL" "$(printf '%s\n' "$out" | tail -n 20)" "$time"
     echo -e "$FAIL"
 }
 
-# K3S-009: Deployment OTA 滚动升级
+# ota: Deployment OTA 滚动升级
 test_k3s_009_ota() {
-    log_test "K3S-009: Deployment OTA 滚动升级"
+    log_test "ota: Deployment OTA 滚动升级"
     local start
     local end
     local time
@@ -574,14 +606,14 @@ test_k3s_009_ota() {
     out="$(bash "${SCRIPT_DIR}/run_ota_e2e.sh" 2>&1)" && {
         end=$(date +%s)
         time=$((end - start))
-        record_result "K3S-009: Deployment OTA 滚动升级" "PASS" "v1->v2 rollout、edge task、Xen domain、kubectl attach 与清理通过" "$time"
+        record_result "ota: Deployment OTA 滚动升级" "PASS" "v1->v2 rollout、edge task、Xen domain、kubectl attach 与清理通过" "$time"
         echo -e "$PASS"
         return
     }
 
     end=$(date +%s)
     time=$((end - start))
-    record_result "K3S-009: Deployment OTA 滚动升级" "FAIL" "$(printf '%s\n' "$out" | tail -n 20)" "$time"
+    record_result "ota: Deployment OTA 滚动升级" "FAIL" "$(printf '%s\n' "$out" | tail -n 20)" "$time"
     echo -e "$FAIL"
 }
 
@@ -650,6 +682,11 @@ main() {
     local test_id="${1:-}"
     local needs_remote_master="true"
 
+    # 兼容旧的 K3S-00x 编号入参：归一化为语义名后，脚本内部只认语义名。
+    if [ -n "$test_id" ]; then
+        test_id="$(canonical_test_id "$test_id")"
+    fi
+
     echo "╔══════════════════════════════════════════════════════════════════════╗"
     echo "║              MicRun K3s Cloud Test Suite                          ║"
     echo "╚══════════════════════════════════════════════════════════════════════╝"
@@ -680,24 +717,25 @@ main() {
 
     # 运行测试或指定测试
     if [ -n "$test_id" ]; then
-        if [ "$test_id" != "K3S-000" ] && [ "$needs_remote_master" = "true" ]; then
+        if [ "$test_id" != "preflight" ] && [ "$needs_remote_master" = "true" ]; then
             test_k3s_000_preflight
             sleep 1
         fi
 
         case "$test_id" in
-            K3S-000) test_k3s_000_preflight ;;
-            K3S-001) test_k3s_001_runtimeclass ;;
-            K3S-002) test_k3s_002_pod_lifecycle ;;
-            K3S-003) test_k3s_003_deployment ;;
-            K3S-004) test_k3s_004_pod_logs ;;
-            K3S-005) test_k3s_005_resource_limits ;;
-            K3S-006) test_k3s_006_multi_node ;;
-            K3S-007) test_k3s_007_self_healing ;;
-            K3S-008) test_k3s_008_interaction ;;
-            K3S-009) test_k3s_009_ota ;;
+            preflight) test_k3s_000_preflight ;;
+            runtimeclass) test_k3s_001_runtimeclass ;;
+            pod-lifecycle) test_k3s_002_pod_lifecycle ;;
+            deployment) test_k3s_003_deployment ;;
+            pod-logs) test_k3s_004_pod_logs ;;
+            resource-limits) test_k3s_005_resource_limits ;;
+            multi-node) test_k3s_006_multi_node ;;
+            self-healing) test_k3s_007_self_healing ;;
+            interaction) test_k3s_008_interaction ;;
+            ota) test_k3s_009_ota ;;
             *)
-                echo "Unknown test ID: $test_id"
+                echo "未知场景: $test_id"
+                echo "可用场景: preflight runtimeclass pod-lifecycle deployment pod-logs resource-limits multi-node self-healing interaction ota"
                 exit 1
                 ;;
         esac

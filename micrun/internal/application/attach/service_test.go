@@ -63,6 +63,13 @@ func (f *fakeIOManager) RestartWithTTYs(ttyIn io.WriteCloser, ttyOut io.Reader) 
 	f.restartTTYOut = ttyOut
 	return f.restartWithTTYsErr
 }
+func (f *fakeIOManager) RestartWithSubscriber(ttyIn io.WriteCloser, ttyOut io.Reader, onNewBus func(ports.IOEventStream)) error {
+	err := f.RestartWithTTYs(ttyIn, ttyOut)
+	if err == nil && onNewBus != nil && f.eventStream != nil {
+		onNewBus(f.eventStream)
+	}
+	return err
+}
 func (f *fakeIOManager) IsRunning() bool { return f.isRunning }
 func (f *fakeIOManager) EventStream() ports.IOEventStream {
 	if f.eventStream != nil {
@@ -160,6 +167,7 @@ func (f *fakeTask) ExitChan() chan struct{}              { return f.exitCh }
 func (f *fakeTask) IOExit()                              { f.ioExit = true }
 func (f *fakeTask) CanBeSandbox() bool                   { return false }
 func (f *fakeTask) IsCriSandbox() bool                   { return false }
+func (f *fakeTask) IsRecovered() bool                    { return false }
 func (f *fakeTask) Annotations() map[string]string       { return nil }
 func (f *fakeTask) IOManager() ports.IOManager           { return f.ioMgr }
 func (f *fakeTask) SetIOManager(m ports.IOManager)       { f.ioMgr = m }
@@ -170,6 +178,9 @@ func (f *fakeTask) SetAttached(attached bool) (previous bool) {
 	previous = f.attached
 	f.attached = attached
 	return previous
+}
+func (f *fakeTask) IsAttached() bool {
+	return f.attached
 }
 
 type attachTrackingWriteCloser struct {
@@ -202,7 +213,7 @@ func TestServiceEntryPointsRequireInputs(t *testing.T) {
 		call func() error
 	}{
 		{name: "CloseIO task", call: func() error {
-			return svc.CloseIO(ctx, nil, false)
+			return svc.CloseIO(ctx, runtime, nil, false)
 		}},
 		{name: "StartInitialSession runtime", call: func() error {
 			return svc.StartInitialSession(ctx, nil, taskHandle, nil, nil, nil)
@@ -256,6 +267,8 @@ type fakeEventStream struct {
 	events         chan ports.IOEvent
 }
 
+func (f *fakeEventStream) Current() bool { return true }
+
 func (f *fakeEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	f.subscribeCount += len(eventTypes)
 	if f.events != nil {
@@ -267,6 +280,8 @@ func (f *fakeEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.I
 
 type closedEventStream struct{}
 
+func (closedEventStream) Current() bool { return true }
+
 func (closedEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	ch := make(chan ports.IOEvent)
 	close(ch)
@@ -274,6 +289,8 @@ func (closedEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IO
 }
 
 type nilSubscriberEventStream struct{}
+
+func (nilSubscriberEventStream) Current() bool { return true }
 
 func (nilSubscriberEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	return nil
@@ -399,12 +416,12 @@ func TestHandleIOEventsAcceptsNilContext(t *testing.T) {
 	close(events)
 	svc := NewService(nil)
 
-	svc.handleIOEvents(nil, &fakeRuntime{}, &fakeTask{id: "nil-context-events"}, events)
+	svc.handleIOEvents(nil, &fakeRuntime{}, &fakeTask{id: "nil-context-events"}, events, nil)
 }
 
 func TestHandleIOEventsRejectsNilSubscriber(t *testing.T) {
 	svc := NewService(nil)
-	svc.handleIOEvents(context.Background(), &fakeRuntime{}, &fakeTask{id: "nil-subscriber"}, nil)
+	svc.handleIOEvents(context.Background(), &fakeRuntime{}, &fakeTask{id: "nil-subscriber"}, nil, nil)
 }
 
 func TestIOEventPumpStopsOnCanceledContext(t *testing.T) {
@@ -468,6 +485,9 @@ func (f *fakeSandbox) OpenTTYs(ctx context.Context, containerID string) (stdin, 
 func (f *fakeSandbox) UpdateContainer(ctx context.Context, id string, resources specs.LinuxResources) error {
 	return nil
 }
+func (f *fakeSandbox) WaitContainerExit(ctx context.Context, containerID string) (int32, error) {
+	return 0, nil
+}
 
 func newTempTTYFile(t *testing.T) *os.File {
 	t.Helper()
@@ -521,6 +541,24 @@ func TestEnsureAttachRestartsTerminalManagerWithFreshTTYs(t *testing.T) {
 	}
 }
 
+func TestEnsureAttachRejectsNonRunningTask(t *testing.T) {
+	svc := NewService(&fakeIOFactory{})
+	runtime := &fakeRuntime{sandbox: &fakeSandbox{}}
+	taskHandle := &fakeTask{
+		id:     "task1",
+		status: task.Status_STOPPED,
+		attachInfo: &ports.AttachInfo{
+			Stdin:  "stdin",
+			Stdout: "stdout",
+		},
+	}
+
+	err := svc.EnsureAttach(runtime, taskHandle)
+	if !errors.Is(err, er.InvalidState) {
+		t.Fatalf("EnsureAttach error = %v, want InvalidState", err)
+	}
+}
+
 func TestEnsureAttachRestartsIOEventHandlerForExistingManager(t *testing.T) {
 	stream := &fakeEventStream{events: make(chan ports.IOEvent, 1)}
 	stopCh := make(chan struct{})
@@ -537,12 +575,17 @@ func TestEnsureAttachRestartsIOEventHandlerForExistingManager(t *testing.T) {
 			Stdout: "stdout",
 		},
 	}
+	ttyIn := newTempTTYFile(t)
+	ttyOut := newTempTTYFile(t)
+	runtime := &fakeRuntime{
+		sandbox: &fakeSandbox{ttyIn: ttyIn, ttyOut: ttyOut},
+	}
 
-	if err := svc.EnsureAttach(&fakeRuntime{}, taskHandle); err != nil {
+	if err := svc.EnsureAttach(runtime, taskHandle); err != nil {
 		t.Fatalf("EnsureAttach returned error: %v", err)
 	}
-	if !manager.restartCalled {
-		t.Fatal("expected existing manager to restart")
+	if !manager.restartWithTTYsCalled {
+		t.Fatal("expected existing manager to restart with fresh TTY handles")
 	}
 	if stream.subscribeCount == 0 {
 		t.Fatal("expected restarted manager event stream to be subscribed")
@@ -636,7 +679,7 @@ func TestHandleDetachStopsManagerOutsideRuntimeLock(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventDetach,
 		ContainerID: taskHandle.id,
-	})
+	}, nil)
 
 	if !ioMgr.stopWithoutClosingCalled {
 		t.Fatal("expected StopWithoutClosingFIFOs to be called")
@@ -657,7 +700,7 @@ func TestHandleIOEventIgnoresOtherContainers(t *testing.T) {
 	svc.handleIOEvent(&fakeRuntime{}, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: "container-b",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_RUNNING {
 		t.Fatalf("status = %v, want running", taskHandle.status)
@@ -677,7 +720,7 @@ func TestHandleIOEventIgnoresEmptyContainerID(t *testing.T) {
 
 	svc.handleIOEvent(&fakeRuntime{}, taskHandle, ports.IOEvent{
 		Type: ports.IOEventExitCommand,
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_RUNNING {
 		t.Fatalf("status = %v, want running", taskHandle.status)
@@ -691,7 +734,7 @@ func TestHandleIOEventRejectsNilTask(t *testing.T) {
 	svc := NewService(nil)
 	var taskHandle *fakeTask
 
-	svc.handleIOEvent(nil, taskHandle, ports.IOEvent{Type: ports.IOEventError})
+	svc.handleIOEvent(nil, taskHandle, ports.IOEvent{Type: ports.IOEventError}, nil)
 }
 
 func TestResolveIOEventPolicyRejectsNilService(t *testing.T) {
@@ -740,7 +783,7 @@ func TestHandleIOEventsRejectsNilTask(t *testing.T) {
 	svc := NewService(nil)
 	var taskHandle *fakeTask
 
-	svc.handleIOEvents(context.Background(), &fakeRuntime{}, taskHandle, events)
+	svc.handleIOEvents(context.Background(), &fakeRuntime{}, taskHandle, events, nil)
 }
 
 func TestHandleIOEventUsesInjectedPolicySet(t *testing.T) {
@@ -756,7 +799,7 @@ func TestHandleIOEventUsesInjectedPolicySet(t *testing.T) {
 	svc.handleIOEvent(&fakeRuntime{}, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: "custom-policy",
-	})
+	}, nil)
 
 	if !handled {
 		t.Fatal("expected custom IO event handler to be invoked")
@@ -849,7 +892,7 @@ func TestHandleIOEventStopTaskWithNilRuntime(t *testing.T) {
 	svc.handleIOEvent(nil, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventInterrupt,
 		ContainerID: "stop-no-runtime",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -885,6 +928,9 @@ func TestStartManagedSessionSubscribesBeforeStart(t *testing.T) {
 	}
 	if !manager.startCalled {
 		t.Fatal("expected manager Start to be called")
+	}
+	if !taskHandle.IsAttached() {
+		t.Fatal("StartInitialSession should mark a live start client attached")
 	}
 }
 
@@ -990,6 +1036,52 @@ func TestResolveFIFOPathsCompletesNonTerminalOutputPaths(t *testing.T) {
 	}
 }
 
+func TestClientAttachedEventSetsAttached(t *testing.T) {
+	taskHandle := &fakeTask{id: "live-client"}
+	handleIOEventClientAttached(newIOEventContext(
+		NewService(nil),
+		&fakeRuntime{},
+		taskHandle,
+		ports.IOEvent{Type: ports.IOEventClientAttached, ContainerID: taskHandle.id},
+		ioEventPlan{},
+		nil,
+	))
+	if !taskHandle.IsAttached() {
+		t.Fatal("ClientAttached should mark a live FIFO client attached")
+	}
+
+	handleIOEventClientDetached(newIOEventContext(
+		NewService(nil),
+		&fakeRuntime{},
+		taskHandle,
+		ports.IOEvent{Type: ports.IOEventClientDetached, ContainerID: taskHandle.id},
+		ioEventPlan{},
+		nil,
+	))
+	if taskHandle.IsAttached() {
+		t.Fatal("ClientDetached should clear attached so start -d can auto-close")
+	}
+
+	handleIOEventClientAttached(newIOEventContext(
+		NewService(nil),
+		&fakeRuntime{},
+		taskHandle,
+		ports.IOEvent{Type: ports.IOEventClientAttached, ContainerID: taskHandle.id},
+		ioEventPlan{},
+		nil,
+	))
+	if !taskHandle.IsAttached() {
+		t.Fatal("ClientAttached should restore attached after detach")
+	}
+
+	if err := NewService(nil).CloseIO(context.Background(), &fakeRuntime{}, taskHandle, false); err != nil {
+		t.Fatalf("CloseIO: %v", err)
+	}
+	if taskHandle.IsAttached() {
+		t.Fatal("CloseIO should clear attached so start -d can auto-close")
+	}
+}
+
 func TestCloseIOToleratesMissingStdinResources(t *testing.T) {
 	svc := NewService(nil)
 	taskHandle := &fakeTask{
@@ -998,7 +1090,7 @@ func TestCloseIOToleratesMissingStdinResources(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- svc.CloseIO(context.Background(), taskHandle, true)
+		done <- svc.CloseIO(context.Background(), &fakeRuntime{}, taskHandle, true)
 	}()
 
 	select {
@@ -1011,36 +1103,31 @@ func TestCloseIOToleratesMissingStdinResources(t *testing.T) {
 	}
 }
 
-func TestCloseIOHonorsContextWhileWaitingForStdinCloser(t *testing.T) {
+func TestCloseIOUnsetsStdinWithoutClosingTTYFd(t *testing.T) {
 	svc := NewService(nil)
 	stdinClosed := make(chan struct{})
+	stdinPipe := &attachTrackingWriteCloser{closed: stdinClosed}
 	taskHandle := &fakeTask{
-		id:         "closeio-cancel",
-		stdinPipe:  &attachTrackingWriteCloser{closed: stdinClosed},
+		id:         "closeio-return",
+		stdinPipe:  stdinPipe,
 		stdinClose: make(chan struct{}),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan error, 1)
-	go func() {
-		done <- svc.CloseIO(ctx, taskHandle, true)
-	}()
-
+	err := svc.CloseIO(context.Background(), &fakeRuntime{}, taskHandle, true)
+	if err != nil {
+		t.Fatalf("CloseIO error = %v, want nil", err)
+	}
+	// The recorded StdinPipe is the guest TTY fd the copier still uses;
+	// CloseIO must NOT close it (that would break the output path and
+	// double-close on teardown). It only unsets the reference — the copier
+	// observes stdin EOF via the FIFO that containerd already closed.
 	select {
 	case <-stdinClosed:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not close stdin pipe")
+		t.Fatal("CloseIO closed the TTY fd; it must be left to the copier")
+	default:
 	}
-
-	cancel()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("CloseIO error = %v, want context canceled", err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not return after context cancellation")
+	if taskHandle.StdinPipe() != nil {
+		t.Fatal("CloseIO did not unset the stdin handle")
 	}
 }
 
@@ -1085,7 +1172,7 @@ func TestHandleExitCommandStopsSessionAndMarksExit(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: "exit-test",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -1123,7 +1210,7 @@ func TestHandleExitCommandStopsManagerOutsideRuntimeLock(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventExitCommand,
 		ContainerID: taskHandle.id,
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -1160,7 +1247,7 @@ func TestHandleInterruptStopsSessionAndMarksSignalExit(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventInterrupt,
 		ContainerID: "interrupt-test",
-	})
+	}, nil)
 
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected STOPPED, got %s", taskHandle.status)
@@ -1312,7 +1399,7 @@ func TestStopFromIOEventDoesNotOverwriteStoppedTaskExitInfo(t *testing.T) {
 	svc.handleIOEvent(runtime, taskHandle, ports.IOEvent{
 		Type:        ports.IOEventInterrupt,
 		ContainerID: "already-stopped",
-	})
+	}, nil)
 
 	if taskHandle.exitStatus != 123 {
 		t.Fatalf("exit status = %d, want preserved 123", taskHandle.exitStatus)
@@ -1380,6 +1467,9 @@ func TestPrepareResizeBootstrapsManagedSessionWhenManagerMissing(t *testing.T) {
 		t.Fatalf("PrepareResize returned error: %v", err)
 	}
 
+	if !taskHandle.attached {
+		t.Fatal("PrepareResize restart must mark attached before session bring-up completes")
+	}
 	if !manager.startCalled {
 		t.Fatal("expected IO session start to be called")
 	}
@@ -1435,6 +1525,9 @@ func TestPrepareResizeRequiresFactoryBeforeOpeningTTYWhenManagerMissing(t *testi
 	if sandbox.openTTYsCalled {
 		t.Fatal("OpenTTYs should not run before session factory is available")
 	}
+	if taskHandle.attached {
+		t.Fatal("failed PrepareResize restart must clear attached")
+	}
 }
 
 func TestPrepareResizeReturnsFreshTTYError(t *testing.T) {
@@ -1461,6 +1554,9 @@ func TestPrepareResizeReturnsFreshTTYError(t *testing.T) {
 	}
 	if !sandbox.openTTYsCalled {
 		t.Fatal("expected sandbox OpenTTYs to be called")
+	}
+	if taskHandle.attached {
+		t.Fatal("failed PrepareResize restart must clear attached")
 	}
 	if sandbox.winResizeCalled {
 		t.Fatal("WinResize should not run after fresh TTY open failure")
@@ -1595,4 +1691,100 @@ func TestStartInitialSessionRequiresFactoryOutputs(t *testing.T) {
 			t.Fatal("expected missing event stream error")
 		}
 	})
+}
+
+type staleEventStream struct {
+	events chan ports.IOEvent
+}
+
+func (s *staleEventStream) Current() bool { return false }
+
+func (s *staleEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
+	return s.events
+}
+
+// Events queued on a pre-restart event bus must not be acted on: a stale
+// detach/stop event would tear down the freshly restarted IO session (and,
+// via stopFromIOEvent, the whole task). When the subscription no longer
+// tracks the session's active bus the handler must drop the events and exit.
+func TestHandleIOEventsDropsEventsFromStaleStream(t *testing.T) {
+	events := make(chan ports.IOEvent, 2)
+	events <- ports.IOEvent{Type: ports.IOEventDetach, ContainerID: "task-stale"}
+	events <- ports.IOEvent{Type: ports.IOEventDetach, ContainerID: "task-stale"}
+
+	task := &fakeTask{id: "task-stale"}
+	task.SetAttached(true)
+
+	svc := NewService(nil)
+	done := make(chan struct{})
+	go func() {
+		svc.handleIOEvents(context.Background(), &fakeRuntime{}, task, events, &staleEventStream{events: events})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIOEvents did not return for a stale stream")
+	}
+	// A processed detach event would flip attached to false (and cascade into
+	// stopping the session). It must stay attached: the events belong to a
+	// pre-restart bus.
+	if previous := task.SetAttached(true); !previous {
+		t.Fatal("stale detach event was acted on; a freshly restarted session would be torn down")
+	}
+}
+
+// lateFlipEventStream models a bus that gets superseded between the
+// handler's stale check and the task-locked mutation: Current() is true for
+// the pre-dispatch checks but flips false by the time the mutation runs
+// under the task lock (an EnsureAttach restart landed in between).
+type lateFlipEventStream struct {
+	staleEventStream
+	staysFreshFor int
+	calls         int
+}
+
+func (s *lateFlipEventStream) Current() bool {
+	s.calls++
+	return s.calls <= s.staysFreshFor
+}
+
+// TestHandleIOEventDetachRechecksStalenessInsideTaskLock guards the
+// second stale check: the unlocked pre-checks (pump dispatch and the
+// handler's own check) race an EnsureAttach restart that swaps the event
+// bus. If the re-check does not happen while holding the task lock, a
+// detach queued on the old bus stops the freshly restarted session
+// (SetAttached(false) then preserves-stops the new copier) and auto-close
+// eventually kills a task that has a live client attached.
+func TestHandleIOEventDetachRechecksStalenessInsideTaskLock(t *testing.T) {
+	events := make(chan ports.IOEvent, 1)
+	events <- ports.IOEvent{Type: ports.IOEventDetach, ContainerID: "task-late-flip"}
+	close(events) // let the pump exit after draining instead of waiting for a next event
+
+	task := &fakeTask{id: "task-late-flip"}
+	task.SetAttached(true)
+
+	svc := NewService(nil)
+	done := make(chan struct{})
+	go func() {
+		svc.handleIOEvents(context.Background(), &fakeRuntime{}, task, events, &lateFlipEventStream{
+			staleEventStream: staleEventStream{events: events},
+			// fresh at the pump dispatch and the handler's unlocked pre-check,
+			// superseded by the time the mutation re-checks under the task lock
+			staysFreshFor: 2,
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIOEvents did not return")
+	}
+	// The detach arrived on a bus that was superseded before the mutation:
+	// the task must stay attached and the (restarted) session untouched.
+	if previous := task.SetAttached(true); !previous {
+		t.Fatal("detach from a superseded bus was acted on; the freshly restarted session would be torn down")
+	}
 }

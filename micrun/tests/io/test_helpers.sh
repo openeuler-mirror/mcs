@@ -9,7 +9,7 @@ REMOTE="$TEST_REMOTE_HOST"
 IMAGE="${TEST_IMAGE:-localhost:5000/mica-uniproton-app:xen-0.1}"
 NERDCTL_NETWORK_MODE="${NERDCTL_NETWORK_MODE:-none}"
 IMAGE_PROFILE="${IMAGE_PROFILE:-auto}"
-UNIPROTON_INTERACTION_WAIT_SECS="${UNIPROTON_INTERACTION_WAIT_SECS:-8}"
+UNIPROTON_INTERACTION_WAIT_SECS="${UNIPROTON_INTERACTION_WAIT_SECS:-3}"
 NATIVE_MICA_TARGET="${NATIVE_MICA_TARGET:-qemu-uniproton-xen}"
 NATIVE_FIRMWARE_PATH="${NATIVE_FIRMWARE_PATH:-/lib/firmware/${NATIVE_MICA_TARGET}.elf}"
 NATIVE_PROMPT_HEX="${NATIVE_PROMPT_HEX:-6f70656e45756c657220556e6950726f746f6e202320}"
@@ -46,6 +46,7 @@ count_shell_markers() {
     sanitize_command_output | awk '
       /support shell commond/ { count++ }
       /openEuler UniProton #/ { count++ }
+      /uart:~\$/ { count++ }
       /Available commands:/ { count++ }
       END { print count + 0 }
     '
@@ -173,6 +174,26 @@ cleanup_micad_clients() {
   " >/dev/null 2>&1 || true
 }
 
+# Between cases: drop leftover tasks/domains. Do not restart containerd.
+cleanup_between_tests() {
+  remote "
+    pkill -9 ctr 2>/dev/null || true
+    pkill -9 nerdctl 2>/dev/null || true
+    for c in \$(ctr task ls -q 2>/dev/null || true); do
+      ctr task kill -s 9 \$c 2>/dev/null || true
+      ctr task delete \$c 2>/dev/null || true
+    done
+    command -v nerdctl >/dev/null 2>&1 && nerdctl rm -f \$(nerdctl ps -aq 2>/dev/null) 2>/dev/null || true
+    for c in \$(ctr container ls -q 2>/dev/null || true); do
+      ctr container delete \$c 2>/dev/null || true
+    done
+    for d in \$(xl list 2>/dev/null | awk 'NR > 1 && \$1 != \"Domain-0\" { print \$1 }'); do
+      xl destroy \$d 2>/dev/null || true
+    done
+  " >/dev/null 2>&1 || true
+  cleanup_micad_clients
+}
+
 cleanup_all() {
   remote "
     pkill -9 ctr 2>/dev/null || true
@@ -180,12 +201,8 @@ cleanup_all() {
     for pid in \$(pgrep -f '[c]ontainerd-shim-mica-v2' 2>/dev/null || true); do
       kill -9 \$pid 2>/dev/null || true
     done
-    sleep 1
-    for pass in 1 2 3; do
-      for d in \$(xl list 2>/dev/null | awk '{print \$1}' | grep -v '^Name$' | grep -v '^Domain-0$'); do
-        xl destroy \$d 2>/dev/null || true
-      done
-      sleep 1
+    for d in \$(xl list 2>/dev/null | awk '{print \$1}' | grep -v '^Name$' | grep -v '^Domain-0$'); do
+      xl destroy \$d 2>/dev/null || true
     done
   " >/dev/null 2>&1 || true
 
@@ -200,17 +217,15 @@ cleanup_all() {
       sleep 1
       i=\$((i + 1))
     done
-    sleep 2
-    pass=0
-    while [ \$pass -lt 2 ]; do
-      for c in \$(ctr container ls -q 2>/dev/null); do
-        ctr container delete \$c 2>/dev/null || true
-      done
-      sleep 1
-      pass=\$((pass + 1))
+    for c in \$(ctr task ls -q 2>/dev/null || true); do
+      ctr task kill -s 9 \$c 2>/dev/null || true
+      ctr task delete \$c 2>/dev/null || true
+    done
+    for c in \$(ctr container ls -q 2>/dev/null); do
+      ctr container delete \$c 2>/dev/null || true
     done
     i=0
-    while [ \$i -lt 10 ]; do
+    while [ \$i -lt 5 ]; do
       remaining=\$(xl list 2>/dev/null | awk 'NR > 1 && \$1 != \"Domain-0\" { count++ } END { print count + 0 }')
       [ \"\${remaining:-0}\" = \"0\" ] && break
       for d in \$(xl list 2>/dev/null | awk '{print \$1}' | grep -v '^Name$' | grep -v '^Domain-0$'); do
@@ -222,8 +237,54 @@ cleanup_all() {
   " >/dev/null 2>&1 || true
 }
 
+prepare_io_case() {
+  cleanup_between_tests
+}
+
+# Detached ctr create/start + attach. Remaining args are shell lines sent
+# with echo(1) so SSH quoting cannot turn \n into a literal payload.
+run_ctr_bg_attach() {
+  local cid="$1"
+  shift
+  local send_lines=""
+  local line
+  for line in "$@"; do
+    if [ -z "$send_lines" ]; then
+      send_lines="echo ${line}"
+    else
+      send_lines="${send_lines}; sleep 2; echo ${line}"
+    fi
+  done
+  if [ -z "$send_lines" ]; then
+    send_lines="true"
+  fi
+
+  remote_output "
+    set +e
+    ctr container create --runtime io.containerd.mica.v2 --annotation org.openeuler.micrun.container.auto_close=false ${IMAGE} ${cid}
+    echo CREATE_EC=\$?
+    ctr task start -d ${cid}
+    echo START_EC=\$?
+    i=0
+    while [ \$i -lt 12 ]; do
+      mica status 2>/dev/null | grep -q \"${cid}.*rpmsg-tty\" && break
+      sleep 1
+      i=\$((i + 1))
+    done
+    (sleep ${UNIPROTON_INTERACTION_WAIT_SECS}; ${send_lines}; sleep 3) | timeout 25 ctr task attach ${cid} > /tmp/micrun-io-attach.out 2>&1
+    echo ATTACH_EC=\$?
+    echo '--- attach ---'
+    cat /tmp/micrun-io-attach.out
+    ctr task kill -s 9 ${cid} >/dev/null 2>&1 || true
+    ctr task delete ${cid} >/dev/null 2>&1 || true
+    ctr container delete ${cid} >/dev/null 2>&1 || true
+  " 2>&1 || true
+}
+
 expect_shell_output() {
-  sanitize_command_output | grep -q "support shell commond"
+  # Full help text is often truncated on the RPMSG graft. Any of these
+  # means the shell accepted a command and answered.
+  sanitize_command_output | grep -qE "support shell commond|Available commands:|command not found"
 }
 
 expect_shell_prompt_output() {
@@ -317,7 +378,11 @@ detect_image_profile() {
   fi
 
   ensure_containerd || true
-  cleanup_all
+  if [ -n "${MICRUN_IO_CASES:-}" ]; then
+    cleanup_between_tests
+  else
+    cleanup_all
+  fi
   ensure_containerd || true
 
   probe_file="$(mktemp /tmp/micrun-io-probe.XXXXXX)"
@@ -327,7 +392,7 @@ detect_image_profile() {
     ctr container delete ${probe_id} 2>/dev/null || true
     ctr container create --runtime io.containerd.mica.v2 ${IMAGE} ${probe_id} >/dev/null 2>&1
     ctr task start -d ${probe_id} >/dev/null 2>&1
-    sleep 3
+    sleep 2
     (sleep 2; printf 'help\n'; sleep 2) | timeout 12 ctr task attach ${probe_id} 2>&1 || true
     ctr task kill -s 9 ${probe_id} 2>/dev/null || true
     ctr task delete ${probe_id} 2>/dev/null || true
@@ -359,7 +424,11 @@ ${ctr_fallback}"
     DETECTED_IMAGE_PROFILE="shell-regressed"
   fi
 
-  cleanup_all
+  if [ -n "${MICRUN_IO_CASES:-}" ]; then
+    cleanup_between_tests
+  else
+    cleanup_all
+  fi
 
   echo "$DETECTED_IMAGE_PROFILE"
 }

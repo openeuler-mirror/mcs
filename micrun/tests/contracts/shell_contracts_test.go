@@ -243,12 +243,14 @@ func TestRunAllTestsIncludesK3sInteractionByDefault(t *testing.T) {
 	}
 
 	for _, marker := range []string{
-		"K3S-008",
-		"test_k3s_008_interaction",
+		"interaction) test_k3s_008_interaction",
 		"run_interaction_e2e.sh",
-		"K3S-009",
-		"test_k3s_009_ota",
+		"ota) test_k3s_009_ota",
 		"run_ota_e2e.sh",
+		// Legacy numeric IDs must stay accepted as aliases (old command
+		// lines and docs reference them).
+		"K3S-008) echo \"interaction\"",
+		"K3S-009) echo \"ota\"",
 	} {
 		if !strings.Contains(k3sSuite, marker) {
 			t.Fatalf("K3s suite does not include interaction marker %q", marker)
@@ -272,6 +274,72 @@ func TestPublicK3sEntrypointsStayRegistered(t *testing.T) {
 	} {
 		if !strings.Contains(readme, marker) {
 			t.Fatalf("tests README is missing public K3s entrypoint %q", marker)
+		}
+	}
+}
+
+// Spec acceptance 3 (builder image contract): the annotation keys
+// mica-image-builder writes into images must match the keys the shim
+// consumes (internal/support/annotations). A drift on either side silently
+// breaks RTOS type / firmware / pedestal selection at run time — the image
+// still imports and runs, just with defaults instead of its metadata.
+func TestMicaImageBuilderAnnotationKeysMatchShim(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	if _, err := runBash(t, `python3 -c "
+try:
+    import tomllib
+except Exception:
+    import tomli
+"`); err != nil {
+		t.Skip("python3 lacks tomllib/tomli (label manager cannot load its config)")
+	}
+
+	out, err := runBash(t, `
+		cd scripts/mica-image-builder && python3 - <<'EOF'
+from mica_label_manager import MicaLabelManager
+manager = MicaLabelManager()
+for pedestal, os_type in (("xen", "uniproton"), ("xen", "zephyr"), ("baremetal", "uniproton")):
+    _, annotations = manager.generate_labels_and_annotations(
+        pedestal=pedestal, os_type=os_type,
+        firmware_path="firmware.elf", xen_image_path="image.bin",
+        description="contract", timestamp="t0",
+        uniproton_version="v1", zephyr_version="v1")
+    for key in sorted(annotations):
+        print(f"{pedestal}/{os_type} {key}={annotations[key]}")
+EOF
+	`)
+	if err != nil {
+		t.Fatalf("mica_label_manager annotation generation failed: %v\n%s", err, out)
+	}
+
+	// Keys the shim actually consumes, spelled from the Go constants' string
+	// values (annotations.go): container.os / container.firmware_path via
+	// getOSInfo/resolveContainerFirmware, ped.pedestal / ped.conf via
+	// extPedConfig.
+	for _, want := range []string{
+		"org.openeuler.micrun.container.os=",
+		"org.openeuler.micrun.container.firmware_path=",
+		"org.openeuler.micrun.ped.pedestal=",
+		"org.openeuler.micrun.ped.conf=",
+	} {
+		for _, combo := range []string{"xen/uniproton", "xen/zephyr", "baremetal/uniproton"} {
+			if !strings.Contains(out, combo+" "+want) {
+				t.Fatalf("builder output for %s is missing shim-consumed annotation %q\n%s", combo, want, out)
+			}
+		}
+	}
+
+	// The os annotation value must be the exact whitelisted RTOS name.
+	for _, want := range []string{
+		"xen/uniproton org.openeuler.micrun.container.os=uniproton",
+		"xen/zephyr org.openeuler.micrun.container.os=zephyr",
+		"xen/uniproton org.openeuler.micrun.ped.pedestal=xen",
+		"baremetal/uniproton org.openeuler.micrun.ped.pedestal=baremetal",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("builder output is missing %q\n%s", want, out)
 		}
 	}
 }

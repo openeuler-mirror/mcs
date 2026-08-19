@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"micrun/internal/support/contextx"
-	"micrun/internal/support/lockutil"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/panicsafe"
 
 	"github.com/containerd/containerd/api/events"
 	cdruntime "github.com/containerd/containerd/runtime"
@@ -16,9 +16,14 @@ import (
 )
 
 const (
-	eventPublishTimeout   = 5 * time.Second
-	ttrpcAddrEnv          = "TTRPC_ADDRESS"
-	contdShimEnvSchedCore = "SCHED_CORE"
+	eventPublishTimeout = 5 * time.Second
+	// eventChannelBlockTimeout bounds how long send() blocks on a full
+	// events channel for critical (exit/delete) events. Deliberately much
+	// shorter than eventPublishTimeout so a stalled forwarder cannot hold
+	// RPC handlers for ~10s (5s direct publish + 5s queue).
+	eventChannelBlockTimeout = 1 * time.Second
+	ttrpcAddrEnv             = "TTRPC_ADDRESS"
+	contdShimEnvSchedCore    = "SCHED_CORE"
 )
 
 // exitEvent represents a container exitEvent event.
@@ -86,15 +91,29 @@ func (ef *eventsForwarder) forward() {
 		return
 	}
 	for e := range ef.service.events {
-		// Publish the event to containerd
-		ctx, cancel := context.WithTimeout(contextx.OrBackground(ef.context), eventPublishTimeout)
-		if err := ef.publisher.Publish(ctx, e.topic, e.payload); err != nil {
-			log.Errorf("failed to publish event topic=%s: %v", e.topic, err)
-		} else {
-			log.Debugf("Successfully forwarded event topic=%s", e.topic)
-		}
-		cancel()
+		// Publish the event in a per-iteration helper so cancel runs via
+		// defer at the end of EACH publish (defer in the loop body itself
+		// would accumulate until forward() returns). defer also guarantees
+		// the timeout context is released if Publish panics — an un-caught
+		// panic here would otherwise leak the timer goroutine and kill the
+		// sole forwarder, stalling every subsequent event.
+		ef.publishOne(e)
 	}
+}
+
+// publishOne publishes a single event under a bounded timeout context. The
+// per-event panic guard keeps the sole forwarder loop alive when a single
+// Publish panics: losing one event is recoverable, losing the forwarder
+// silently drops every subsequent TaskExit/TaskDelete.
+func (ef *eventsForwarder) publishOne(e shimEvent) {
+	defer panicsafe.Recover("event publish")
+	ctx, cancel := context.WithTimeout(contextx.OrBackground(ef.context), eventPublishTimeout)
+	defer cancel()
+	if err := ef.publisher.Publish(ctx, e.topic, e.payload); err != nil {
+		log.Errorf("failed to publish event topic=%s: %v", e.topic, err)
+		return
+	}
+	log.Debugf("Successfully forwarded event topic=%s", e.topic)
 }
 
 // listenAndReportExits listens for exit events on a channel and reports them.
@@ -126,7 +145,6 @@ func (s *shimService) listenAndReportExits() {
 		}
 
 		log.Infof("[SHIM] Main container %s exited naturally, keeping shim running for cleanup", e.cid)
-		continue
 	}
 }
 
@@ -152,11 +170,7 @@ func (s *shimService) consumeKilledByAPI() bool {
 	if s == nil {
 		return false
 	}
-	return lockutil.WithLockValue(&s.Mutex, func() bool {
-		wasKilledByAPI := s.killedByAPI
-		s.killedByAPI = false
-		return wasKilledByAPI
-	})
+	return s.killedByAPI.Swap(false)
 }
 
 // send places an event on the events channel for forwarding.
@@ -169,25 +183,41 @@ func (s *shimService) send(ev proto.Message) {
 		log.Warnf("unknown event type, skipping: %v", ev)
 		return
 	}
-	if s.publishEvent(topic, ev) {
-		return
-	}
 	if s.events == nil {
 		return
 	}
-	s.events <- shimEvent{topic: topic, payload: ev}
+	// Events are published by the single forwarder goroutine: RPC handlers
+	// must never block on network I/O (a slow containerd publisher would
+	// stall Delete/Start RPCs well past their client timeouts). Exit/Delete
+	// events are part of containerd's Wait/Delete contract, so they block
+	// (bounded) in the hope the forwarder drains the channel, instead of
+	// dropping immediately; lower-value events are dropped when the channel
+	// is full.
+	if isCriticalEvent(topic) {
+		// Use a reusable timer (stopped on the success path) rather than
+		// time.After: time.After's timer is not collected until it fires, so
+		// under bursty critical-event traffic each enqueued event would pin a
+		// ~1s timer until expiry.
+		timer := time.NewTimer(eventChannelBlockTimeout)
+		select {
+		case s.events <- shimEvent{topic: topic, payload: ev}:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+			log.Errorf("event channel full, dropping critical event after %v (topic=%s)", eventChannelBlockTimeout, topic)
+		}
+		return
+	}
+	select {
+	case s.events <- shimEvent{topic: topic, payload: ev}:
+	default:
+		log.Warnf("event channel full, dropping event (topic=%s)", topic)
+	}
 }
 
-func (s *shimService) publishEvent(topic string, ev proto.Message) bool {
-	if s == nil || s.publisher == nil {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(contextx.OrBackground(s.ctx)), eventPublishTimeout)
-	defer cancel()
-	if err := s.publisher.Publish(ctx, topic, ev); err != nil {
-		log.Errorf("failed to publish event topic=%s directly: %v", topic, err)
-		return false
-	}
-	log.Debugf("Successfully published event topic=%s directly", topic)
-	return true
+// isCriticalEvent reports whether a dropped event would break a containerd
+// client contract (Wait RPC / Delete RPC completion).
+func isCriticalEvent(topic string) bool {
+	return topic == cdruntime.TaskExitEventTopic || topic == cdruntime.TaskDeleteEventTopic
 }

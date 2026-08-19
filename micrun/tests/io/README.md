@@ -31,15 +31,22 @@ Run:
 
 ```bash
 micrun/tests/bin/test-io-qemu
+IMAGE_PROFILE=shell micrun/tests/bin/test-io-qemu --reuse --case 5
+micrun/tests/bin/test-io-qemu --case auto-close
 ```
 
-This flow now:
+Full-suite flow:
 
 1. validates the QEMU guest is reachable
 2. rebuilds the current worktree shim
 3. deploys the shim to the guest
 4. imports the current RTOS image tar
 5. runs the adaptive IO suite
+
+`--case` / `MICRUN_IO_CASES` selects a subset (`0-14` or names such as
+`notty`, `multi`, `auto-close`). `--reuse` skips smoke, `make build`,
+shim copy, and image import so a live guest can re-check one scenario.
+`IMAGE_PROFILE=shell` skips the opening profile probe.
 
 The QEMU regression copies files into the running guest and replaces the shim
 inside that guest for validation. It must not unpack, patch, or repack the

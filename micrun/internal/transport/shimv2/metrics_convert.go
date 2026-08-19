@@ -46,10 +46,13 @@ func statsToMetricsV1(stats *cntr.ContainerStats) *cgroupsv1.Metrics {
 
 // statsToMetricsV2 converts container domain stats to cgroups v2 metrics format.
 func statsToMetricsV2(stats *cntr.ContainerStats, pid uint32) *cgroupsv2.Metrics {
+	// RTOS containers are backed by a single Xen domain / bare-metal guest;
+	// there is no real cgroup PID accounting. Report Current=1 (the single
+	// guest) and Limit=0 (unlimited) instead of misusing the shim PID.
 	m := &cgroupsv2.Metrics{
 		Pids: &cgroupsv2.PidsStat{
-			Current: uint64(pid),
-			Limit:   uint64(pid),
+			Current: 1,
+			Limit:   0,
 		},
 	}
 

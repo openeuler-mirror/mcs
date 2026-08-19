@@ -37,7 +37,8 @@ PAUSE_IMAGE="${K3S_PAUSE_IMAGE:-rancher/mirrored-pause:3.6}"
 PAUSE_IMAGE_CANONICAL="${K3S_PAUSE_IMAGE_CANONICAL:-docker.io/rancher/mirrored-pause:3.6}"
 SOURCE_IMAGE_REF="${K3S_SOURCE_IMAGE_REF:-docker.io/local/mica-uniproton-app:xen-arm64-0.1}"
 CLOUD_KUBECTL_BIN="${K3S_CLOUD_KUBECTL_BIN:-kubectl}"
-CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-kubectl}"
+# See env.sh: call kubectl directly, no extra subcommand.
+CLOUD_KUBECTL_SUBCOMMAND="${K3S_CLOUD_KUBECTL_SUBCOMMAND-}"
 LOCAL_KUBECTL_BIN="${K3S_LOCAL_KUBECTL_BIN:-${K3S_LOCAL_SERVER_BIN:-kubectl}}"
 LOCAL_KUBECTL_SUBCOMMAND="${K3S_LOCAL_KUBECTL_SUBCOMMAND-kubectl}"
 LOCAL_KUBECONFIG="${K3S_LOCAL_KUBECONFIG:-}"
@@ -255,7 +256,12 @@ attach_input_requests_uname() {
 }
 
 has_uname_output() {
-    grep -Eq 'UniProton [0-9]|Zephyr'
+    # The RPMSG graft path can drop the first input byte after the banner,
+    # turning "uname" into "name". Treat a shell error reply as proof the
+    # command was delivered and answered (per the interaction guidance:
+    # assert "shell alive, command answered" — prompt or command-not-found —
+    # instead of chasing truncation with longer sleeps).
+    grep -Eq 'UniProton [0-9]|Zephyr|command not found'
 }
 
 validate_shell_output() {
@@ -279,9 +285,18 @@ validate_attach_output() {
             printf '%s\n' "$output" | has_hello_markers
             ;;
         auto|any)
+            # The hello marker is BOOT output ("Hello, UniProton!"), not a
+            # command response. When the attach input requests uname (the
+            # default), accepting the banner would pass a workload that never
+            # answered a single command — gate it exactly like the loose
+            # response fallback below, so hello-image runs must clear uname
+            # from K3S_ATTACH_INPUT (or set K3S_INTERACTION_EXPECT=hello).
             validate_shell_output "$output" ||
-                printf '%s\n' "$output" | has_hello_markers ||
-                { ! attach_input_requests_uname && printf '%s\n' "$output" | grep -Eq 'help|uname|Available commands'; }
+                { ! attach_input_requests_uname && printf '%s\n' "$output" | has_hello_markers; } ||
+                # Only match real command RESPONSES: with a TTY the input is
+                # echoed back verbatim, so matching the input words ("help"
+                # / "uname") would pass with zero product output.
+                { ! attach_input_requests_uname && printf '%s\n' "$output" | grep -Eq 'Available commands|command not found'; }
             ;;
         *)
             log_error "invalid K3S_INTERACTION_EXPECT: $EXPECT_MODE"
@@ -445,6 +460,15 @@ wait_for_pod_running() {
         kubectl_sh "describe pod '$POD_NAME' -n '$NAMESPACE'" || true
         return 1
     }
+    # A crash-looping pod also reports phase=Running; require zero restarts
+    # so a workload that dies immediately and is rebuilt by kubelet cannot
+    # pass the wait above.
+    local restarts
+    restarts=$(kubectl_sh "get pod '$POD_NAME' -n '$NAMESPACE' -o jsonpath='{.status.containerStatuses[0].restartCount}'" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$restarts" ] && [ "$restarts" != "0" ]; then
+        log_error "RTOS pod restarted ${restarts}x before stabilization (crash-looping workload still shows phase=Running)"
+        return 1
+    fi
 }
 
 make_attach_script() {
@@ -586,16 +610,24 @@ verify_delete_cleanup() {
     [ "$KEEP_POD" = "true" ] && return 0
     [ -n "$CONTAINER_ID" ] || return 0
 
+    # The edge force fallback exists only to leave the environment clean for
+    # the NEXT test run — if the product could not clean up on its own, the
+    # fallback runs but this verification FAILS (scan item 2.3: a fallback
+    # must never be counted as PASS, otherwise real cleanup regressions
+    # stay green).
+    cleanup_ok=true
+
     if delete_test_pod >/dev/null; then
         POD_CLEANUP_DONE="true"
         if [ "$DELETE_USED_FORCE" = "true" ]; then
             log_info "Kubernetes graceful delete timed out; force delete accepted for $NAMESPACE/$POD_NAME"
         fi
     elif [ "$EDGE_DELETE_FALLBACK" = "true" ]; then
-        log_info "Kubernetes delete did not complete; cleaning edge runtime objects for $NAMESPACE/$POD_NAME"
+        log_error "product cleanup incomplete: Kubernetes delete did not complete for $NAMESPACE/$POD_NAME (edge fallback applied, test fails)"
         cleanup_edge_pod_runtime_objects
         kubectl_sh "delete pod '$POD_NAME' -n '$NAMESPACE' --force --grace-period=0 --ignore-not-found=true" >/dev/null 2>&1 || true
         POD_CLEANUP_DONE="true"
+        cleanup_ok=false
     else
         log_error "RTOS pod was not deleted cleanly: $NAMESPACE/$POD_NAME"
         return 1
@@ -604,13 +636,14 @@ verify_delete_cleanup() {
     if ! wait_for_remote_edge "ctr -a '$EDGE_CONTAINERD_ADDR' -n '$EDGE_CONTAINERD_NS' tasks ls | awk -v id='$CONTAINER_ID' '\$1 == id {found=1} END {exit found ? 1 : 0}'" \
         "$((EDGE_CLEANUP_WAIT_SECONDS / 2))" 2; then
         if [ "$EDGE_DELETE_FALLBACK" = "true" ]; then
-            log_info "edge task still exists after pod deletion; cleaning runtime objects for $NAMESPACE/$POD_NAME"
+            log_error "product cleanup incomplete: edge task still exists after pod deletion (fallback applied, test fails): $CONTAINER_ID"
             cleanup_edge_pod_runtime_objects
         else
             log_error "edge containerd task still exists after pod deletion: $CONTAINER_ID"
             remote_output "$REMOTE_HOST" "ctr -a '$EDGE_CONTAINERD_ADDR' -n '$EDGE_CONTAINERD_NS' tasks ls" || true
             return 1
         fi
+        cleanup_ok=false
     fi
 
     wait_for_remote_edge "ctr -a '$EDGE_CONTAINERD_ADDR' -n '$EDGE_CONTAINERD_NS' tasks ls | awk -v id='$CONTAINER_ID' '\$1 == id {found=1} END {exit found ? 1 : 0}'" \
@@ -623,13 +656,14 @@ verify_delete_cleanup() {
     if ! wait_for_remote_edge "xl list | awk -v id='$CONTAINER_ID' 'NR>2 && \$1 == id {found=1} END {exit found ? 1 : 0}'" \
         "$((EDGE_CLEANUP_WAIT_SECONDS / 2))" 2; then
         if [ "$EDGE_DELETE_FALLBACK" = "true" ]; then
-            log_info "edge Xen domain still exists after pod deletion; cleaning runtime objects for $NAMESPACE/$POD_NAME"
+            log_error "product cleanup incomplete: edge Xen domain still exists after pod deletion (fallback applied, test fails): $CONTAINER_ID"
             cleanup_edge_pod_runtime_objects
         else
             log_error "edge Xen domain still exists after pod deletion: $CONTAINER_ID"
             remote_output "$REMOTE_HOST" "xl list" || true
             return 1
         fi
+        cleanup_ok=false
     fi
 
     wait_for_remote_edge "xl list | awk -v id='$CONTAINER_ID' 'NR>2 && \$1 == id {found=1} END {exit found ? 1 : 0}'" \
@@ -638,6 +672,11 @@ verify_delete_cleanup() {
         remote_output "$REMOTE_HOST" "xl list" || true
         return 1
     }
+
+    if [ "$cleanup_ok" != "true" ]; then
+        log_error "edge fallback was required during cleanup; treating as failure (see messages above)"
+        return 1
+    fi
 
     remote_output "$REMOTE_HOST" "ctr -a '$EDGE_CONTAINERD_ADDR' -n '$EDGE_CONTAINERD_NS' containers ls" >/dev/null || true
 }

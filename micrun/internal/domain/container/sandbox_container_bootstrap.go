@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -25,6 +26,14 @@ func (s *Sandbox) initContainers(ctx context.Context) error {
 			return fmt.Errorf("invalid mica container %s: %w", c.ID(), err)
 		}
 		if err := c.create(ctx); err != nil {
+			// Mirror the CreateContainer path (sandbox_container_mutation.go):
+			// registerClient may have created the guest domain and persisted
+			// state already, so the failed container must be torn down too —
+			// Sandbox.Delete only iterates the containers map and would never
+			// see it, leaking the live domain as an orphan.
+			if cleanupErr := s.cleanupFailedContainerCreate(ctx, c); cleanupErr != nil {
+				err = errors.Join(err, cleanupErr)
+			}
 			return err
 		}
 		if err := s.addContainer(c); err != nil {

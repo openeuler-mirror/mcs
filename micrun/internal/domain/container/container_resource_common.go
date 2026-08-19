@@ -83,6 +83,12 @@ func requiredCPUCount(capacity uint32) uint32 {
 	if capacity == 0 {
 		return 1
 	}
+	// Guard against overflow: when capacity is clamped to maxUint32 (from an
+	// extreme CPU quota), capacity+99 wraps to a small value, returning 0
+	// instead of the intended large count. Saturate before dividing.
+	if capacity > maxUint32-99 {
+		return maxUint32 / 100
+	}
 	return (capacity + 99) / 100
 }
 

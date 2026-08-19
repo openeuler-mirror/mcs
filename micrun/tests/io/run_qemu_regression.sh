@@ -128,6 +128,13 @@ EOF
   "
 }
 
+guest_has_test_image() {
+  remote "
+    ctr images ls | awk '{print \$1}' | grep -Fxq '${TEST_IMAGE}' ||
+    ctr images ls | awk '{print \$1}' | grep -Fxq '${QEMU_SOURCE_IMAGE_REF}'
+  " >/dev/null 2>&1
+}
+
 run_io_regression() {
   log "running adaptive IO regression against ${REMOTE}"
   TEST_REMOTE_HOST="$REMOTE" \
@@ -135,10 +142,43 @@ run_io_regression() {
   TEST_IMAGE="$TEST_IMAGE" \
   NERDCTL_NETWORK_MODE="$NERDCTL_NETWORK_MODE" \
   IMAGE_PROFILE="$IMAGE_PROFILE" \
+  MICRUN_IO_CASES="${MICRUN_IO_CASES:-}" \
   bash "${SCRIPT_DIR}/run_all_io_tests.sh"
 }
 
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --reuse)
+        export QEMU_SKIP_BUILD=true
+        export QEMU_SKIP_DEPLOY=true
+        export QEMU_SKIP_IMPORT=true
+        shift
+        ;;
+      --case|--cases)
+        if [ $# -lt 2 ]; then
+          echo "run_qemu_regression.sh: $1 requires a value" >&2
+          exit 2
+        fi
+        MICRUN_IO_CASES="${MICRUN_IO_CASES:+$MICRUN_IO_CASES,}$2"
+        shift 2
+        ;;
+      --help|-h)
+        echo "Usage: run_qemu_regression.sh [--reuse] [--case ID[,ID...]]"
+        exit 0
+        ;;
+      *)
+        MICRUN_IO_CASES="${MICRUN_IO_CASES:+$MICRUN_IO_CASES,}$1"
+        shift
+        ;;
+    esac
+  done
+  export MICRUN_IO_CASES="${MICRUN_IO_CASES:-}"
+}
+
 main() {
+  parse_args "$@"
+
   if ! remote "echo connected" >/dev/null 2>&1; then
     printf 'cannot connect to qemu guest via ssh: %s\n' "$REMOTE" >&2
     printf 'this script assumes tap0/qemu networking is already configured.\n' >&2
@@ -147,13 +187,37 @@ main() {
 
   log "connected to guest ${REMOTE}"
   ensure_containerd || true
-  cleanup_all
+  if [ -n "${MICRUN_IO_CASES}" ]; then
+    cleanup_between_tests
+  else
+    cleanup_all
+  fi
 
-  build_shim
-  deploy_shim
-  import_image_tar
+  if [ "${QEMU_SKIP_BUILD:-false}" = "true" ]; then
+    log "skipping shim build"
+  else
+    build_shim
+  fi
+  if [ "${QEMU_SKIP_DEPLOY:-false}" = "true" ]; then
+    log "skipping shim deploy"
+  else
+    deploy_shim
+  fi
+  if [ "${QEMU_SKIP_IMPORT:-false}" = "true" ]; then
+    log "skipping image import"
+  elif [ -n "${MICRUN_IO_CASES}" ] && guest_has_test_image; then
+    log "image already present, skipping import"
+  else
+    import_image_tar
+  fi
 
-  cleanup_all
+  # A new shim is invisible until containerd drops the old process. Always
+  # do a full cleanup after deploy. --reuse keeps the light path.
+  if [ "${QEMU_SKIP_DEPLOY:-false}" != "true" ] || [ -z "${MICRUN_IO_CASES}" ]; then
+    cleanup_all
+  else
+    cleanup_between_tests
+  fi
   ensure_containerd || true
   run_io_regression
 }

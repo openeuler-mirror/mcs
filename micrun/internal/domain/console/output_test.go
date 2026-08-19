@@ -32,6 +32,22 @@ func TestOutputNormalizerCompressesLineEndings(t *testing.T) {
 	}
 }
 
+func TestOutputNormalizerEmptyChunkDoesNotBreakCompression(t *testing.T) {
+	normalizer := NewOutputNormalizer(OutputConfig{CompressLineEndings: true})
+
+	r1 := normalizer.Normalize([]byte("\r\n"))
+	_ = normalizer.Normalize([]byte("")) // empty chunk between line endings
+	r3 := normalizer.Normalize([]byte("\r\n"))
+	got := append(append(r1, r3...), normalizer.Flush()...)
+
+	// "\r\n\r\n" with an empty chunk in between must still compress to "\r\n".
+	// An empty chunk carries no bytes and must not reset lastLineEnding.
+	want := []byte("\r\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("empty chunk broke compression: got %q, want %q", got, want)
+	}
+}
+
 func TestOutputNormalizerCompressesAcrossChunks(t *testing.T) {
 	normalizer := NewOutputNormalizer(OutputConfig{CompressLineEndings: true})
 	fragments := [][]byte{

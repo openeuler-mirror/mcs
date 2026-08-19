@@ -122,3 +122,78 @@ func TestDaemonStateReportsStoppedWhenDetectAfterStartFails(t *testing.T) {
 		t.Fatalf("unexpected stopped state: %+v", state)
 	}
 }
+
+// TestVerifyMicadProcessRejectsRecycledPID covers the PID-reuse wedge:
+// kill(pid, 0) succeeds on a recycled PID, but the process is not micad.
+// verifyMicadProcess must reject it so micadDetect reports "not running" and
+// setupMicad re-starts micad instead of trusting a stale pidfile.
+func TestVerifyMicadProcessRejectsRecycledPID(t *testing.T) {
+	original := procCommReader
+	defer func() { procCommReader = original }()
+
+	tests := []struct {
+		name    string
+		comm    string
+		readErr error
+		wantErr bool
+	}{
+		{name: "matching comm", comm: "micad", wantErr: false},
+		{name: "matching comm prefix", comm: "micad-worker", wantErr: false},
+		{name: "recycled pid (unrelated process)", comm: "containerd", wantErr: true},
+		{name: "empty comm", comm: "", wantErr: true},
+		{name: "unreadable comm (process gone)", comm: "", readErr: errors.New("open /proc/999/comm: no such file or directory"), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			procCommReader = func(pid int) (string, error) {
+				if pid != 999 {
+					t.Fatalf("pid = %d, want 999", pid)
+				}
+				return tt.comm, tt.readErr
+			}
+			err := verifyMicadProcess(999)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestDaemonStateStartsMicadWhenPidfilePointsAtRecycledPID simulates a stale
+// pidfile: detect() returns the PID-reuse error on the first call (micad
+// crashed, PID reused), then a real start succeeds and the second detect
+// returns the fresh micad pid. Without identity verification this path is
+// never taken — setupMicad would no-op and the shim would talk to a dead
+// daemon.
+func TestDaemonStateStartsMicadWhenPidfilePointsAtRecycledPID(t *testing.T) {
+	attempts := 0
+	started := false
+	state, err := daemonState(
+		func() (int, error) {
+			attempts++
+			if attempts == 1 {
+				// First detect: stale pidfile + recycled PID.
+				return 42, errors.New("pid 42 is not micad (comm=\"bash\"), pidfile is stale")
+			}
+			// Second detect: micad was re-started, fresh pid.
+			return 77, nil
+		},
+		func() error {
+			started = true
+			return nil
+		},
+		func() bool { return true },
+	)
+	if err != nil {
+		t.Fatalf("daemonState returned error: %v", err)
+	}
+	if !started {
+		t.Fatal("expected setupMicad to start micad after recycled-PID detect failure")
+	}
+	if state.Pid != 77 || state.State != DaemonRunning {
+		t.Fatalf("unexpected state: %+v", state)
+	}
+}

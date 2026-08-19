@@ -1,0 +1,28 @@
+#!/bin/sh
+# MicRun test guest setup — injected into the QEMU rootfs via an initrd
+# overlay (see qemu_prepare_test_initrd in qemu.sh).
+#
+# The standard openEuler-image ships with PermitRootLogin prohibit-password
+# (the OpenSSH default) and an empty root password. This runs as a systemd
+# oneshot before sshd, sets the root password and enables PermitRootLogin so
+# sshpass can reach the guest non-interactively. This is test credential
+# management, not a workaround for an image defect.
+#
+# Xen runtime directories (/var/lib/xen, /var/lib/xenstored) and the
+# xenconsoled tmpfiles ordering are fixed upstream in yocto-meta-openeuler
+# (xen-tools: order xen services after tmpfiles setup); the overlay
+# workarounds for them were removed once that fix entered the image.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# Pre-generated SHA-512 hash for password "micrun" (salt: micsalt).
+HASH='$6$micsalt$TwSh0EJL.HaUtJnOoEirmylqhd.QSWW.iHAh97ErfmpwnvDU7KFWE07q7h8PsROc9NzUEkhQc4JPKuBBmcHG90'
+
+if [ -f /etc/shadow ]; then
+    awk -F: -v h="$HASH" 'BEGIN{OFS=":"} /^root:/{$2=h} {print}' /etc/shadow > /etc/shadow.tmp \
+        && mv /etc/shadow.tmp /etc/shadow \
+        && chmod 600 /etc/shadow
+fi
+
+echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+echo 'PermitEmptyPasswords yes' >> /etc/ssh/sshd_config
+echo "[micrun-setup] root SSH access configured"

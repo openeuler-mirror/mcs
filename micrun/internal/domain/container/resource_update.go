@@ -49,9 +49,11 @@ func resourceUpdatePlan(ctx context.Context, exec ports.GuestExecutor, container
 	return []resourceUpdateStep{
 		{name: "cpu capacity", run: func() error { return updateCPUCapacity(ctx, exec, containerID, updated) }},
 		{name: "memory limit", run: func() error { return updateMemoryLimit(ctx, exec, containerID, updated) }},
-		{name: "cpu set", run: func() error { return updateCPUSet(ctx, exec, old.ClientCPUSet, updated.ClientCPUSet) }},
 		{name: "cpu weight", run: func() error { return updateCPUWeight(ctx, exec, containerID, updated) }},
+		// vCPU before cpuset: matching create-path order. Growing the set then
+		// pinning avoids transient over-constraint when the new pin is wider.
 		{name: "vcpu count", run: func() error { return updateVCPUCount(ctx, exec, containerID, updated) }},
+		{name: "cpu set", run: func() error { return updateCPUSet(ctx, exec, old.ClientCPUSet, updated.ClientCPUSet) }},
 	}
 }
 
@@ -108,7 +110,11 @@ func updateMemoryLimit(ctx context.Context, exec ports.GuestExecutor, containerI
 }
 
 func updateCPUSet(ctx context.Context, exec ports.GuestExecutor, oldSet, newSet string) error {
-	if oldSet == newSet {
+	// Empty newSet is ResourceChanges zero value for "cpuset not in this
+	// update" (linux_resource_update only sets ClientCPUSet when Cpus != "").
+	// Treating it as a clear would call UpdatePCPUConstraints("") and fail
+	// memory-only / shares-only live updates when a cpuset was previously set.
+	if newSet == "" || oldSet == newSet {
 		return nil
 	}
 	if err := requireResourceExecutor(exec); err != nil {

@@ -3,13 +3,95 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/env.sh"
+source "${SCRIPT_DIR}/../common/remote.sh"
 
-case "${TEST_REMOTE_HOST}" in
-    qemu-k3s|root@127.0.0.1|127.0.0.1)
-        QEMU_KEEP_RUNNING="${QEMU_KEEP_RUNNING:-true}" \
-        QEMU_GUEST_PASSWORD="${QEMU_GUEST_PASSWORD:-${TEST_REMOTE_PASSWORD:-}}" \
-        "${SCRIPT_DIR}/test-qemu-smoke"
-        ;;
-esac
+usage() {
+    cat <<'EOF'
+Usage: test-io-qemu [--reuse] [--skip-smoke] [--case ID[,ID...]] [case ...]
 
+  --case ID     run selected IO cases (0-14 or names such as auto-close)
+  --reuse       skip smoke, shim rebuild/deploy, and image import
+  --skip-smoke  skip the QEMU smoke preflight only
+
+Env:
+  MICRUN_IO_CASES=1,13   same as --case
+  QEMU_SKIP_SMOKE=true
+  QEMU_SKIP_BUILD=true
+  QEMU_SKIP_DEPLOY=true
+  QEMU_SKIP_IMPORT=true
+  IMAGE_PROFILE=shell    skip the profile probe (faster single-case runs)
+
+Examples:
+  tests/bin/test-io-qemu
+  tests/bin/test-io-qemu --reuse --case 5
+  tests/bin/test-io-qemu --case auto-close
+EOF
+}
+
+FORWARD_ARGS=()
+QEMU_REUSE="${QEMU_REUSE:-false}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --reuse)
+            QEMU_REUSE=true
+            shift
+            ;;
+        --skip-smoke)
+            export QEMU_SKIP_SMOKE=true
+            shift
+            ;;
+        --case|--cases)
+            if [ $# -lt 2 ]; then
+                echo "test-io-qemu: $1 requires a value" >&2
+                exit 2
+            fi
+            FORWARD_ARGS+=(--case "$2")
+            shift 2
+            ;;
+        *)
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ "$QEMU_REUSE" = "true" ]; then
+    export QEMU_SKIP_SMOKE=true
+    export QEMU_SKIP_BUILD=true
+    export QEMU_SKIP_DEPLOY=true
+    export QEMU_SKIP_IMPORT=true
+    export QEMU_REUSE=true
+fi
+
+# Selecting cases is a fast path: do not bounce QEMU via smoke.
+if [ "${#FORWARD_ARGS[@]}" -gt 0 ] || [ -n "${MICRUN_IO_CASES:-}" ]; then
+    export QEMU_SKIP_SMOKE="${QEMU_SKIP_SMOKE:-true}"
+fi
+
+if [ "${QEMU_SKIP_SMOKE:-}" != "true" ]; then
+    case "${TEST_REMOTE_HOST}" in
+        qemu-k3s|root@127.0.0.1|127.0.0.1)
+            # A live usernet guest already has the first-login password set.
+            # Restarting it drops that session and can pop SSH_ASKPASS.
+            if remote_can_connect || \
+               TEST_REMOTE_HOST=root@127.0.0.1 \
+               TEST_REMOTE_PORT="${TEST_REMOTE_PORT:-${QEMU_SSH_FWD_PORT:-10022}}" \
+               remote_can_connect; then
+                export QEMU_AUTO_START="${QEMU_AUTO_START:-false}"
+            fi
+            QEMU_KEEP_RUNNING="${QEMU_KEEP_RUNNING:-true}" \
+            QEMU_GUEST_PASSWORD="${QEMU_GUEST_PASSWORD:-${TEST_REMOTE_PASSWORD:-}}" \
+            "${SCRIPT_DIR}/test-qemu-smoke"
+            ;;
+    esac
+fi
+
+if [ "${#FORWARD_ARGS[@]}" -gt 0 ]; then
+    exec "${SCRIPT_DIR}/../io/run_qemu_regression.sh" "${FORWARD_ARGS[@]}"
+fi
 exec "${SCRIPT_DIR}/../io/run_qemu_regression.sh"

@@ -48,6 +48,9 @@ func ClientExists(ctx context.Context, id string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	if err := validateClientID(id); err != nil {
+		return false, err
+	}
 	return validSocketPath(clientSocketPath(id)), nil
 }
 

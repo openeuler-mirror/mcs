@@ -1,4 +1,11 @@
 #!/bin/bash
+
+# Never trigger GUI askpass prompts (SSH_ASKPASS / SUDO_ASKPASS): tests must
+# fail fast instead of waiting for a desktop password dialog. Every entry
+# point hardens itself so the guarantee does not depend on the caller's
+# environment (a desktop session exports SSH_ASKPASS_REQUIRE=prefer).
+unset SSH_ASKPASS SUDO_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
 # MicRun 测试工具函数库
 # 提供测试常用的辅助函数
 
@@ -116,7 +123,9 @@ get_container_status() {
     local name="$1"
     local host="${2:-$TEST_REMOTE_HOST}"
 
-    local status=$(remote "$host" "ctr task ls | grep $name | awk '{print \$2}'" | head -1)
+    # ctr task ls columns are TASK PID STATUS; the old column-2 grab returned the
+    # PID, so waiting for RUNNING always timed out.
+    local status=$(remote "$host" "ctr task ls | awk -v n=\"$name\" '\$1 == n {print \$3}'" | head -1)
     echo "${status:-NOT_FOUND}"
 }
 

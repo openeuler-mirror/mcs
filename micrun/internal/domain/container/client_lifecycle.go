@@ -6,6 +6,7 @@ import (
 	"micrun/internal/ports"
 	er "micrun/internal/support/errors"
 	log "micrun/internal/support/logger"
+	"micrun/internal/support/perf"
 	"micrun/internal/support/timex"
 )
 
@@ -27,18 +28,23 @@ func startClient(ctx context.Context, c *Container) error {
 	}
 
 	start := timex.Now(c.clock())
+	perfT := perf.Start(c.clock(), "start_client", c.id)
 	if err := c.sandbox.guestControl.Start(ctx, c.id); err != nil {
 		log.Errorf("startClient: Start failed: %v", err)
 		return err
 	}
+	perfT.Stage("guest_start")
 
 	if err := c.applyInitialCPUSettings(ctx); err != nil {
 		return err
 	}
+	perfT.Stage("cpu_settings")
 	if err := c.setupMemory(ctx); err != nil {
 		return err
 	}
+	perfT.Stage("memory_setup")
 	log.Infof("startClient: Start OK in %s", timex.Now(c.clock()).Sub(start))
+	perfT.Total()
 
 	return nil
 }
@@ -61,7 +67,11 @@ func (c *Container) applyInitialCPUSettings(ctx context.Context) error {
 		return fmt.Errorf("guest executor is nil")
 	}
 
+	// Read the mutable VCPUNum under containersLock to avoid racing with a
+	// concurrent UpdateContainer/setVcpuAffinity writer.
+	c.sandbox.containersLock.RLock()
 	targetVCPUs := c.config.VCPUNum
+	c.sandbox.containersLock.RUnlock()
 	if targetVCPUs == 0 {
 		targetVCPUs = 1
 	}
@@ -74,6 +84,20 @@ func (c *Container) applyInitialCPUSettings(ctx context.Context) error {
 		if xlErr := hc.SetVCPUCount(ctx, c.id, targetVCPUs); xlErr != nil {
 			return fmt.Errorf("failed to apply initial vcpu count for %s via mica: %w (xl also failed: %w)", c.id, err, xlErr)
 		}
+		// xl changed the vCPU count out of band; record it so subsequent
+		// resource comparisons (NeedUpdateVCPUs/ReadResource) reflect the
+		// actual hypervisor state.
+		c.guestExec.RecordVCPUCount(targetVCPUs)
+		// Only write back an explicitly configured VCPUNum. A zero value
+		// means "derive from quota/cpuset" (cfgVCPU.vcpus); pinning 1 here
+		// would silently change sandbox-level vCPU accounting even though
+		// the derivation still wants the quota-derived count.
+		c.sandbox.containersLock.Lock()
+		if c.config.VCPUNum != 0 {
+			c.config.VCPUNum = targetVCPUs
+			c.config.PCPUNum = int(targetVCPUs)
+		}
+		c.sandbox.containersLock.Unlock()
 	}
 
 	return nil
@@ -86,6 +110,12 @@ func createMicaClientConf(container *Container) (GuestClientConfig, error) {
 	if container.config == nil {
 		return GuestClientConfig{}, fmt.Errorf("container config is nil")
 	}
+
+	// Read mutable config fields (VCPUNum, Resources.CPU/Memory) under
+	// containersLock so a concurrent UpdateContainer/setVcpuAffinity writer
+	// cannot tear a string read (Cpus) or publish a nil→non-nil Resources
+	// pointer mid-read. Immutable fields are safe regardless.
+	container.sandbox.containersLock.RLock()
 	config := container.config
 	pedType := config.PedestalType
 	cpus := container.GetClientCPU()
@@ -95,21 +125,28 @@ func createMicaClientConf(container *Container) (GuestClientConfig, error) {
 		vcpus = 1
 	}
 	memMB := config.containerMaxMemMB()
-	if err := ensureFirmwarePath(config.ImageAbsPath); err != nil {
-		return GuestClientConfig{}, fmt.Errorf("firmware validation failed: %w", err)
-	}
+	cpuWeight := ShareToWeight(config.cpuShares())
+	maxVCPUs := config.MaxVcpuNum
+	memThreshold := config.MemoryThresholdMB
+	imagePath := config.ImageAbsPath
+	pedCfg := config.PedestalConf
+	container.sandbox.containersLock.RUnlock()
 
-	return GuestClientConfig{
+	conf := GuestClientConfig{
 		CPU:             cpus,
 		CPUCapacity:     cpuCap,
-		CPUWeight:       ShareToWeight(config.cpuShares()),
+		CPUWeight:       cpuWeight,
 		VCPUs:           vcpus,
-		MaxVCPUs:        config.MaxVcpuNum,
+		MaxVCPUs:        maxVCPUs,
 		MemoryMB:        memMB,
-		MemoryThreshold: config.MemoryThresholdMB,
+		MemoryThreshold: memThreshold,
 		Name:            container.id,
-		Path:            config.ImageAbsPath,
+		Path:            imagePath,
 		Ped:             pedType.String(),
-		PedCfg:          config.PedestalConf,
-	}, nil
+		PedCfg:          pedCfg,
+	}
+	if err := ensureFirmwarePath(conf.Path); err != nil {
+		return GuestClientConfig{}, fmt.Errorf("firmware validation failed: %w", err)
+	}
+	return conf, nil
 }

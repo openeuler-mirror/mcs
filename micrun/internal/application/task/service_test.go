@@ -127,6 +127,7 @@ func (f *fakeTask) ExitChan() chan struct{}                { return f.exitCh }
 func (f *fakeTask) IOExit()                                { f.ioExited = true }
 func (f *fakeTask) CanBeSandbox() bool                     { return f.canSandbox }
 func (f *fakeTask) IsCriSandbox() bool                     { return false }
+func (f *fakeTask) IsRecovered() bool                      { return false }
 func (f *fakeTask) Annotations() map[string]string         { return nil }
 func (f *fakeTask) IOManager() ports.IOManager             { return f.ioManager }
 func (f *fakeTask) SetIOManager(manager ports.IOManager)   { f.ioManager = manager }
@@ -134,6 +135,7 @@ func (f *fakeTask) AttachInfo() *ports.AttachInfo          { return f.attachInfo
 func (f *fakeTask) SetAttachInfo(info *ports.AttachInfo)   { f.attachInfo = info }
 func (f *fakeTask) SetStdinPipe(pipe io.WriteCloser)       { f.stdinPipe = pipe }
 func (f *fakeTask) SetAttached(attached bool) bool         { return false }
+func (f *fakeTask) IsAttached() bool                       { return false }
 
 type trackingWriteCloser struct {
 	closed chan struct{}
@@ -158,10 +160,24 @@ type fakeSandbox struct {
 	releaseKill   chan struct{}
 	updateStarted chan struct{}
 	releaseUpdate chan struct{}
+	startStarted  chan struct{}
+	releaseStart  chan struct{}
 }
 
-func (f *fakeSandbox) SandboxID() string                                   { return "sandbox-test" }
-func (f *fakeSandbox) Start(ctx context.Context) error                     { return nil }
+func (f *fakeSandbox) SandboxID() string { return "sandbox-test" }
+func (f *fakeSandbox) Start(ctx context.Context) error {
+	if f.startStarted != nil {
+		close(f.startStarted)
+	}
+	if f.releaseStart != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-f.releaseStart:
+		}
+	}
+	return nil
+}
 func (f *fakeSandbox) StartContainer(ctx context.Context, id string) error { return nil }
 func (f *fakeSandbox) Stop(ctx context.Context, force bool) error {
 	if f.stopStarted != nil {
@@ -240,6 +256,10 @@ func (f *fakeSandbox) UpdateContainer(ctx context.Context, id string, resources 
 	return f.updateErr
 }
 
+func (f *fakeSandbox) WaitContainerExit(ctx context.Context, containerID string) (int32, error) {
+	return 0, nil
+}
+
 type fakeTaskIOManager struct {
 	startCalled bool
 }
@@ -249,10 +269,15 @@ func (f *fakeTaskIOManager) Stop()                                           {}
 func (f *fakeTaskIOManager) StopWithoutClosingFIFOs()                        {}
 func (f *fakeTaskIOManager) Restart() error                                  { return nil }
 func (f *fakeTaskIOManager) RestartWithTTYs(io.WriteCloser, io.Reader) error { return nil }
-func (f *fakeTaskIOManager) IsRunning() bool                                 { return f.startCalled }
-func (f *fakeTaskIOManager) EventStream() ports.IOEventStream                { return &fakeTaskEventStream{} }
+func (f *fakeTaskIOManager) RestartWithSubscriber(io.WriteCloser, io.Reader, func(ports.IOEventStream)) error {
+	return nil
+}
+func (f *fakeTaskIOManager) IsRunning() bool                  { return f.startCalled }
+func (f *fakeTaskIOManager) EventStream() ports.IOEventStream { return &fakeTaskEventStream{} }
 
 type fakeTaskEventStream struct{}
+
+func (f *fakeTaskEventStream) Current() bool { return true }
 
 func (f *fakeTaskEventStream) SubscribeMany(eventTypes ...ports.IOEventType) ports.IOEventSubscriber {
 	return make(chan ports.IOEvent)
@@ -831,7 +856,7 @@ func TestNewServiceIgnoresNilOptions(t *testing.T) {
 	}
 }
 
-func TestServiceCloseIOReleasesRuntimeLockBeforeWaitingForStdinCloser(t *testing.T) {
+func TestServiceCloseIOUnsetsStdinWithoutClosingTTYAndCompletesImmediately(t *testing.T) {
 	svc := NewService(nil)
 	stdinClosed := make(chan struct{})
 	stdinCloser := make(chan struct{})
@@ -857,10 +882,12 @@ func TestServiceCloseIOReleasesRuntimeLockBeforeWaitingForStdinCloser(t *testing
 		})
 	}()
 
+	// The recorded StdinPipe is the guest TTY fd the copier still uses:
+	// CloseIO must NOT close it, and must not wait on StdinCloser.
 	select {
 	case <-stdinClosed:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not close stdin pipe")
+		t.Fatal("CloseIO closed the TTY fd; it must be left to the copier")
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	lockAcquired := make(chan struct{})
@@ -873,15 +900,13 @@ func TestServiceCloseIOReleasesRuntimeLockBeforeWaitingForStdinCloser(t *testing
 	select {
 	case <-lockAcquired:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("runtime lock remained held while CloseIO was waiting on stdinCloser")
+		t.Fatal("runtime lock remained held during CloseIO")
 	}
-
-	close(stdinCloser)
 
 	select {
 	case <-done:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not return after stdinCloser closed")
+		t.Fatal("CloseIO did not return immediately")
 	}
 }
 
@@ -917,6 +942,31 @@ func TestForceStopIfActiveToleratesMissingExitSignal(t *testing.T) {
 	}
 	if !taskHandle.exitTime.Equal(now) {
 		t.Fatalf("expected exit time %s, got %s", now, taskHandle.exitTime)
+	}
+}
+
+func TestForceStopIfActivePreservesKillPrewrite(t *testing.T) {
+	svc := NewService(nil)
+	now := time.Date(2026, 4, 27, 1, 2, 3, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	prewriteAt := now.Add(-time.Second)
+	taskHandle := &fakeTask{
+		id:         "force-stop-preserve-prewrite",
+		status:     task.Status_RUNNING,
+		exitStatus: 137,
+		exitTime:   prewriteAt,
+	}
+
+	svc.forceStopIfActive(taskHandle)
+
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("expected task status %s, got %s", task.Status_STOPPED, taskHandle.status)
+	}
+	if taskHandle.exitStatus != 137 {
+		t.Fatalf("expected preserved exit status 137, got %d", taskHandle.exitStatus)
+	}
+	if !taskHandle.exitTime.Equal(prewriteAt) {
+		t.Fatalf("expected preserved exit time %s, got %s", prewriteAt, taskHandle.exitTime)
 	}
 }
 
@@ -1339,6 +1389,63 @@ func TestServicePauseRefreshesTaskStatusAfterSandboxFailure(t *testing.T) {
 	}
 	if taskHandle.status != task.Status_STOPPED {
 		t.Fatalf("expected reconciled status %s, got %s", task.Status_STOPPED, taskHandle.status)
+	}
+}
+
+// A Kill that finalizes STOPPED while Pause's guest RPC is in flight must
+// suppress the TaskPaused event: TaskExit was already published, and a stale
+// pause event afterwards would resurrect a dead task for event consumers.
+func TestServicePauseSkipsEventWhenKilledDuringOperate(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{
+		id:     "task-pause-vs-kill",
+		status: task.Status_RUNNING,
+		exitCh: make(chan struct{}),
+	}
+	sandbox := &fakeSandbox{
+		pauseStarted: make(chan struct{}),
+		releasePause: make(chan struct{}),
+	}
+	runtime := &fakeRuntime{
+		tasks:   map[string]ports.Task{taskHandle.id: taskHandle},
+		sandbox: sandbox,
+	}
+
+	type pauseResult struct {
+		out SignalOutput
+		err error
+	}
+	done := make(chan pauseResult, 1)
+	go func() {
+		out, err := svc.Pause(context.Background(), runtime, SignalInput{ID: taskHandle.id})
+		done <- pauseResult{out, err}
+	}()
+
+	select {
+	case <-sandbox.pauseStarted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Pause did not reach the sandbox operate call")
+	}
+	// Simulate a concurrent Kill winning during the unlocked guest pause.
+	withTaskLock(runtime, func() {
+		taskHandle.SetStatus(task.Status_STOPPED)
+	})
+	close(sandbox.releasePause)
+
+	var res pauseResult
+	select {
+	case res = <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Pause did not return after sandbox pause completed")
+	}
+	if res.err != nil {
+		t.Fatalf("Pause error = %v", res.err)
+	}
+	if res.out.EmitEvent {
+		t.Fatal("Pause must not emit TaskPaused after a concurrent Kill finalized STOPPED")
+	}
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("status = %s, want STOPPED preserved", taskHandle.status)
 	}
 }
 
@@ -1902,5 +2009,440 @@ func TestServiceKillRegularTaskReconcilesStatusOnFailure(t *testing.T) {
 	}
 	if runtime.killed {
 		t.Fatal("runtime should not be marked killed when kill fails")
+	}
+}
+
+func TestForceStopIfActiveFinalizesPausing(t *testing.T) {
+	svc := NewService(nil)
+	now := time.Date(2026, 4, 27, 1, 2, 3, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	taskHandle := &fakeTask{
+		id:     "force-stop-pausing",
+		status: task.Status_PAUSING,
+		exitCh: make(chan struct{}),
+	}
+
+	svc.forceStopIfActive(taskHandle)
+
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("expected task status %s, got %s", task.Status_STOPPED, taskHandle.status)
+	}
+	if taskHandle.exitStatus != exitstatus.Interrupt() {
+		t.Fatalf("expected fabricated exit status %d, got %d", exitstatus.Interrupt(), taskHandle.exitStatus)
+	}
+	if !taskHandle.exitTime.Equal(now) {
+		t.Fatalf("expected exit time %s, got %s", now, taskHandle.exitTime)
+	}
+	if !taskHandle.ioExited {
+		t.Fatal("expected exit channel closed for a PAUSING task so Wait unblocks")
+	}
+}
+
+func TestRefreshTaskStatusForQueryFinalizesStoppedGuest(t *testing.T) {
+	svc := NewService(nil)
+	now := time.Date(2026, 4, 27, 1, 2, 3, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	taskHandle := &fakeTask{
+		id:     "refresh-stopped-guest",
+		status: task.Status_RUNNING,
+		exitCh: make(chan struct{}),
+	}
+	runtime := &fakeRuntime{
+		tasks:     map[string]ports.Task{taskHandle.id: taskHandle},
+		queryStat: task.Status_STOPPED,
+	}
+
+	svc.refreshTaskStatusForQuery(context.Background(), runtime, taskHandle)
+
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("expected status %s, got %s", task.Status_STOPPED, taskHandle.status)
+	}
+	if taskHandle.exitStatus != exitstatus.Interrupt() {
+		t.Fatalf("expected fabricated exit status %d, got %d", exitstatus.Interrupt(), taskHandle.exitStatus)
+	}
+	if !taskHandle.exitTime.Equal(now) {
+		t.Fatalf("expected exit time %s, got %s", now, taskHandle.exitTime)
+	}
+	if !taskHandle.ioExited {
+		t.Fatal("expected exit channel closed when the guest is reported stopped")
+	}
+}
+
+// A State query racing an in-flight Pause must not overwrite PAUSING with
+// RUNNING (the guest pause RPC has not landed yet): Pause's commit requires
+// PAUSING, so the overwrite would leave the task RUNNING while the guest is
+// suspended and the next Resume would skip as a no-op.
+func TestRefreshTaskStatusForQueryKeepsPausing(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{
+		id:     "refresh-pausing",
+		status: task.Status_PAUSING,
+		exitCh: make(chan struct{}),
+	}
+	runtime := &fakeRuntime{
+		tasks:     map[string]ports.Task{taskHandle.id: taskHandle},
+		queryStat: task.Status_RUNNING,
+	}
+
+	svc.refreshTaskStatusForQuery(context.Background(), runtime, taskHandle)
+
+	if taskHandle.status != task.Status_PAUSING {
+		t.Fatalf("expected status %s preserved, got %s", task.Status_PAUSING, taskHandle.status)
+	}
+}
+
+// A STOPPED report must still finalize a PAUSING task: the guest really died
+// mid-pause and Wait must unblock with exit info.
+func TestRefreshTaskStatusForQueryStopsPausingGuest(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{
+		id:     "refresh-pausing-stopped",
+		status: task.Status_PAUSING,
+		exitCh: make(chan struct{}),
+	}
+	runtime := &fakeRuntime{
+		tasks:     map[string]ports.Task{taskHandle.id: taskHandle},
+		queryStat: task.Status_STOPPED,
+	}
+
+	svc.refreshTaskStatusForQuery(context.Background(), runtime, taskHandle)
+
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("expected status %s, got %s", task.Status_STOPPED, taskHandle.status)
+	}
+	if !taskHandle.ioExited {
+		t.Fatal("expected exit channel closed when the guest died mid-pause")
+	}
+}
+
+func TestReconcileTaskStatusFinalizesStoppedGuest(t *testing.T) {
+	svc := NewService(nil)
+	now := time.Date(2026, 4, 27, 1, 2, 3, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	taskHandle := &fakeTask{
+		id:     "reconcile-stopped-guest",
+		status: task.Status_PAUSING,
+		exitCh: make(chan struct{}),
+	}
+	runtime := &fakeRuntime{
+		tasks:     map[string]ports.Task{taskHandle.id: taskHandle},
+		queryStat: task.Status_STOPPED,
+	}
+
+	svc.reconcileTaskStatus(context.Background(), runtime, taskHandle, false)
+
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("expected status %s, got %s", task.Status_STOPPED, taskHandle.status)
+	}
+	if taskHandle.exitStatus != exitstatus.Interrupt() {
+		t.Fatalf("expected fabricated exit status %d, got %d", exitstatus.Interrupt(), taskHandle.exitStatus)
+	}
+	if !taskHandle.ioExited {
+		t.Fatal("expected exit channel closed when reconcile observes a stopped guest")
+	}
+}
+
+func TestReconcileTaskStatusDetachesFromCanceledCallerContext(t *testing.T) {
+	svc := NewService(nil)
+	now := time.Date(2026, 4, 27, 1, 2, 3, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	taskHandle := &fakeTask{
+		id:     "reconcile-canceled-ctx",
+		status: task.Status_PAUSING,
+		exitCh: make(chan struct{}),
+	}
+	releaseQuery := make(chan struct{})
+	runtime := &fakeRuntime{
+		tasks:        map[string]ports.Task{taskHandle.id: taskHandle},
+		queryStat:    task.Status_STOPPED,
+		releaseQuery: releaseQuery,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.reconcileTaskStatus(ctx, runtime, taskHandle, false)
+	}()
+
+	// With the fix, reconcile detaches the context so the query blocks on
+	// releaseQuery instead of returning ctx.Err() immediately. Without the
+	// fix the canceled caller ctx makes QueryTaskStatus fail at once and
+	// reconcile returns before the guest status is ever read.
+	select {
+	case <-done:
+		t.Fatal("reconcileTaskStatus returned before query completed; " +
+			"it passed the canceled caller context to QueryTaskStatus")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseQuery)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconcileTaskStatus did not complete after query released")
+	}
+
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("expected status %s, got %s", task.Status_STOPPED, taskHandle.status)
+	}
+	if taskHandle.exitStatus != exitstatus.Interrupt() {
+		t.Fatalf("expected fabricated exit status %d, got %d", exitstatus.Interrupt(), taskHandle.exitStatus)
+	}
+	if !taskHandle.ioExited {
+		t.Fatal("expected exit channel closed when reconcile observes a stopped guest")
+	}
+}
+
+func TestServiceKillPreservesPreWriteWhenReconciledAfterClientTimeout(t *testing.T) {
+	svc := NewService(nil)
+	now := time.Date(2026, 4, 27, 1, 2, 3, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	taskHandle := &fakeTask{
+		id:     "task-kill-reconcile-detached",
+		status: task.Status_RUNNING,
+		exitCh: make(chan struct{}),
+	}
+	killStarted := make(chan struct{})
+	releaseKill := make(chan struct{})
+	releaseQuery := make(chan struct{})
+	runtime := &fakeRuntime{
+		tasks: map[string]ports.Task{taskHandle.id: taskHandle},
+		sandbox: &fakeSandbox{
+			killStarted: killStarted,
+			releaseKill: releaseKill,
+			killErr:     errors.New("kill failed"),
+		},
+		queryStat:    task.Status_STOPPED,
+		releaseQuery: releaseQuery,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.Kill(ctx, runtime, KillInput{ID: taskHandle.id, Signal: signalKill})
+	}()
+
+	<-killStarted
+	// Client times out while KillContainer runs. KillContainer uses a
+	// detached context so it continues and returns an error.
+	cancel()
+	close(releaseKill)
+
+	// Reconcile must block on releaseQuery (detached context) instead of
+	// failing immediately on the canceled caller ctx. Without the fix,
+	// reconcile would fail, leave the task RUNNING, and the pre-written 137
+	// would be cleared.
+	select {
+	case <-done:
+		t.Fatal("Kill returned before reconcile query completed; " +
+			"reconcile used the canceled caller context")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseQuery)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected Kill to return sandbox error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Kill did not return after reconcile completed")
+	}
+
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("expected status %s (reconciled), got %s", task.Status_STOPPED, taskHandle.status)
+	}
+	if taskHandle.exitStatus != exitstatus.FromSignal(signalKill) {
+		t.Fatalf("expected preserved pre-write exit status %d, got %d (pre-write was cleared)",
+			exitstatus.FromSignal(signalKill), taskHandle.exitStatus)
+	}
+}
+
+func TestServiceDeleteRejectsWhileStartInProgress(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{
+		id:         "task-start-delete-race",
+		status:     task.Status_CREATED,
+		canSandbox: true,
+		exitCh:     make(chan struct{}),
+	}
+	startStarted := make(chan struct{})
+	releaseStart := make(chan struct{})
+	runtime := &fakeRuntime{
+		shimPID: 42,
+		tasks:   map[string]ports.Task{taskHandle.id: taskHandle},
+		sandbox: &fakeSandbox{
+			startStarted: startStarted,
+			releaseStart: releaseStart,
+		},
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Start(context.Background(), runtime, StartInput{ID: taskHandle.id})
+		startDone <- err
+	}()
+
+	select {
+	case <-startStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not reach sandbox start")
+	}
+
+	_, err := svc.Delete(context.Background(), runtime, DeleteInput{ID: taskHandle.id})
+	if !errors.Is(err, er.ContainerNotReady) {
+		t.Fatalf("Delete during Start error = %v, want ContainerNotReady", err)
+	}
+	if _, ok := runtime.tasks[taskHandle.id]; !ok {
+		t.Fatal("Delete during Start must not remove the task from the runtime")
+	}
+
+	close(releaseStart)
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("Start returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not finish")
+	}
+
+	out, err := svc.Delete(context.Background(), runtime, DeleteInput{ID: taskHandle.id})
+	if err != nil {
+		t.Fatalf("Delete after Start error: %v", err)
+	}
+	if out.ContainerID != taskHandle.id {
+		t.Fatalf("Delete output = %+v", out)
+	}
+	if _, ok := runtime.tasks[taskHandle.id]; ok {
+		t.Fatal("task remained after successful Delete")
+	}
+}
+
+func TestServicePauseRejectsCreatedTask(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{id: "task-pause-created", status: task.Status_CREATED}
+	runtime := &fakeRuntime{
+		tasks:   map[string]ports.Task{taskHandle.id: taskHandle},
+		sandbox: &fakeSandbox{},
+	}
+
+	_, err := svc.Pause(context.Background(), runtime, SignalInput{ID: taskHandle.id})
+	if !errors.Is(err, er.ContainerNotRunning) {
+		t.Fatalf("Pause on CREATED error = %v, want ContainerNotRunning", err)
+	}
+	if taskHandle.status != task.Status_CREATED {
+		t.Fatalf("status after rejected Pause = %s, want CREATED", taskHandle.status)
+	}
+}
+
+func TestServiceKillStopSignalRejectsCreatedTask(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{id: "task-sigstop-created", status: task.Status_CREATED}
+	runtime := &fakeRuntime{
+		tasks:   map[string]ports.Task{taskHandle.id: taskHandle},
+		sandbox: &fakeSandbox{},
+	}
+
+	err := svc.Kill(context.Background(), runtime, KillInput{ID: taskHandle.id, Signal: signalStop})
+	if !errors.Is(err, er.ContainerNotRunning) {
+		t.Fatalf("SIGSTOP on CREATED error = %v, want ContainerNotRunning", err)
+	}
+	if taskHandle.status != task.Status_CREATED {
+		t.Fatalf("status after rejected SIGSTOP = %s, want CREATED", taskHandle.status)
+	}
+}
+
+func TestServiceResumeRejectsPausingTask(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{id: "task-resume-pausing", status: task.Status_PAUSING}
+	runtime := &fakeRuntime{
+		tasks:   map[string]ports.Task{taskHandle.id: taskHandle},
+		sandbox: &fakeSandbox{},
+	}
+
+	_, err := svc.Resume(context.Background(), runtime, SignalInput{ID: taskHandle.id})
+	if !errors.Is(err, er.ContainerNotPaused) {
+		t.Fatalf("Resume on PAUSING error = %v, want ContainerNotPaused", err)
+	}
+	if taskHandle.status != task.Status_PAUSING {
+		t.Fatalf("status after rejected Resume = %s, want PAUSING", taskHandle.status)
+	}
+}
+
+func TestServicePauseDoesNotClobberRunningAfterConcurrentResume(t *testing.T) {
+	svc := NewService(nil)
+	taskHandle := &fakeTask{id: "task-pause-resume-race", status: task.Status_RUNNING}
+	pauseStarted := make(chan struct{})
+	releasePause := make(chan struct{})
+	runtime := &fakeRuntime{
+		tasks: map[string]ports.Task{taskHandle.id: taskHandle},
+		sandbox: &fakeSandbox{
+			pauseStarted: pauseStarted,
+			releasePause: releasePause,
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Pause(context.Background(), runtime, SignalInput{ID: taskHandle.id})
+		done <- err
+	}()
+
+	select {
+	case <-pauseStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Pause did not reach sandbox pause")
+	}
+
+	// Simulate a concurrent Resume that already moved the task back to
+	// RUNNING after the guest was resumed, while Pause's guest RPC is still
+	// finishing. Pause must not overwrite RUNNING with PAUSED.
+	withTaskLock(runtime, func() {
+		taskHandle.SetStatus(task.Status_RUNNING)
+	})
+	close(releasePause)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Pause returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Pause did not finish")
+	}
+	if taskHandle.status != task.Status_RUNNING {
+		t.Fatalf("status after Pause raced with Resume = %s, want RUNNING", taskHandle.status)
+	}
+}
+
+// TestReconcileTaskStatusHoldTransitionalSemantics pins the contract that
+// fixes the Kill-steals-Pause race: with holdTransitional=true (the Kill
+// failure paths) an in-flight PAUSING survives a guest-reported RUNNING,
+// so the Pause owner still commits; with holdTransitional=false (the failed
+// Pause/Resume rollback) PAUSING rolls back to the guest truth.
+func TestReconcileTaskStatusHoldTransitionalSemantics(t *testing.T) {
+	newPausedWorld := func() (*fakeRuntime, *fakeTask) {
+		taskHandle := &fakeTask{id: "sb-hold", status: task.Status_PAUSING, exitCh: make(chan struct{})}
+		runtime := &fakeRuntime{
+			tasks:     map[string]ports.Task{taskHandle.id: taskHandle},
+			queryStat: task.Status_RUNNING, // guest not yet paused
+		}
+		return runtime, taskHandle
+	}
+
+	r1, h1 := newPausedWorld()
+	svc := &Service{}
+	svc.reconcileTaskStatus(context.Background(), r1, h1, true)
+	if h1.status != task.Status_PAUSING {
+		t.Fatalf("holdTransitional=true must preserve PAUSING (got %v); a failed Kill must not steal the Pause owner's commit", h1.status)
+	}
+
+	r2, h2 := newPausedWorld()
+	svc.reconcileTaskStatus(context.Background(), r2, h2, false)
+	if h2.status != task.Status_RUNNING {
+		t.Fatalf("holdTransitional=false must roll PAUSING back to the guest truth (got %v)", h2.status)
 	}
 }

@@ -70,7 +70,30 @@ func sameTaskIOReader(left, right io.Reader) bool {
 
 func cleanupTaskIOAfterStartFailure(runtime ports.TaskLifecycleRuntime, taskHandle ports.Task) {
 	stdin := snapshotTaskAndUnsetStdinPipe(runtime, taskHandle)
-	closeTaskIO(taskHandle.ID(), "stdin", stdin)
+	// Stop and clear the IO session manager if setupIO created one before
+	// markTaskRunning detected a concurrent state change (Kill/Delete set
+	// STOPPED). Without this the manager's event goroutine and FIFO fds leak.
+	//
+	// The copier owns the TTY stdin fd (setupIO hands streams.stdin to
+	// StartInitialSession, which stores it as copier.ttyIn and closes it via
+	// closeTTYs during Stop). recordTaskStdin stored the SAME *os.File on the
+	// task handle, so closing stdin separately after mgr.Stop() would double-
+	// close the fd and emit a spurious "file already closed" error. Only fall
+	// back to closing stdin directly when no IO manager owned it (e.g. a
+	// failure before StartInitialSession completed).
+	var managerOwnedStdin bool
+	withTaskLock(runtime, func() {
+		mgr := taskHandle.IOManager()
+		if mgr == nil || validation.IsNil(mgr) {
+			return
+		}
+		managerOwnedStdin = true
+		mgr.Stop()
+		taskHandle.SetIOManager(nil)
+	})
+	if !managerOwnedStdin {
+		closeTaskIO(taskHandle.ID(), "stdin", stdin)
+	}
 }
 
 func recordTaskStdin(runtime ports.TaskLifecycleRuntime, taskHandle ports.Task, stdin io.WriteCloser) {
@@ -84,6 +107,14 @@ func taskHasAttachPaths(taskHandle ports.Task) bool {
 func completeTaskWithoutAttach(taskHandle ports.Task) {
 	channels.Close(taskHandle.StdinCloser())
 	if taskHandle.IsCriSandbox() || !taskHandle.CanBeSandbox() {
+		return
+	}
+	if taskHandle.IsRecovered() {
+		// A recovered task lost its FIFO paths with the previous shim, but
+		// this Start just (re)booted its domain. Do not fabricate an
+		// immediate exit: the exit watcher monitors the guest domain and
+		// reports the real exit instead of a fake clean exit 0 followed by
+		// tearing down the just-started domain.
 		return
 	}
 	signalTaskIOExit(taskHandle)

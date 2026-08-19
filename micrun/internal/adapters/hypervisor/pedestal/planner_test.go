@@ -123,3 +123,19 @@ func TestCPUCapacityWithCpuset(t *testing.T) {
 		})
 	}
 }
+
+func TestBaremetalPlannerClampsHugeCPUShares(t *testing.T) {
+	shares := uint64(1) << 32 // wraps to 0 under a bare uint32() conversion
+	spec := &specs.Spec{
+		Linux: &specs.Linux{
+			Resources: &specs.LinuxResources{
+				CPU: &specs.LinuxCPU{Shares: &shares},
+			},
+		},
+	}
+
+	res := NewPedestalFacade(plannerTestPedestal{pedType: Baremetal}).PlanEssentialResources(spec)
+	if res.CPUWeight == nil || *res.CPUWeight != ^uint32(0) {
+		t.Fatalf("baremetal CPUWeight = %v, want clamped %d", valueOf(res.CPUWeight), ^uint32(0))
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"micrun/internal/support/validation"
 
 	"github.com/containerd/fifo"
+	"golang.org/x/sys/unix"
 )
 
 // Session manages an IO session for a container.
@@ -56,7 +57,101 @@ func (defaultFIFOManager) EnsureFIFO(path string) error {
 }
 
 func (defaultFIFOManager) OpenFIFO(ctx context.Context, path string, flags int) (io.ReadWriteCloser, error) {
+	// Open with a raw non-blocking fd when requested: containerd/fifo
+	// strips O_NONBLOCK and opens blocking, which would hang copier
+	// workers on a stalled reader forever — EAGAIN backpressure, the
+	// drain-until-EAGAIN loop and ctx cancellation would never fire. Go's
+	// os.File would also re-block via the netpoller, so the raw unix
+	// syscalls in nonBlockingFIFO are mandatory.
+	if flags&syscall.O_NONBLOCK != 0 {
+		return openNonBlockingFIFO(path, flags)
+	}
 	return fifo.OpenFifo(ctx, path, flags, 0)
+}
+
+// nonBlockingFIFO wraps a FIFO fd opened with O_NONBLOCK and issues raw
+// unix read/write syscalls, returning EAGAIN to the caller instead of
+// blocking (or re-blocking in the netpoller like os.File does).
+type nonBlockingFIFO struct {
+	fd int
+}
+
+func openNonBlockingFIFO(path string, flags int) (*nonBlockingFIFO, error) {
+	fd, err := unix.Open(path, flags|unix.O_CLOEXEC, 0)
+	if err == nil {
+		return &nonBlockingFIFO{fd: fd}, nil
+	}
+	// O_WRONLY|O_NONBLOCK fails with ENXIO when no reader exists yet.
+	// Detached ctr/nerdctl start generates FIFOs for later attach, so the
+	// writer must be obtained without waiting for a client. Hold a dummy
+	// read end only long enough to open the write fd, then drop it so a
+	// later write sees EPIPE until a real reader attaches.
+	if !isWriterOnlyFIFOFlags(flags) || !isENXIO(err) {
+		return nil, err
+	}
+	hold, holdErr := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if holdErr != nil {
+		return nil, err
+	}
+	fd, err = unix.Open(path, flags|unix.O_CLOEXEC, 0)
+	_ = unix.Close(hold)
+	if err != nil {
+		return nil, err
+	}
+	return &nonBlockingFIFO{fd: fd}, nil
+}
+
+func isWriterOnlyFIFOFlags(flags int) bool {
+	return flags&unix.O_ACCMODE == unix.O_WRONLY || flags&syscall.O_ACCMODE == syscall.O_WRONLY
+}
+
+func (f *nonBlockingFIFO) Read(p []byte) (int, error) {
+	if f == nil || f.fd < 0 {
+		return 0, io.ErrClosedPipe
+	}
+	n, err := unix.Read(f.fd, p)
+	// Honor the io.Reader contract: report the bytes already transferred even
+	// when an error accompanies them. Returning (0, err) after a partial read
+	// would silently drop those bytes; callers (e.g. writeOutputFIFOData) are
+	// written to advance by n before inspecting err.
+	if err != nil {
+		return n, err
+	}
+	if n == 0 {
+		return 0, io.EOF
+	}
+	return n, nil
+}
+
+func (f *nonBlockingFIFO) Write(p []byte) (int, error) {
+	if f == nil || f.fd < 0 {
+		return 0, io.ErrClosedPipe
+	}
+	n, err := unix.Write(f.fd, p)
+	// Honor the io.Writer contract: report partial progress alongside the
+	// error. Returning (0, err) when the syscall transferred n>0 bytes would
+	// make callers re-send the already-written prefix and duplicate output.
+	if err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+func (f *nonBlockingFIFO) Close() error {
+	if f == nil || f.fd < 0 {
+		return nil
+	}
+	err := unix.Close(f.fd)
+	f.fd = -1
+	return err
+}
+
+// Fd exposes the raw fd so the copier can register it with epoll.
+func (f *nonBlockingFIFO) Fd() uintptr {
+	if f == nil {
+		return ^uintptr(0)
+	}
+	return uintptr(f.fd)
 }
 
 var nonFileFIFOPathPrefixes = []string{
@@ -185,17 +280,35 @@ func (s *Session) stopLocked(mode sessionStopMode) {
 	if s.started {
 		if mode == sessionStopPreserveStreams {
 			log.Debugf("[SESSION] Stopping IO copier for %s (keeping FIFOs for reattach)", s.config.ContainerID)
-			s.copier.StopWithoutClosingFIFOs()
+			s.copier.StopWithoutClosingFIFOsAndWait()
 			s.preservedStreams = true
 		} else {
 			log.Infof("[SESSION] Stopping IO session for %s (started was %v)", s.config.ContainerID, s.started)
 			s.copier.Stop()
+			// copier.Stop() may have lost the beginStop CAS to a preserve-mode
+			// stop (stopFromWorker(false) on detach, or StopWithoutClosingFIFOs).
+			// In that case the FIFO/TTY fds are still open. A close-mode stop
+			// is a final teardown (task Delete / container exit): no reattach
+			// will follow and no later Stop is guaranteed, so take over the
+			// preserved fds now instead of leaking them until process exit.
+			if s.copier.StreamsPreservedOnStop() {
+				s.closeSupersededCopierStreams(s.copier, nil)
+			}
 			s.preservedStreams = false
 		}
-	} else if mode == sessionStopCloseStreams && s.preservedStreams {
-		log.Infof("[SESSION] Closing preserved IO streams for %s", s.config.ContainerID)
-		s.closeCopierStreams(s.copier)
-		s.preservedStreams = false
+	} else {
+		// Never-started or failed-start copier: its cancel-pipe fds are
+		// still open. Release them WITHOUT closing the TTY streams — the
+		// caller owns those handles (closing them here would break the
+		// console for a later retry/reattach).
+		if s.copier != nil {
+			s.copier.releaseResources()
+		}
+		if mode == sessionStopCloseStreams && s.preservedStreams {
+			log.Infof("[SESSION] Closing preserved IO streams for %s", s.config.ContainerID)
+			s.closeCopierStreams(s.copier)
+			s.preservedStreams = false
+		}
 	}
 
 	s.closeContext()
@@ -228,6 +341,15 @@ func (s *Session) Restart() error {
 // handles may be closed. If freshTTYIn or freshTTYOut are provided, they will
 // be used instead of the handles from the active session runtime state.
 func (s *Session) RestartWithTTYs(freshTTYIn io.WriteCloser, freshTTYOut io.Reader) error {
+	return s.RestartWithSubscriber(freshTTYIn, freshTTYOut, nil)
+}
+
+// RestartWithSubscriber is like RestartWithTTYs but calls onNewBus after the
+// event bus is renewed and BEFORE the copier starts. This closes the window
+// in which a self-stopping control event (ExitCommand/Detach) published by
+// the freshly-started copier could be permanently lost because no subscriber
+// was registered on the new bus yet.
+func (s *Session) RestartWithSubscriber(freshTTYIn io.WriteCloser, freshTTYOut io.Reader, onNewBus func(ports.IOEventStream)) error {
 	var restartErr error
 	s.withLock(func() {
 		if err := s.requireStoppedAndActiveParent(); err != nil {
@@ -240,12 +362,12 @@ func (s *Session) RestartWithTTYs(freshTTYIn io.WriteCloser, freshTTYOut io.Read
 			return
 		}
 
-		restartErr = s.startSessionLocked(sessionStartRequest{
+		restartErr = s.startSessionLockedWithHook(sessionStartRequest{
 			freshTTYs:   freshTTYs,
 			contextMode: sessionContextAlwaysRenew,
 			beforeLog:   "Restarting",
 			successLog:  "Restarted",
-		})
+		}, onNewBus)
 	})
 	if restartErr != nil {
 		return restartErr
@@ -268,6 +390,10 @@ type sessionStartRequest struct {
 }
 
 func (s *Session) startSessionLocked(request sessionStartRequest) error {
+	return s.startSessionLockedWithHook(request, nil)
+}
+
+func (s *Session) startSessionLockedWithHook(request sessionStartRequest, onNewBus func(ports.IOEventStream)) error {
 	if request.beforeLog != "" {
 		log.Infof("[SESSION] %s IO session for %s", request.beforeLog, s.config.ContainerID)
 	}
@@ -275,6 +401,16 @@ func (s *Session) startSessionLocked(request sessionStartRequest) error {
 		return fmt.Errorf("failed to create FIFOs: %w", err)
 	}
 	s.prepareStartContext(request.contextMode)
+	// Call the subscriber hook AFTER the new bus is created (renewContext)
+	// but BEFORE the copier starts publishing. Without this ordering, a
+	// self-stopping control event published by the copier's first read
+	// could be permanently lost because no subscriber was registered yet.
+	// Read ctx/bus directly: we already hold s.mu (this runs inside
+	// startSessionLockedWithHook under s.withLock), so calling the
+	// locking eventStream() would self-deadlock.
+	if onNewBus != nil {
+		onNewBus(&eventStream{ctx: s.ctx, bus: s.eventBus, session: s})
+	}
 	if err := s.startWithTTYSet(request.freshTTYs); err != nil {
 		return err
 	}
@@ -294,7 +430,16 @@ func (s *Session) prepareStartContext(mode sessionContextMode) {
 
 func (s *Session) requireStoppedAndActiveParent() error {
 	if s.started {
-		return fmt.Errorf("already started")
+		if s.copier.Stopped() {
+			// The copier died from its own worker (fatal IO error / guest
+			// EOF) and nothing cleared `started`. Converge the flag so a
+			// reattach can restart the session instead of being rejected
+			// with "already started" while IO is dead (scan item 2.4).
+			log.Infof("[SESSION] Copier for %s died from a worker; allowing session restart", s.config.ContainerID)
+			s.started = false
+		} else {
+			return fmt.Errorf("already started")
+		}
 	}
 	if s.parentCtx.Err() != nil {
 		return fmt.Errorf("session context canceled: %w", s.parentCtx.Err())
@@ -304,10 +449,24 @@ func (s *Session) requireStoppedAndActiveParent() error {
 
 func (s *Session) startWithTTYSet(freshTTYs freshTTYSet) error {
 	previousCopier := s.copier
-	previousPreserved := s.preservedStreams
+	// A worker-side preserve-stop (detach detected in the copier itself)
+	// records the state on the copier, not on the session flag: the detach
+	// event may still be in flight when a reattach restarts the session, so
+	// the flag was never set. Treat the copier's own record as authoritative
+	// too, or the previous FIFO/TTY fds leak when the restart only releases
+	// the cancel-pipe.
+	previousPreserved := s.preservedStreams || (previousCopier != nil && previousCopier.StreamsPreservedOnStop())
 
 	streams, err := s.openFIFOs()
 	if err != nil {
+		// A preserved-streams stop left the previous copier's FIFO/TTY fds
+		// open for reattach. If the restart fails here, those fds would
+		// leak until the next successful restart or Delete. Close them now
+		// and clear the preserved flag so the session is in a clean state.
+		if previousPreserved {
+			s.closeSupersededCopierStreams(previousCopier, nil)
+			s.preservedStreams = false
+		}
 		return err
 	}
 
@@ -318,6 +477,19 @@ func (s *Session) startWithTTYSet(freshTTYs freshTTYSet) error {
 	if err := nextCopier.Start(); err != nil {
 		err = fmt.Errorf("failed to start copier: %w", err)
 		streams.closeAll()
+		// Release the failed copier's cancel-pipe fds (its TTYs are the
+		// caller's handles and are not closed by releaseResources).
+		nextCopier.releaseResources()
+		// A preserved-streams stop left the previous copier's FIFO/TTY fds
+		// open for reattach. If the restart fails at copier start (after a
+		// successful FIFO open), those fds would leak until the next
+		// successful restart or Delete — the same hazard the openFIFOs
+		// failure branch handles above. Close them now and clear the
+		// preserved flag so the session is left in a clean state.
+		if previousPreserved {
+			s.closeSupersededCopierStreams(previousCopier, nil)
+			s.preservedStreams = false
+		}
 		return err
 	}
 
@@ -327,8 +499,19 @@ func (s *Session) startWithTTYSet(freshTTYs freshTTYSet) error {
 		log.Infof("[SESSION] Updated runtime TTY handles for %s with fresh TTY", s.config.ContainerID)
 	}
 	if previousPreserved {
+		// The previous copier was already stopped by StopWithoutClosingFIFOs
+		// (its cancel-pipe is released); only its FIFO/TTY handles remain
+		// to be closed here.
 		s.closeSupersededCopierStreams(previousCopier, s.copier)
 		s.preservedStreams = false
+	} else if previousCopier != nil {
+		// First start, or start after a full-stop: the previous copier was
+		// never started (NewSession reserved it) or already fully stopped.
+		// Its cancel-pipe fds are still open — release them. releaseResources
+		// does not touch FIFO/TTY handles (those are session/caller owned or
+		// already closed by the full stop). beginStop is a CAS, so this is a
+		// no-op when the copier was already stopped.
+		previousCopier.releaseResources()
 	}
 
 	return nil
@@ -360,7 +543,9 @@ func (s *Session) copierConfig() Config {
 }
 
 func (s *Session) eventStream() *eventStream {
-	return &eventStream{ctx: s.ctx, bus: s.eventBus}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &eventStream{ctx: s.ctx, bus: s.eventBus, session: s}
 }
 
 // EventStream returns a subscription view for the session's current IO event bus.
@@ -580,11 +765,19 @@ func sameIOHandle(left, right any) bool {
 	return leftValue.Interface() == rightValue.Interface()
 }
 
-// IsRunning returns true if the IO session is currently running.
+// IsRunning returns true if the IO session is currently pumping. The
+// started flag alone is not enough: a copier that died from its own worker
+// (fatal IO error, guest EOF — stopFromWorker) clears nothing on the
+// session, so a session that can no longer deliver IO must not claim to
+// run — EnsureAttach would no-op and reattach would stay silent until
+// Delete (scan item 2.4). Session liveness therefore requires a live
+// copier.
 func (s *Session) IsRunning() bool {
 	running := lockutil.WithLockValue(&s.mu, func() bool {
-		log.Debugf("[SESSION] IsRunning for %s: %v", s.config.ContainerID, s.started)
-		return s.started
+		alive := s.started && !s.copier.Stopped()
+		log.Debugf("[SESSION] IsRunning for %s: %v (started=%v copierStopped=%v)",
+			s.config.ContainerID, alive, s.started, s.copier.Stopped())
+		return alive
 	})
 	return running
 }
@@ -645,8 +838,19 @@ func ensureFIFO(path string) error {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	// Create FIFO
+	// Create FIFO. Concurrent ensure (or containerd) may create it between
+	// Stat and Mkfifo; treat EEXIST as success when the path is already a FIFO.
 	if err := syscall.Mkfifo(path, 0600); err != nil {
+		if errors.Is(err, syscall.EEXIST) {
+			stat, statErr := os.Stat(path)
+			if statErr == nil && stat.Mode()&os.ModeNamedPipe != 0 {
+				return nil
+			}
+			if statErr != nil {
+				return fmt.Errorf("failed to create FIFO %s: %w (stat after EEXIST: %v)", path, err, statErr)
+			}
+			return fmt.Errorf("existing file %s is not a FIFO", path)
+		}
 		return fmt.Errorf("failed to create FIFO %s: %w", path, err)
 	}
 

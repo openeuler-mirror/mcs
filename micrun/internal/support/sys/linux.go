@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	log "micrun/internal/support/logger"
 )
@@ -21,34 +20,31 @@ func KoLoaded(name string) (bool, error) {
 	return ok, nil
 }
 
-var (
-	loaded   map[string]struct{}
-	loadOnce sync.Once
-	loadErr  error
-)
-
+// loadKoList reads /proc/modules fresh on every call. The kernel module
+// list is dynamic (modules can be loaded/unloaded at runtime), so caching
+// the snapshot indefinitely would report stale results after FindAndLoadKo
+// loads a module. KoLoaded/FindAndLoadKo are called rarely (boot-time
+// detection), so a fresh procfs read is cheap.
 func loadKoList() (map[string]struct{}, error) {
-	loadOnce.Do(func() {
-		f, err := os.Open("/proc/modules")
-		if err != nil {
-			loadErr = fmt.Errorf("cannot open /proc/modules: %w", err)
-			return
-		}
-		defer f.Close()
+	f, err := os.Open("/proc/modules")
+	if err != nil {
+		return nil, fmt.Errorf("cannot open /proc/modules: %w", err)
+	}
+	defer f.Close()
 
-		loaded = make(map[string]struct{})
-		sc := bufio.NewScanner(f)
-
-		for sc.Scan() {
-			fields := strings.Fields(sc.Text())
-			if len(fields) == 0 {
-				continue
-			}
-			loaded[fields[0]] = struct{}{}
+	result := make(map[string]struct{})
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) == 0 {
+			continue
 		}
-		loadErr = sc.Err()
-	})
-	return loaded, loadErr
+		result[fields[0]] = struct{}{}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func FindAndLoadKo(name string) error {
@@ -103,10 +99,20 @@ func expandKernelPath(path string) string {
 	return path
 }
 
+// moduleExtensions lists the on-disk suffixes a kernel module file may carry,
+// in lookup order. Modern distributions (recent Debian/Ubuntu/Fedora/Arch)
+// ship modules compressed with zstd/xz/gzip; matching only the bare ".ko"
+// suffix (as the previous implementation did) silently misses every module on
+// such kernels and leaves the manual insmod fallback dead. kmod decompresses
+// these transparently, so the compressed path can be handed to insmod verbatim.
+var moduleExtensions = []string{".ko", ".ko.zst", ".ko.xz", ".ko.gz"}
+
 func findModuleFile(dirPath, moduleName string) string {
-	exactPath := filepath.Join(dirPath, moduleName+".ko")
-	if _, err := os.Stat(exactPath); err == nil {
-		return exactPath
+	for _, ext := range moduleExtensions {
+		exactPath := filepath.Join(dirPath, moduleName+ext)
+		if _, err := os.Stat(exactPath); err == nil {
+			return exactPath
+		}
 	}
 
 	foundPath := ""
@@ -114,12 +120,12 @@ func findModuleFile(dirPath, moduleName string) string {
 		if err != nil {
 			return nil
 		}
-		if !info.IsDir() && strings.HasSuffix(info.Name(), ".ko") {
-			baseName := strings.TrimSuffix(info.Name(), ".ko")
-			if baseName == moduleName {
-				foundPath = path
-				return filepath.SkipAll
-			}
+		if info.IsDir() {
+			return nil
+		}
+		if baseName, ok := moduleBaseName(info.Name()); ok && baseName == moduleName {
+			foundPath = path
+			return filepath.SkipAll
 		}
 		return nil
 	}); err != nil {
@@ -127,4 +133,15 @@ func findModuleFile(dirPath, moduleName string) string {
 	}
 
 	return foundPath
+}
+
+// moduleBaseName strips a recognized module-file extension from name and
+// reports whether name was a module file at all.
+func moduleBaseName(name string) (string, bool) {
+	for _, ext := range moduleExtensions {
+		if strings.HasSuffix(name, ext) {
+			return strings.TrimSuffix(name, ext), true
+		}
+	}
+	return "", false
 }

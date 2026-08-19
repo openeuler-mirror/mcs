@@ -56,7 +56,6 @@ func TestSandboxRestoreNormalizesRuntimeFields(t *testing.T) {
 	assert.NotNil(t, sandbox.containers)
 	assert.NotNil(t, sandbox.resManager.ContainerCPUSet)
 	assert.NotNil(t, sandbox.resManager.ContainerVCPUs)
-	assert.NotNil(t, sandbox.wg)
 
 	network, ok := sandbox.network.(*NetworkConfig)
 	require.True(t, ok, "network should be restored as *NetworkConfig")

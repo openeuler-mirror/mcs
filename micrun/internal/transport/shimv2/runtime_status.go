@@ -32,7 +32,7 @@ func taskStatusFromContainerState(state cntr.StateString) task.Status {
 		return task.Status_RUNNING
 	case cntr.StatePaused:
 		return task.Status_PAUSED
-	case cntr.StateStopped:
+	case cntr.StateStopped, cntr.StateDown:
 		return task.Status_STOPPED
 	default:
 		return task.Status_UNKNOWN

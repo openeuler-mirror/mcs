@@ -16,7 +16,7 @@ func TestValidContainerID(t *testing.T) {
 		{
 			name:    "too long",
 			id:      "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmno",
-			wantErr: "validation error: container ID: exceeds mica limit (66 characters)",
+			wantErr: "validation error: container ID: exceeds mica limit (65 characters)",
 		},
 		{
 			name:    "invalid format",

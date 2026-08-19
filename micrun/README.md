@@ -12,8 +12,11 @@ MicRun 解决的是“如何把 RTOS 作为云原生工作负载管理”这个�
 - 保持 shim 崩溃后的状态恢复能力
 - 保持 `ctr` / `nerdctl` / `k3s` 的基本交互和 IO 语义
 
-当前主路径已经过本地单测、QEMU `test-io-qemu` 回归和 K3s 云边/交互测试
-验证。
+当前主路径已经过本地单测（-race）、QEMU 三套件（smoke / lifecycle 13
+用例 / features 15 用例）与 K3s 场景套件（云边、kubectl attach 交互、
+OTA 滚动升级）的交付级验证；端到端性能与阶段耗时基线见
+`docs/internals/testing.md`。Zephyr 的镜像/固件制作流程已就绪，端到端
+验证记录目前为 UniProton。
 
 ## 当前架构
 
@@ -69,7 +72,6 @@ internal/adapters
 ```text
 micrun/
 ├── main.go
-├── definitions/                 # 注解、路径、常量
 ├── internal/
 │   ├── bootstrap/               # 进程入口、早期命令、shim CLI/logging 启动边界
 │   ├── transport/shimv2/        # shimv2 入口与 transport 适配
@@ -84,11 +86,11 @@ micrun/
 
 ## 当前状态
 
-已完成：
+当前主干形态：
 
 - `shimv2 -> application -> domain -> adapters/ports` 主干分层
-- `main -> bootstrap -> shimv2` 启动边界已显式化，早期命令与日志上下文不再堆在 `main.go`
-- `application/runtime` 统一装配 task/lifecycle/attach/recovery 服务图，并校验服务图完整性和引用一致性；`lifecycle/task` 不再在包内隐式自装配依赖
+- `main -> bootstrap -> shimv2` 启动边界显式化，`main.go` 不堆叠命令与日志上下文
+- `application/runtime` 统一装配 task/lifecycle/attach/recovery 服务图，并校验服务图完整性和引用一致性；`lifecycle/task` 不在包内隐式自装配依赖
 - `runtime.Options` 是 application 层的单一装配入口，负责把共享 `IOSessionFactory` 与 `Clock` 传给整张服务图
 - `libmica` 职责拆分
 - `StateStore` 权威状态源与 legacy `state.json` 兼容迁移
@@ -136,7 +138,7 @@ K3s 回归已纳入统一测试项目。已有 K3s 环境时可直接跑类别�
 
 ```bash
 tests/run_all_tests.sh k3s
-tests/run_all_tests.sh k3s K3S-008
+tests/run_all_tests.sh k3s interaction
 tests/bin/test-k3s-cloud-edge
 tests/bin/test-k3s-interaction
 ```

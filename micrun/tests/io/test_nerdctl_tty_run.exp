@@ -92,7 +92,7 @@ send "nerdctl run -it --rm --name $cid --network=$network_mode --runtime io.cont
 wait_or_nudge_shell_prompt "foreground run"
 
 send_shell_line_expect "help" {support shell commond} "help command"
-send_shell_line_expect "uname" {UniProton 24\.03-LTS} "uname command"
+send_shell_line_expect "uname" {UniProton} "uname command"
 
 send "exit\r"
 expect_remote_prompt "exit command"

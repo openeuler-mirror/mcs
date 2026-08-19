@@ -6,6 +6,7 @@ import (
 	"micrun/internal/domain/console"
 	"micrun/internal/support/contextx"
 	"micrun/internal/support/logger"
+	"micrun/internal/support/panicsafe"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,11 @@ type Copier struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
+	// eagainWarnCount throttles the per-EAGAIN Warn below (slow attach
+	// readers retry every 10ms; unthrottled that is ~100 WARN lines per
+	// second per output stream). Only every 100th retry stays at Warn.
+	eagainWarnCount uint32
+
 	// FIFOs
 	stdinFifo  io.ReadCloser
 	stdoutFIFO io.WriteCloser
@@ -33,6 +39,13 @@ type Copier struct {
 
 	// Control
 	stopped atomicBool
+	// streamsPreservedOnStop records that the winning stop path kept the
+	// FIFO/TTY fds open (stopFromWorker(false) or the preserve-mode Stop
+	// variants). A Session.stopLocked(CloseStreams) that loses the beginStop
+	// CAS to such a path must NOT mark preservedStreams=false: the fds are
+	// still open and would otherwise be orphaned forever. sync/atomic for a
+	// lock-free read after Stop() returns.
+	streamsPreservedOnStop atomic.Bool
 
 	// Input interpreter owns user-facing console semantics.
 	input *console.InputInterpreter
@@ -43,8 +56,9 @@ type Copier struct {
 	// TTY ready flag (to publish TTYReady event only once)
 	ttyReadyPublished atomicBool
 
-	ttyWaiter   epollWaiter
-	stdinWaiter epollWaiter
+	ttyWaiter    epollWaiter
+	ttyErrWaiter epollWaiter // dedicated waiter for stderr in split-output mode
+	stdinWaiter  epollWaiter
 
 	// EOF state for stdin (to handle detached mode where FIFO has no writer initially)
 	stdinEOFSeen bool
@@ -52,6 +66,11 @@ type Copier struct {
 	// Track whether we've received data from attach client
 	// This helps distinguish between "initial EOF, waiting for attach" vs "EOF after data, attach done"
 	attachClientConnected bool
+
+	// liveClientPublished is true while a live stdin writer has been
+	// announced. It is cleared when that writer goes away so a later
+	// `ctr task attach` (same FIFOs, no second Start) can announce again.
+	liveClientPublished atomic.Bool
 
 	// stdinActivityGeneration increments whenever new stdin data reaches the copier.
 	// It allows tests and logs to correlate "input was sent" with "output followed".
@@ -63,6 +82,13 @@ type Copier struct {
 	// Echo suppression (to avoid double echo when both PTY and RTOS echo)
 	suppressEcho   bool
 	echoSuppressor *console.EchoSuppressor
+
+	// stopDone is closed once stop teardown (wait + waiter close, and for
+	// stopFromWorker also stream close) has finished. External Stop paths
+	// that lose the beginStop CAS still wait on this channel so reattach /
+	// unmount cannot race with lingering workers.
+	stopDone     chan struct{}
+	stopDoneOnce sync.Once
 }
 
 type atomicBool struct {
@@ -97,10 +123,12 @@ func NewCopier(config Config) *Copier {
 		ctx:            ctx,
 		cancel:         cancel,
 		ttyWaiter:      newEpollWaiter(pipe[0], pipe[1], true),
+		ttyErrWaiter:   newEpollWaiter(pipe[0], -1, true),
 		stdinWaiter:    newEpollWaiter(pipe[0], -1, false),
 		input:          console.NewInputInterpreter(console.InputConfig{Terminal: config.Terminal, ExecMode: config.ExecMode, DetachKeys: config.DetachKeys}),
 		suppressEcho:   config.Terminal,
 		echoSuppressor: console.NewEchoSuppressor(256),
+		stopDone:       make(chan struct{}),
 	}
 }
 
@@ -125,10 +153,13 @@ func (c *Copier) publishEvent(typ EventType, err error) {
 func (c *Copier) Start() error {
 	plan := planCopierStart(c.stdinFifo, c.stdoutFIFO, c.stderrFIFO, c.ttyIn, c.ttyOut, c.ttyErr)
 
+	// Copier workers run under a panic guard: a panic in one pump must not
+	// kill the shim (and with it every managed domain). wg.Done runs inside
+	// the worker's own defers, so Stop still unblocks after a lost worker.
 	if plan.stdinToTTY {
 		log.Debugf("[IO] Starting stdin→TTY copier goroutine for %s", c.config.ContainerID)
 		c.wg.Add(1)
-		go c.copyStdin()
+		panicsafe.Go("io copier stdin", c.copyStdin)
 	} else {
 		log.Debugf("[IO] Skipping stdin→TTY copier for %s: StdinFIFO=%q, ttyIn=%v", c.config.ContainerID, c.config.StdinFIFO, c.ttyIn != nil)
 	}
@@ -136,14 +167,14 @@ func (c *Copier) Start() error {
 	if plan.unifiedOutput {
 		log.Infof("[IO] Copier started for %s (unified stdout/stderr, fd=%d)", c.config.ContainerID, plan.unifiedOutputFD)
 		c.wg.Add(1)
-		go c.copyStdoutErrUnified()
+		panicsafe.Go("io copier unified output", c.copyStdoutErrUnified)
 		return nil
 	}
 
 	if plan.stdoutToFIFO {
 		log.Debugf("[IO] Starting TTY→stdout copier goroutine for %s", c.config.ContainerID)
 		c.wg.Add(1)
-		go c.copyStdout()
+		panicsafe.Go("io copier stdout", c.copyStdout)
 	} else {
 		log.Debugf("[IO] Skipping TTY→stdout copier for %s: StdoutFIFO=%q, ttyOut=%v", c.config.ContainerID, c.config.StdoutFIFO, c.ttyOut != nil)
 	}
@@ -151,7 +182,7 @@ func (c *Copier) Start() error {
 	if plan.stderrToFIFO {
 		log.Debugf("[IO] Starting TTY→stderr copier goroutine for %s", c.config.ContainerID)
 		c.wg.Add(1)
-		go c.copyStderr()
+		panicsafe.Go("io copier stderr", c.copyStderr)
 	} else {
 		log.Debugf("[IO] Skipping TTY→stderr copier for %s: StderrFIFO=%q, ttyErr=%v", c.config.ContainerID, c.config.StderrFIFO, c.ttyErr != nil)
 	}
@@ -197,8 +228,18 @@ func sameTTYOutputFD(stdout, stderr io.Reader) (int, bool) {
 
 func (c *Copier) Stop() {
 	if !c.beginStop("stopping copier") {
+		// Another path already owns stop; still wait so callers (unmount /
+		// reattach) do not race with workers that lost the CAS race after
+		// stopFromWorker published an event.
+		c.waitStopDone(copierStopTimeout)
 		return
 	}
+
+	// Wait for workers to exit FIRST, then close streams. Closing FIFOs/TTYs
+	// while copyStdout/copyStderr workers are still reading/writing them is
+	// a use-after-close race (the same hazard stopFromWorker avoids by
+	// deferring the close until after wg.Wait()).
+	c.finishStop(copierStopTimeout, true)
 
 	if err := c.closeFIFOs(); err != nil {
 		log.Warnf("[IO] Failed to close FIFOs for %s: %v", c.config.ContainerID, err)
@@ -206,18 +247,117 @@ func (c *Copier) Stop() {
 	if err := c.closeTTYs(); err != nil {
 		log.Warnf("[IO] Failed to close TTYs for %s: %v", c.config.ContainerID, err)
 	}
-
-	c.finishStop(copierStopTimeout)
+	c.markStopDone()
 	log.Infof("[IO] Copier stopped for %s", c.config.ContainerID)
+}
+
+// releaseResources stops a never-started copier without touching FIFO/TTY
+// streams: the cancel-pipe fds are released (beginStop + waiter close), but
+// the TTYs are owned by the session/caller and must not be closed here. Used
+// for failed-start teardown so no fds leak while the caller keeps its TTY
+// handles.
+func (c *Copier) releaseResources() {
+	if c == nil {
+		return
+	}
+	if !c.beginStop("releasing copier resources") {
+		c.waitStopDone(0)
+		return
+	}
+	c.finishStop(0, false)
+	c.markStopDone()
+	log.Infof("[IO] Copier resources released for %s", c.config.ContainerID)
+}
+
+// stopFromWorker closes FIFOs/TTYs and stops the copier without joining the
+// worker wait group. It must be used when the caller is itself a copier worker
+// goroutine (e.g. exit/interrupt/detach detection from copyStdin), because
+// wg.Wait() would otherwise wait for the caller to finish — a self-deadlock.
+//
+// The stream/TTY/waiter teardown is deferred to a background goroutine that
+// waits for all peer workers to exit first (bounded by copierStopTimeout), so
+// the close does not race with concurrent reads/writes on those streams, nor
+// with a sibling worker still blocked in wait()/drainCancelPipe on the epoll
+// or cancel-pipe fds.
+func (c *Copier) stopFromWorker(closeStreams bool) {
+	if !c.beginStop("stopping copier from worker") {
+		return
+	}
+	if !closeStreams {
+		// Record that the FIFO/TTY fds remain open so a Session.Stop() that
+		// loses the CAS to us does not mark preservedStreams=false and orphan
+		// them.
+		c.streamsPreservedOnStop.Store(true)
+	}
+	// We cannot wg.Wait() here (self-deadlock), so spawn a goroutine that
+	// waits for all workers (including the caller) to exit, then closes.
+	// Wait is bounded: if a worker fails to exit (e.g. stuck on a
+	// blocking fd), we still close after the timeout rather than leaking
+	// FIFOs/TTYs/epoll/cancel-pipe forever.
+	panicsafe.Go("io copier deferred stream close", func() {
+		c.waitForWorkers(copierStopTimeout)
+		if closeStreams {
+			if err := c.closeFIFOs(); err != nil {
+				log.Warnf("[IO] Failed to close FIFOs for %s: %v", c.config.ContainerID, err)
+			}
+			if err := c.closeTTYs(); err != nil {
+				log.Warnf("[IO] Failed to close TTYs for %s: %v", c.config.ContainerID, err)
+			}
+		}
+		// Close epoll waiters after all workers (including the caller)
+		// have exited, so wait() is no longer running and close() is safe.
+		// This must happen here because beginStop's CAS prevents any
+		// external Stop() from reaching finishStop — external callers wait
+		// on stopDone instead.
+		c.ttyWaiter.close()
+		c.ttyErrWaiter.close()
+		c.stdinWaiter.close()
+		c.markStopDone()
+		log.Infof("[IO] Copier streams closed for %s (from worker)", c.config.ContainerID)
+	})
+	log.Infof("[IO] Copier stopped for %s (from worker, streams closed=%v)", c.config.ContainerID, closeStreams)
 }
 
 func (c *Copier) StopWithoutClosingFIFOs() {
 	if !c.beginStop("stopping copier for reattach") {
 		return
 	}
+	c.streamsPreservedOnStop.Store(true)
 
-	c.finishStop(0)
+	// This may be invoked from within a worker goroutine (e.g. detach/exit
+	// detection from copyStdin). In that case the calling worker is itself a
+	// member of wg, so wg.Wait() would deadlock waiting for itself. Pass
+	// wait=false so we only cancel/close waiters and let workers exit on their
+	// own; external callers (session reattach) use StopWithoutClosingFIFOsAndWait.
+	c.finishStop(0, false)
+	c.markStopDone()
 	log.Infof("[IO] Copier stopped for %s (FIFOs and TTYs preserved)", c.config.ContainerID)
+}
+
+// StopWithoutClosingFIFOsAndWait is the external-facing variant that waits for
+// all copier workers to exit. Use it when calling from outside the copier
+// goroutines (e.g. session reattach).
+func (c *Copier) StopWithoutClosingFIFOsAndWait() {
+	if !c.beginStop("stopping copier for reattach") {
+		// stopFromWorker may already own the stop; wait for its teardown so
+		// reattach does not wire a new session while old workers still hold
+		// the FIFO/TTY fds.
+		c.waitStopDone(copierStopTimeout)
+		return
+	}
+	c.streamsPreservedOnStop.Store(true)
+
+	c.finishStop(copierStopTimeout, true)
+	c.markStopDone()
+	log.Infof("[IO] Copier stopped for %s (FIFOs and TTYs preserved)", c.config.ContainerID)
+}
+
+// Stopped reports whether the copier has begun stopping — either via an
+// external Stop/detach or because a worker died (fatal IO error / guest EOF
+// routes through stopFromWorker). Lock-free; callers must tolerate a racing
+// transition in either direction.
+func (c *Copier) Stopped() bool {
+	return c != nil && c.stopped.Load()
 }
 
 func (c *Copier) beginStop(reason string) bool {
@@ -226,14 +366,57 @@ func (c *Copier) beginStop(reason string) bool {
 	}
 	log.Infof("[IO] %s for %s", reason, c.config.ContainerID)
 	c.ttyWaiter.signalCancel()
+	c.ttyErrWaiter.signalCancel()
 	c.cancel()
 	return true
 }
 
-func (c *Copier) finishStop(timeout time.Duration) {
-	c.waitForWorkers(timeout)
+// StreamsPreservedOnStop reports whether the stop path that tore down the
+// copier kept the FIFO/TTY fds open (detach / preserve mode). A Session that
+// issues a close-mode Stop but loses the beginStop CAS to a preserve-mode
+// stop must consult this to avoid marking the (still-open) fds as closed.
+func (c *Copier) StreamsPreservedOnStop() bool {
+	if c == nil {
+		return false
+	}
+	return c.streamsPreservedOnStop.Load()
+}
+
+func (c *Copier) finishStop(timeout time.Duration, wait bool) {
+	if wait {
+		c.waitForWorkers(timeout)
+	}
 	c.ttyWaiter.close()
+	c.ttyErrWaiter.close()
 	c.stdinWaiter.close()
+}
+
+func (c *Copier) markStopDone() {
+	if c == nil {
+		return
+	}
+	c.stopDoneOnce.Do(func() {
+		if c.stopDone != nil {
+			close(c.stopDone)
+		}
+	})
+}
+
+func (c *Copier) waitStopDone(timeout time.Duration) {
+	if c == nil || c.stopDone == nil {
+		return
+	}
+	if timeout <= 0 {
+		<-c.stopDone
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-c.stopDone:
+	case <-timer.C:
+		log.Warnf("[IO] Timeout waiting for copier stop completion for %s", c.config.ContainerID)
+	}
 }
 
 func (c *Copier) waitForWorkers(timeout time.Duration) {
@@ -284,17 +467,12 @@ func (c *Copier) SetTTYs(ttyIn io.WriteCloser, ttyOut, ttyErr io.Reader) {
 	c.ttyOut = ttyOut
 	c.ttyErr = ttyErr
 
-	// If TTY fd changed and epoll is active, reinitialize epoll with new TTY fd
-	if newOK && oldFd != newFd && newFd > 0 && c.ttyWaiter.epfd >= 0 {
-		log.Infof("[IO] TTY fd changed from %d to %d, reinitializing epoll for %s", oldFd, newFd, c.config.ContainerID)
-		if c.ttyWaiter.epfd >= 0 {
-			unix.Close(c.ttyWaiter.epfd)
-			c.ttyWaiter.epfd = -1
-		}
-		if err := c.ttyWaiter.init(newFd); err != nil {
-			log.Errorf("[IO] Failed to reinitialize epoll after TTY update: %v", err)
-		} else {
-			log.Infof("[IO] Epoll reinitialized with new TTY fd=%d for %s", newFd, c.config.ContainerID)
-		}
+	// If TTY fd changed and epoll is active, reset the waiter so the next
+	// wait() lazily re-initializes with the new TTY fd. reset() takes the
+	// waiter lock, unlike direct epfd manipulation.
+	if newOK && oldFd != newFd && newFd > 0 {
+		log.Infof("[IO] TTY fd changed from %d to %d, resetting epoll for %s", oldFd, newFd, c.config.ContainerID)
+		c.ttyWaiter.reset()
+		c.ttyErrWaiter.reset()
 	}
 }

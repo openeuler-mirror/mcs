@@ -22,10 +22,12 @@ MicRun 是面向 RTOS workload 的 `containerd` shim v2 runtime。用户可以�
 
 - `README.md`：项目总览和当前架构草图
 - `docs/internals/architecture.md`：分层 runtime 架构
+- `docs/internals/contribution-guide.md`：贡献与评审指南（代码风格、修改边界、提交拆分）
 - `docs/quick-start.md`：构建、QEMU、镜像和 K3s workflow
 - `tests/README.md`：稳定测试入口和环境变量约定
 - `tests/k3s/README.md`：K3s 单节点、云边和 attach 测试
 - `skills/micrun-qemu-build/SKILL.md`：面向 agent 的构建/QEMU workflow 记录
+- `skills/qemu-quickstart-debug/SKILL.md`：QEMU 起机与分层排障 workflow
 
 ## 架构边界
 
@@ -47,20 +49,33 @@ constructor 或现有 service graph 传递。
 
 除非命令特别说明，否则从 `micrun/` 目录执行。
 
+**提交前必须 `make ci` 全绿**（gofmt + vet + build + 单元测试 + race 检测）。
+测试分层、红-绿回归测试手册、覆盖基线见 `docs/internals/testing.md`；
+并发规则见 `docs/internals/concurrency.md`；状态机见
+`docs/internals/task-state-machine.md`。
+
 ```bash
+make ci           # 提交前本地验证门（必跑）
 go test ./...
 make build
 BUILD_ARCH=arm64 make build
 ```
 
+本地 `make build` 产物在 `micrun/builds/`，由子项目自己的 `.gitignore` 忽略。
+
 稳定测试入口：
 
 ```bash
 tests/bin/test-qemu-smoke
+tests/bin/test-qemu-lifecycle
 tests/bin/test-io-qemu
 tests/bin/test-k3s-cloud-edge
 tests/bin/test-k3s-interaction
 tests/run_all_tests.sh k3s
+
+# Re-check one scenario on a live guest (no smoke/rebuild/import):
+IMAGE_PROFILE=shell tests/bin/test-io-qemu --reuse --case 5
+tests/bin/test-qemu-lifecycle --reuse --case auto-close
 ```
 
 使用 `go fmt ./...` 格式化 Go 代码。默认构建模式是 vendor mode；除非任务明确
@@ -113,6 +128,53 @@ containerd task 和 Xen domain 已清理。只有在需要保留现场调试时�
 - 保持 stopped-task 和 recovery 语义。只通过正常路径、但留下 Xen domain
   或 containerd task 残留的修复不算完成。
 - 修改 lifecycle、IO、recovery、K3s 或 cleanup 行为时，应同步新增或更新测试。
+
+## 防御性编程原则
+
+防御性代码（nil guard、overflow clamp、bounds check）本身不是坏东西，
+但没有节制的防御会让代码膨胀、掩盖真实逻辑。遵循以下规则：
+
+1. **必须有可达触发路径**。每个防护必须能给出具体的输入值和执行路径
+   来说明它如何被触发。如果只能说"理论上可能"而无法构造场景，不加。
+
+2. **不重复上游保证**。Go 运行时、syscall 语义、接口契约已经保证的路径，
+   不再加防护。例如 `write(2)` 在 `O_NONBLOCK` 下不返回 `(n>0, EAGAIN)`，
+   就不需要为这个组合加 partial-write 处理。
+
+3. **复杂度对称**。防护代码的复杂度不应超过被防护逻辑。用 3 行 nil guard
+   保护 5 行业务逻辑是合理的；加 20 行防御来保护 1 行代码不是。
+
+4. **区分三个层次**：
+   - **活跃 BUG**：有可达触发路径 + 用户可见影响 → 必须修复
+   - **防御性加固**：外部/不可信边界的边界保护 → 可选，归 `harden` 提交
+   - **不可达理论问题**：无法构造触发场景 → 不加代码，记录为已知限制
+
+5. **不为工具报告而加代码**。静态分析/AI 扫描报告的"问题"如果不能给出
+   可达触发路径，不据此添加防御代码。先验证，再决定。
+
+## 修改可接受性
+
+判定细则、严重度分级（P0/P1/P2）与"修复价值 × 修复风险"矩阵见
+`docs/internals/contribution-guide.md` §1；触碰下列运行时不变量的修改按其
+§5 处理（需等强度替代 + 单独提交）：任务状态机单一收口、生命周期两级门控、
+guest 存在性双源策略、持久化单一文档、goroutine panic 隔离、外部命令有界。
+
+| 可接受 | 需谨慎 | 不可接受 |
+|---|---|---|
+| 修复活跃 BUG（有触发场景+用户影响） | 防御性加固（仅在外部边界） | 为工具报告加防御（无可达路径） |
+| 性能优化（有量化依据） | 接口行为变更（需评估兼容性） | 修改 vendor 组件内容（只允许整组件增删） |
+| 死代码清理（无引用代码移除） | 新增抽象层（需证明现有接口不足） | 引入 service locator / 全局可变状态 |
+| 简化逻辑（减少分支/降低复杂度） | 状态机语义变更 | 不带测试的 lifecycle/IO/cleanup 改动 |
+
+## 提交规范
+
+- **commit message 用英文**；PR 描述可用中文。这是本仓的约定。
+- fix 提交按子系统拆分（每个 ≤30 文件），不混装多个不相关子系统。
+  参见 `docs/internals/contribution-guide.md` 的评审指南。
+- commit body 说"修了什么 + 为什么 + 触发场景"，不描述扫描/调试过程。
+- 防御性加固归 `harden:` 前缀，与真实 bug fix（`fix:`）分开。
+- vendor 改动只能整组件增删 + `modules.txt`，不改组件内文件。
+- 不提交本机路径、密码、token 或仅适用于某个实验环境的值。
 
 ## 文档与 Skills
 

@@ -92,3 +92,25 @@ func TestRemoveContainerResourcesAllowsNilSandboxAndEmptyID(t *testing.T) {
 		t.Fatal("empty id cleanup should not delete empty config key")
 	}
 }
+
+func TestRestoreContainerConfigDoesNotOverwriteNewerEntry(t *testing.T) {
+	old := &ContainerConfig{ID: "c1", OS: "old"}
+	newer := &ContainerConfig{ID: "c1", OS: "new"}
+
+	// An existing entry belongs to a newer same-ID Create that slipped in
+	// after removeContainer: overwriting it would pair the new container with
+	// the deleted one's stale config.
+	sandbox := &Sandbox{config: &SandboxConfig{ContainerConfigs: map[string]*ContainerConfig{"c1": newer}}}
+	sandbox.restoreContainerConfig("c1", old)
+	if sandbox.config.ContainerConfigs["c1"] != newer {
+		t.Fatal("restoreContainerConfig overwrote a newer entry")
+	}
+
+	// The delete-rollback case: the entry is missing, so it must be restored
+	// to keep the containers map and ContainerConfigs in sync.
+	sandbox2 := &Sandbox{config: &SandboxConfig{ContainerConfigs: map[string]*ContainerConfig{}}}
+	sandbox2.restoreContainerConfig("c1", old)
+	if sandbox2.config.ContainerConfigs["c1"] != old {
+		t.Fatal("restoreContainerConfig did not restore a missing entry")
+	}
+}

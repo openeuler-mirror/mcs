@@ -70,15 +70,15 @@ func (s *Service) snapshotTaskForState(runtime ports.TaskQueryRuntime, id, execI
 func (s *Service) refreshTaskStatusForQuery(ctx context.Context, runtime ports.TaskQueryRuntime, taskHandle ports.Task) {
 	status, err := runtime.QueryTaskStatus(ctx, taskHandle.ID())
 	if err != nil {
-		status = task.Status_UNKNOWN
+		// Keep the last known non-terminal status on query failure. Writing
+		// UNKNOWN would make a briefly unreachable guest look unknown to
+		// State/Resume and could drive incorrect skip/operate decisions.
+		return
 	}
-
-	withTaskLock(runtime, func() {
-		if taskHandle.Status() == task.Status_STOPPED {
-			return
-		}
-		taskHandle.SetStatus(status)
-	})
+	// Read-only refresh: hold transitional PAUSING (an in-flight Pause owns
+	// it — overwriting would skip Pause's commit and leave the task RUNNING
+	// while the guest is suspended, making the next Resume a no-op).
+	s.applyQueriedTaskStatus(runtime, taskHandle, status, true)
 }
 
 func (s *Service) Wait(ctx context.Context, runtime ports.TaskWaitRuntime, in WaitInput) (*WaitOutput, error) {

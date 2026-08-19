@@ -53,14 +53,21 @@ func configureRuntimePaths(deps *cntr.Dependencies, stateDir string) error {
 	if err != nil {
 		return err
 	}
+	// Record the binding so a restarted shim (which has no Create request
+	// at recovery time) can find a CRI-ConfigPath-configured state_dir
+	// (scan item 2.5). Best-effort.
+	syncStateDirPointer(stateDir)
 	if deps == nil {
 		return nil
 	}
 	if err := setupStateDir(stateDir); err != nil {
 		return err
 	}
-	deps.StateStoreFactory = runtimeStateStoreFactory(stateDir)
-	deps.TTYDiscoveryRoots = runtimeTTYDiscoveryRoots(stateDir)
+	// Swap both hooks atomically under the Dependencies lock: attach/IO
+	// paths read them outside the Create lock (scan item: shared deps
+	// function fields were a data race between Create writes and TTY
+	// discovery reads).
+	deps.SetRuntimePaths(runtimeStateStoreFactory(stateDir), runtimeTTYDiscoveryRoots(stateDir))
 	return nil
 }
 
@@ -104,11 +111,27 @@ func mapEssentialResources(spec *specs.Spec, planner func(*specs.Spec) *pedestal
 		ClientCPUSet: resources.ClientCPUSet,
 		VCPU:         resources.VCPU,
 		MemoryMaxMB:  resources.MemoryMaxMB,
-		MemoryMinMB:  resources.MemoryMinMB,
 	}
 }
 
 func mapCreateGuest(ctx context.Context, conf cntr.GuestClientConfig) error {
+	// The create_msg wire field cpu_str is fixed at MaxCPUStringLen bytes and
+	// micad NUL-terminates at the last byte, so anything longer is silently
+	// truncated by both InitWithOpts and the daemon. A truncated cpuset pins
+	// the guest to fewer pCPUs than VCPUs expects — reject it instead.
+	if len(conf.CPU) >= libmica.MaxCPUStringLen {
+		return fmt.Errorf("client cpuset string length %d exceeds mica limit %d", len(conf.CPU), libmica.MaxCPUStringLen-1)
+	}
+	// Same wire-boundary guard for the path fields: path and ped_cfg are
+	// MaxFirmwarePathLen-byte fields that InitWithOpts and the daemon silently
+	// truncate, so a too-long firmware/pedestal-config path would make micad
+	// load a different file than intended (or fail with a confusing error).
+	if len(conf.Path) >= libmica.MaxFirmwarePathLen {
+		return fmt.Errorf("client firmware path length %d exceeds mica limit %d", len(conf.Path), libmica.MaxFirmwarePathLen-1)
+	}
+	if len(conf.PedCfg) >= libmica.MaxFirmwarePathLen {
+		return fmt.Errorf("client pedestal config path length %d exceeds mica limit %d", len(conf.PedCfg), libmica.MaxFirmwarePathLen-1)
+	}
 	clientConf := libmica.MicaClientConf{}
 	clientConf.InitWithOpts(libmica.MicaClientConfCreateOptions{
 		CPU:             conf.CPU,

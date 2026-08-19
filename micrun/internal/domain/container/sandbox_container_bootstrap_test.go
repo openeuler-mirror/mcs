@@ -1,7 +1,9 @@
 package container
 
 import (
+	"context"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -95,5 +97,55 @@ func TestContainerConfigEntriesReturnsSortedConfigs(t *testing.T) {
 	want := []string{"worker-a", "worker-b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("containerConfigEntries IDs = %v, want %v", got, want)
+	}
+}
+
+func TestInitContainersCreateFailureStopsOrphanGuest(t *testing.T) {
+	firmware := t.TempDir() + "/firmware.elf"
+	if err := os.WriteFile(firmware, []byte("firmware"), 0o644); err != nil {
+		t.Fatalf("write firmware: %v", err)
+	}
+
+	// Same injection as the CreateContainer path: the second save (c.create's
+	// final setContainerState — each state transition is now a single
+	// combined-document write) fails after registerClient already created
+	// the guest domain, so initContainers must tear it down — Sandbox.Delete
+	// only iterates the containers map and would never see it.
+	saveErr := errors.New("save failed")
+	store := &failNthSaveStore{memoryStateStore: newMemoryStateStore(), failOn: 2, err: saveErr}
+	deps := testDepsWithStore(store)
+	guestCtl := &stopCountingGuestControl{}
+	deps.CreateGuest = func(context.Context, GuestClientConfig) error {
+		guestCtl.exists = true
+		return nil
+	}
+
+	sandbox := &Sandbox{
+		id:           "sandbox-bootstrap-cleanup",
+		ctx:          context.Background(),
+		stateRepo:    stateRepositoryFromStore(store),
+		deps:         deps,
+		containers:   map[string]*Container{},
+		guestControl: guestCtl,
+		config: &SandboxConfig{
+			ID: "sandbox-bootstrap-cleanup",
+			ContainerConfigs: map[string]*ContainerConfig{
+				"c1": {ID: "c1", OS: "uniproton", ImageAbsPath: firmware, PedestalType: PedestalBaremetal},
+			},
+		},
+	}
+
+	err := sandbox.initContainers(context.Background())
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("initContainers error = %v, want save error", err)
+	}
+	if guestCtl.stopCalls == 0 {
+		t.Fatal("guest domain was not stopped after create failure (orphan domain)")
+	}
+	if _, ok := sandbox.config.ContainerConfigs["c1"]; ok {
+		t.Fatal("ContainerConfigs entry was not removed")
+	}
+	if len(store.deleted) == 0 {
+		t.Fatal("container state file was not deleted")
 	}
 }

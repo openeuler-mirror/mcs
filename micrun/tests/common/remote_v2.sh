@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Never trigger GUI askpass prompts; fail fast instead (see remote.sh).
+unset SSH_ASKPASS SUDO_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
+
 # Enhanced remote execution - Simplified version
 # Focus on core retry functionality without complex quoting
 
@@ -46,7 +50,13 @@ remote_retry_v2() {
             sleep "$backoff"
         fi
 
-        if remote "$command" 2>&1; then
+        # Capture the real exit code: a failed `if cond; then ... fi`
+        # without an else branch yields status 0, which used to make the
+        # transient-error case below unreachable and every failure report
+        # "exit: 0".
+        remote "$command" 2>&1
+        local exit_code=$?
+        if [ "$exit_code" -eq 0 ]; then
             if [ "$attempt" -gt 1 ]; then
                 log_success "Command succeeded on retry $attempt"
             fi
@@ -54,7 +64,6 @@ remote_retry_v2() {
         fi
 
         # Check if error is transient
-        local exit_code=$?
         case "$exit_code" in
             255|124)
                 # Transient error - retry
@@ -82,7 +91,9 @@ copy_to_remote_safe_v2() {
     local attempt=1
 
     while [ "$attempt" -le "$max_retries" ]; do
-        if copy_to_remote "$REMOTE" "$src" "$dst" 2>/dev/null; then
+        # copy_to_remote takes (src, host, dst); the old call passed an
+        # undefined $REMOTE as src and shifted every argument.
+        if copy_to_remote "$src" "$TEST_REMOTE_HOST" "$dst" 2>/dev/null; then
             if remote "test -f '$dst'"; then
                 return 0
             fi

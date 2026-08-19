@@ -10,11 +10,15 @@ import (
 var ErrNotSupported = errors.New("operation not supported by this pedestal type")
 
 // PedestalFacade encapsulates all pedestal operations and provides a unified interface.
-// It wraps the underlying Pedestal implementation and caches optional interface implementations.
+// It wraps the underlying Pedestal implementation and caches optional interface
+// implementations. The optional implementations are resolved eagerly at
+// construction (impl is immutable afterwards), so the getters are plain field
+// reads with no synchronization needed — concurrent RPCs cannot race on the
+// cache fields.
 type PedestalFacade struct {
 	impl Pedestal // underlying implementation
 
-	// cached optional interface implementations (lazy loaded)
+	// cached optional interface implementations (resolved at construction)
 	cpuScheduler CPUScheduler
 	lifecycleMgr LifecycleManager
 	stateQuerier StateQuerier
@@ -23,7 +27,20 @@ type PedestalFacade struct {
 
 // NewPedestalFacade creates a new PedestalFacade wrapping the given Pedestal implementation.
 func NewPedestalFacade(impl Pedestal) *PedestalFacade {
-	return &PedestalFacade{impl: impl}
+	f := &PedestalFacade{impl: impl}
+	if cs, ok := impl.(CPUScheduler); ok {
+		f.cpuScheduler = cs
+	}
+	if lm, ok := impl.(LifecycleManager); ok {
+		f.lifecycleMgr = lm
+	}
+	if sq, ok := impl.(StateQuerier); ok {
+		f.stateQuerier = sq
+	}
+	if mm, ok := impl.(MemoryManager); ok {
+		f.memoryMgr = mm
+	}
+	return f
 }
 
 // Type returns the pedestal type identifier.
@@ -66,41 +83,22 @@ func (f *PedestalFacade) HostCPUSeta(ctx context.Context) cpuset.CPUSet {
 	return f.impl.HostCPUSeta(ctx)
 }
 
-// Optional interface getters (lazy loaded)
+// Optional interface getters — resolved eagerly at construction, so these are
+// plain field reads safe for concurrent callers.
 
 func (f *PedestalFacade) getCPUScheduler() CPUScheduler {
-	if f.cpuScheduler == nil {
-		if cs, ok := f.impl.(CPUScheduler); ok {
-			f.cpuScheduler = cs
-		}
-	}
 	return f.cpuScheduler
 }
 
 func (f *PedestalFacade) getLifecycleManager() LifecycleManager {
-	if f.lifecycleMgr == nil {
-		if lm, ok := f.impl.(LifecycleManager); ok {
-			f.lifecycleMgr = lm
-		}
-	}
 	return f.lifecycleMgr
 }
 
 func (f *PedestalFacade) getStateQuerier() StateQuerier {
-	if f.stateQuerier == nil {
-		if sq, ok := f.impl.(StateQuerier); ok {
-			f.stateQuerier = sq
-		}
-	}
 	return f.stateQuerier
 }
 
 func (f *PedestalFacade) getMemoryManager() MemoryManager {
-	if f.memoryMgr == nil {
-		if mm, ok := f.impl.(MemoryManager); ok {
-			f.memoryMgr = mm
-		}
-	}
 	return f.memoryMgr
 }
 

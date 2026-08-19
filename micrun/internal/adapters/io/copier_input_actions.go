@@ -2,6 +2,7 @@ package io
 
 import (
 	"io"
+	"time"
 
 	"micrun/internal/domain/console"
 	log "micrun/internal/support/logger"
@@ -52,11 +53,14 @@ func (e inputActionExecutor) executeOne(action console.Action) console.ActionSto
 }
 
 func (e inputActionExecutor) stop(mode console.ActionStopMode) {
+	// This runs inside a copier worker goroutine (copyStdin), which is itself a
+	// wg member. Both branches must use the no-wait variant to avoid wg.Wait()
+	// waiting for the caller to finish (self-deadlock).
 	if mode == console.ActionStopPreserve {
-		e.copier.StopWithoutClosingFIFOs()
+		e.copier.stopFromWorker(false)
 		return
 	}
-	e.copier.Stop()
+	e.copier.stopFromWorker(true)
 }
 
 func handleInputActionWriteTTY(e inputActionExecutor, action console.Action) console.ActionStopMode {
@@ -72,14 +76,14 @@ func handleInputActionWriteTTY(e inputActionExecutor, action console.Action) con
 }
 
 func handleInputActionWriteStdout(e inputActionExecutor, action console.Action) console.ActionStopMode {
-	if err := writeActionData(e.copier.stdoutFIFO, action.Data); err != nil {
+	if err := writeActionDataWithRetry(e.copier, e.copier.stdoutFIFO, action.Data); err != nil {
 		log.Infof("[IO] Stdout action write FAILED for %s: %v", e.copier.config.ContainerID, err)
 	}
 	return console.ActionStopNone
 }
 
 func handleInputActionLocalEcho(e inputActionExecutor, action console.Action) console.ActionStopMode {
-	if err := writeActionData(e.copier.stdoutFifoForEcho, action.Data); err != nil {
+	if err := writeActionDataWithRetry(e.copier, e.copier.stdoutFifoForEcho, action.Data); err != nil {
 		log.Infof("[IO] Local echo FAILED for %s: %v", e.copier.config.ContainerID, err)
 	}
 	return console.ActionStopNone
@@ -143,4 +147,55 @@ func writeActionData(writer io.Writer, data []byte) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+// writeActionDataWithRetry writes echo/stdout action data to the given
+// FIFO with EAGAIN retry: these FIFOs are now non-blocking, so a slow
+// reader makes Write return EAGAIN and a bare write would silently drop
+// the echoed character. Retry briefly, bounded by context cancellation.
+//
+// EPIPE/ENXIO mean there is no FIFO reader (detached / stdout closed).
+// Retrying them forever would stall the stdin worker before WriteTTY or
+// ExitCommandDetected, freezing keystrokes and blocking typed "exit".
+// Skip the best-effort echo/CRLF and let later actions proceed.
+func writeActionDataWithRetry(c *Copier, writer io.Writer, data []byte) error {
+	if c == nil || writer == nil || len(data) == 0 {
+		return nil
+	}
+	remaining := data
+	for {
+		n, err := writer.Write(remaining)
+		if err != nil {
+			if isBrokenPipe(err) || isENXIO(err) {
+				return nil
+			}
+			if isEAGAIN(err) {
+				// Resume from the unwritten suffix, mirroring writeOutputFIFO:
+				// an io.Writer may report a partial write alongside EAGAIN, and
+				// re-sending the already-written prefix would duplicate the
+				// echoed characters on the client's terminal.
+				if n > 0 {
+					remaining = remaining[n:]
+					if len(remaining) == 0 {
+						return nil
+					}
+				}
+				select {
+				case <-c.ctx.Done():
+					return c.ctx.Err()
+				case <-time.After(outputWriteRetryDelay):
+				}
+				continue
+			}
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		if n < len(remaining) {
+			remaining = remaining[n:]
+			continue
+		}
+		return nil
+	}
 }

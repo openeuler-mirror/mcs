@@ -29,13 +29,27 @@ func cgroupV1() (bool, error) {
 }
 
 // loadRuntimeConfig loads the runtime configuration from annotations, CRI options, or environment variables.
-// NOTE: This function should be called without holding s.mu to avoid deadlock.
-// The caller is responsible for holding s.mu if needed for thread safety.
+// s.config is shared across concurrent Create RPCs (pod containers created in
+// parallel) and read by recoveryBackend(); the read-modify-write below is
+// therefore performed under s.mu. Resolve returns the existing config once it
+// is set, so the first Create wins and later ones reuse it.
+// applyHostRuntimeConfig (daemon startup) may have pre-set s.config to a
+// host-only baseline for recovery; that baseline must not shadow the first
+// Create's annotations/options, so it is dropped here and the full stack
+// (host files + config_path + annotations) is re-resolved once.
+// Resolve/configureRuntimePaths never acquire s.mu themselves, so holding it
+// here cannot deadlock.
 func loadRuntimeConfig(s *shimService, r ports.TaskCreateRequest, annotations map[string]string) (*oci.RuntimeConfig, error) {
 	if s == nil {
 		return nil, fmt.Errorf("shim service is nil")
 	}
-	cfg, err := s.runtimeDeps.runtimeResolver.Resolve(s.config, r, annotations)
+	s.Lock()
+	defer s.Unlock()
+	current := s.config
+	if !s.configFromCreate {
+		current = nil
+	}
+	cfg, err := s.runtimeDeps.runtimeResolver.Resolve(current, r, annotations)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +59,13 @@ func loadRuntimeConfig(s *shimService, r ports.TaskCreateRequest, annotations ma
 	if err := configureRuntimePaths(s.runtimeDeps.containerDeps, cfg.StateDir); err != nil {
 		return nil, err
 	}
+	// The runtime.debug annotation previously had no consumer after landing
+	// in RuntimeConfig.Debug; honor it by raising the global level once.
+	if cfg.Debug {
+		log.ForceDebugLevel()
+	}
 	s.config = cfg
+	s.configFromCreate = true
 	log.Debugf("loadRuntimeConfig: config loaded successfully")
 	return cfg, nil
 }

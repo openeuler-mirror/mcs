@@ -183,6 +183,7 @@ func TestSetupMemoryRequiresGuestExecutorForXenLimit(t *testing.T) {
 				Memory: &specs.LinuxMemory{Limit: &limit},
 			},
 		},
+		sandbox: &Sandbox{},
 	}
 
 	err := container.setupMemory(context.Background())

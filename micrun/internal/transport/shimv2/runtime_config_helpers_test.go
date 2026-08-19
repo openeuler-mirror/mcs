@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	oci "micrun/internal/adapters/config/oci"
+	runtimecfg "micrun/internal/adapters/config/runtimeconfig"
 	"micrun/internal/ports"
+	defs "micrun/internal/support/definitions"
 )
 
 func TestLoadRuntimeConfigRejectsNilService(t *testing.T) {
@@ -20,7 +22,7 @@ func TestLoadRuntimeConfigRejectsNilService(t *testing.T) {
 
 func TestLoadRuntimeConfigReusesCurrentConfig(t *testing.T) {
 	current := oci.NewRuntimeConfigWithHost(oci.HostProfile{})
-	service := &shimService{config: current}
+	service := &shimService{config: current, configFromCreate: true}
 
 	cfg, err := loadRuntimeConfig(service, ports.TaskCreateRequest{}, nil)
 	if err != nil {
@@ -31,6 +33,47 @@ func TestLoadRuntimeConfigReusesCurrentConfig(t *testing.T) {
 	}
 	if service.config != current {
 		t.Fatal("loadRuntimeConfig did not keep service config in sync")
+	}
+}
+
+// The daemon's applyHostRuntimeConfig pre-sets s.config to a host-only
+// baseline (configFromCreate=false). The first Create must not short-circuit
+// on it: its pod annotations/options have to be overlaid, or documented
+// per-workload runtime settings silently fall back to host defaults.
+func TestLoadRuntimeConfigOverlaysAnnotationsOnHostBaseline(t *testing.T) {
+	stateDir := t.TempDir()
+	confPath := filepath.Join(t.TempDir(), "micrun.toml")
+	if err := os.WriteFile(confPath, []byte("[mica]\nstate_dir = \""+stateDir+"\"\n"), 0o644); err != nil {
+		t.Fatalf("write conf: %v", err)
+	}
+	t.Setenv(defs.MicrunConfEnv, confPath)
+
+	baseline := oci.NewRuntimeConfigWithHost(oci.HostProfile{})
+	baseline.StateDir = stateDir
+	service := &shimService{
+		config: baseline, // as set by applyHostRuntimeConfig at daemon startup
+		runtimeDeps: runtimeDependencies{
+			runtimeResolver: runtimecfg.NewResolver(oci.HostProfile{}),
+			containerDeps:   buildContainerDependencies(testRuntimeEnvironment()),
+		},
+	}
+
+	annotations := map[string]string{defs.RuntimeDebug: "true"}
+	cfg, err := loadRuntimeConfig(service, ports.TaskCreateRequest{}, annotations)
+	if err != nil {
+		t.Fatalf("loadRuntimeConfig returned error: %v", err)
+	}
+	if cfg == baseline {
+		t.Fatal("loadRuntimeConfig short-circuited on the host baseline")
+	}
+	if !cfg.Debug {
+		t.Fatal("annotation debug=true was not overlaid on the host baseline")
+	}
+	if !service.configFromCreate {
+		t.Fatal("configFromCreate must be set after a Create-time resolution")
+	}
+	if service.config != cfg {
+		t.Fatal("service config not updated to the Create-resolved config")
 	}
 }
 
@@ -70,7 +113,8 @@ func TestLoadRuntimeConfigAppliesStateDirToStateStore(t *testing.T) {
 	current := oci.NewRuntimeConfigWithHost(oci.HostProfile{})
 	current.StateDir = stateDir
 	service := &shimService{
-		config: current,
+		config:           current,
+		configFromCreate: true,
 		runtimeDeps: runtimeDependencies{
 			containerDeps: buildContainerDependencies(testRuntimeEnvironment()),
 		},
@@ -105,7 +149,8 @@ func TestLoadRuntimeConfigAppliesStateDirToTTYDiscoveryRoots(t *testing.T) {
 	current := oci.NewRuntimeConfigWithHost(oci.HostProfile{})
 	current.StateDir = stateDir
 	service := &shimService{
-		config: current,
+		config:           current,
+		configFromCreate: true,
 		runtimeDeps: runtimeDependencies{
 			containerDeps: buildContainerDependencies(testRuntimeEnvironment()),
 		},
@@ -129,7 +174,8 @@ func TestLoadRuntimeConfigRejectsRelativeStateDir(t *testing.T) {
 	current := oci.NewRuntimeConfigWithHost(oci.HostProfile{})
 	current.StateDir = "relative-state"
 	service := &shimService{
-		config: current,
+		config:           current,
+		configFromCreate: true,
 		runtimeDeps: runtimeDependencies{
 			containerDeps: buildContainerDependencies(testRuntimeEnvironment()),
 		},
@@ -144,7 +190,7 @@ func TestLoadRuntimeConfigRejectsRelativeStateDir(t *testing.T) {
 func TestLoadRuntimeConfigRejectsRelativeStateDirWithoutContainerDeps(t *testing.T) {
 	current := oci.NewRuntimeConfigWithHost(oci.HostProfile{})
 	current.StateDir = "relative-state"
-	service := &shimService{config: current}
+	service := &shimService{config: current, configFromCreate: true}
 
 	_, err := loadRuntimeConfig(service, ports.TaskCreateRequest{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "state directory") {

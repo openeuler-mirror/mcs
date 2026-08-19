@@ -3,6 +3,7 @@ package libmica
 
 import (
 	"context"
+	"sync"
 
 	"micrun/internal/ports"
 )
@@ -28,7 +29,11 @@ const (
 	MaxPedLen          = 16
 	MaxFirmwarePathLen = 256
 	MaxCPUStringLen    = 128
-	MaxConfigStrLen    = 512
+	// micaCtrlMsgSize mirrors micad's CTRL_MSG_SIZE: the daemon reads set
+	// commands into a fixed 32-byte buffer and silently truncates anything
+	// longer (see mcs/mica/micad/socket_listener.c).
+	micaCtrlMsgSize = 32
+	MaxConfigStrLen = 512
 )
 
 const (
@@ -67,10 +72,13 @@ const (
 const (
 	MicaUpdateVCPU            MicaUpdateField = "VCPU"
 	MicaUpdatePCPUConstraints MicaUpdateField = "CPU"
-	// MicaUpdateCPUCapacity preserves the spelling expected by micad.
-	MicaUpdateCPUCapacity   MicaUpdateField = "CPUCpacity"
+	// Keys must match micad's resource key table after key_to_lower():
+	// cpucapacity / cpuweight / cpu / vcpu / memory / maxmemory / maxvcpu
+	// (see mcs/library/remoteproc/xen_rproc.c). Any mismatch makes the
+	// update fail with -EINVAL on the daemon side.
+	MicaUpdateCPUCapacity   MicaUpdateField = "CPUCapacity"
 	MicaUpdateCPUWeight     MicaUpdateField = "CPUWeight"
-	MicaUpdateMemoryMax     MicaUpdateField = "MaxMem"
+	MicaUpdateMemoryMax     MicaUpdateField = "MaxMemory"
 	MicaUpdateMemoryCurrent MicaUpdateField = "Memory"
 )
 
@@ -91,6 +99,7 @@ func (f MicaUpdateField) Valid() bool {
 type micaCtlFunc func(context.Context, MicaCommand, string, ...string) error
 
 type MicaExecutor struct {
+	mu                sync.RWMutex // protects records and memoryThresholdMB
 	records           MicaClientConf
 	ID                string
 	memoryThresholdMB uint32

@@ -3,10 +3,10 @@ package container
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	log "micrun/internal/support/logger"
 
@@ -24,15 +24,27 @@ func (c *Container) ioStream(ctx context.Context, taskID string) (io.WriteCloser
 		return nil, nil, nil, err
 	}
 
-	return stdin, &noCloseFile{stdout}, &noCloseFile{stdout}, nil
+	// Both stdout and stderr share the same underlying *os.File. Wrap it in
+	// a sharedCloser so that Close is called exactly once regardless of how
+	// many wrappers reference it. Without this, the stdout fd would leak
+	// (noCloseFile.Close was a no-op relied on by the copier path).
+	wrapper := &sharedCloseFile{File: stdout}
+	return stdin, wrapper, wrapper, nil
 }
 
-type noCloseFile struct {
+// sharedCloseFile wraps an *os.File and ensures Close is called exactly once.
+// Multiple readers (stdout, stderr) can share the same wrapper safely.
+type sharedCloseFile struct {
 	*os.File
+	once sync.Once
+	err  error
 }
 
-func (f *noCloseFile) Close() error {
-	return nil
+func (f *sharedCloseFile) Close() error {
+	f.once.Do(func() {
+		f.err = f.File.Close()
+	})
+	return f.err
 }
 
 type noopWriteCloser struct{}
@@ -58,24 +70,36 @@ func (c *Container) winresize(ctx context.Context, height, width uint32) (retErr
 	if err != nil {
 		return err
 	}
-	appendCloseError(&retErr, "resize stdin", stdin)
-	defer appendCloseError(&retErr, "resize stdout", stdout)
+	// stdin is only needed for the dial; close immediately and log failures
+	// — they must not turn a successful resize into an RPC error (the ioctl
+	// below uses stdout, not stdin).
+	if cerr := stdin.Close(); cerr != nil {
+		log.Warnf("close resize stdin for %s: %v", c.id, cerr)
+	}
+	defer func() {
+		if cerr := stdout.Close(); cerr != nil {
+			log.Warnf("close resize stdout for %s: %v", c.id, cerr)
+		}
+	}()
 	log.Tracef("resizing rpmsg tty at %s", p)
 
-	ws := &unix.Winsize{Row: uint16(height), Col: uint16(width)}
+	ws := &unix.Winsize{
+		Row: uint16(clampTermSize(height)),
+		Col: uint16(clampTermSize(width)),
+	}
 	if err := unix.IoctlSetWinsize(int(stdout.Fd()), unix.TIOCSWINSZ, ws); err != nil {
 		return fmt.Errorf("set winsize: %w", err)
 	}
 	return nil
 }
 
-func appendCloseError(target *error, name string, closer io.Closer) {
-	if closer == nil {
-		return
+// clampTermSize clamps a terminal row/column value to the uint16 range to
+// avoid silent truncation when the caller passes a uint32 from RPC input.
+func clampTermSize(v uint32) uint32 {
+	if v > 65535 {
+		return 65535
 	}
-	if err := closer.Close(); err != nil {
-		*target = errors.Join(*target, fmt.Errorf("close %s: %w", name, err))
-	}
+	return v
 }
 
 func (c *Container) OpenTTYs(ctx context.Context) (stdin, stdout *os.File, err error) {
@@ -96,10 +120,10 @@ func (c *Container) OpenTTYs(ctx context.Context) (stdin, stdout *os.File, err e
 }
 
 func (c *Container) ttyDiscoveryRoots() []string {
-	if c == nil || c.sandbox == nil || c.sandbox.deps == nil || c.sandbox.deps.TTYDiscoveryRoots == nil {
+	if c == nil || c.sandbox == nil || c.sandbox.deps == nil {
 		return defaultTTYDiscoveryRoots()
 	}
-	roots := c.sandbox.deps.TTYDiscoveryRoots()
+	roots := c.sandbox.deps.RPMSGTTYRoots()
 	if len(roots) == 0 {
 		return defaultTTYDiscoveryRoots()
 	}

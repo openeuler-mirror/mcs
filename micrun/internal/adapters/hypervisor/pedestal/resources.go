@@ -13,7 +13,6 @@ type EssentialResource struct {
 	ClientCPUSet string
 	VCPU         *uint32
 	MemoryMaxMB  *uint32
-	MemoryMinMB  uint32
 	VIF          []string
 }
 

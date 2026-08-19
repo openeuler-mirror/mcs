@@ -29,7 +29,7 @@ func (t *trackingWriteCloser) Close() error {
 
 var _ io.WriteCloser = (*trackingWriteCloser)(nil)
 
-func TestCloseIODoesNotHoldServiceLockWhileWaitingForStdinCloser(t *testing.T) {
+func TestCloseIOUnsetsStdinWithoutClosingTTYAndReturnsImmediately(t *testing.T) {
 	t.Parallel()
 
 	stdinClosed := make(chan struct{})
@@ -53,10 +53,12 @@ func TestCloseIODoesNotHoldServiceLockWhileWaitingForStdinCloser(t *testing.T) {
 		})
 	}()
 
+	// The recorded StdinPipe is the guest TTY fd the copier still uses:
+	// CloseIO must NOT close it, and must not wait on StdinCloser.
 	select {
 	case <-stdinClosed:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not close stdin pipe")
+		t.Fatal("CloseIO closed the TTY fd; it must be left to the copier")
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	lockAcquired := make(chan struct{})
@@ -69,14 +71,12 @@ func TestCloseIODoesNotHoldServiceLockWhileWaitingForStdinCloser(t *testing.T) {
 	select {
 	case <-lockAcquired:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("service lock remained held while CloseIO was waiting on stdinCloser")
+		t.Fatal("service lock remained held during CloseIO")
 	}
-
-	close(stdinCloser)
 
 	select {
 	case <-done:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseIO did not return after stdinCloser closed")
+		t.Fatal("CloseIO did not return immediately")
 	}
 }

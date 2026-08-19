@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Never trigger GUI askpass prompts (SSH_ASKPASS / SUDO_ASKPASS): tests must
+# fail fast instead of waiting for a desktop password dialog. Every entry
+# point hardens itself so the guarantee does not depend on the caller's
+# environment (a desktop session exports SSH_ASKPASS_REQUIRE=prefer).
+unset SSH_ASKPASS SUDO_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
+
 if [ -n "${MICRUN_TEST_REMOTE_SH_LOADED:-}" ]; then
     return 0
 fi
@@ -40,6 +47,11 @@ remote_scp_opts() {
 _remote_ssh() {
     local host="$1"
     shift
+
+    # Never trigger a GUI askpass — fail cleanly instead of hanging on a
+    # desktop session that exports SSH_ASKPASS_REQUIRE=prefer.
+    export SSH_ASKPASS=
+    export SSH_ASKPASS_REQUIRE=never
 
     if [ -n "${TEST_REMOTE_PASSWORD:-}" ]; then
         # shellcheck disable=SC2046

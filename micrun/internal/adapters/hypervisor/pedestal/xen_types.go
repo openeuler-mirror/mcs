@@ -6,8 +6,11 @@ const ShareWeightRatio = DefaultCgroupShare / DefaultXenWeight
 const balloonDriverName = "xen_balloon"
 
 // ShareToWeight converts cgroup CPU shares to Xen CPU weight.
+// ShareWeightRatio is a compile-time constant (1024/256 = 4); the runtime
+// guard protects against a future change to DefaultXenWeight that would
+// make the ratio zero (division by zero panic).
 func ShareToWeight(shares uint64) uint32 {
-	if ShareWeightRatio <= 0 {
+	if ShareWeightRatio == 0 {
 		return DefaultXenWeight
 	}
 	if shares == 0 {
@@ -30,6 +33,9 @@ type XlInfo struct {
 	totalMemoryMB      uint32
 	freeMemoryMB       uint32
 	xlver              string
+	xenMajor           string
+	xenMinor           string
+	xenExtra           string
 	maxCpuId           uint32
 	coresPerSocket     uint32
 	threadsPerCore     uint32

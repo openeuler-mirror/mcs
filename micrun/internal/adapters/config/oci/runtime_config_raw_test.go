@@ -281,12 +281,14 @@ func TestSetMaxContainerVCPUsDefaultsOnBlankInvalidAndZero(t *testing.T) {
 func TestParseRuntimeFromTomlAppliesScalarRuntimeConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "micrun.toml")
+	// Use the documented section names ([mica]/[resource]) — runtime config
+	// keys live under these sections (see docs/reference/configuration.md).
 	content := []byte(`
-[container_minmem]
-container_minmem = 64
-
-[pause_image]
+[mica]
 pause_image = "pause:test"
+
+[resource]
+container_minmem = 64
 `)
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("write toml config: %v", err)
@@ -306,5 +308,76 @@ pause_image = "pause:test"
 	}
 	if cfg.PauseImage != "pause:test" {
 		t.Fatalf("PauseImage = %q, want pause:test", cfg.PauseImage)
+	}
+}
+
+// TestParseRuntimeFromINIUsesDocumentedSections guards against the regression
+// where key names were passed as a SECTION whitelist to ParseINI, causing every
+// documented config (which uses [Mica]/[Resource]/[Xen] headers) to be silently
+// ignored. Keys outside the whitelisted sections must not leak through.
+func TestParseRuntimeFromINIUsesDocumentedSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "micrun.conf")
+	content := []byte(`
+[Mica]
+debug = true
+firmware_path = /fw/firmware.elf
+
+[Resource]
+max_container_vcpu = 4
+container_maxmem = 512
+container_minmem = 32
+static_resource = false
+hugepage_enable = true
+shared_cpu_pool = true
+
+[Xen]
+sandbox_minimum_vcpu = 1
+exclusive_dom0_cpu = true
+
+[Ignored]
+max_container_vcpu = 99
+debug = false
+`)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write ini config: %v", err)
+	}
+
+	cfg := NewRuntimeConfigWithHost(HostProfile{
+		Type:             pedestal.Xen,
+		MemLowThreshold:  16,
+		MemHighThreshold: 4096,
+	})
+	if err := cfg.ParseRuntimeFromINI(path); err != nil {
+		t.Fatalf("ParseRuntimeFromINI returned error: %v", err)
+	}
+
+	if cfg.MaxContainerVCPUs != 4 {
+		t.Errorf("MaxContainerVCPUs = %d, want 4", cfg.MaxContainerVCPUs)
+	}
+	if !cfg.HugePageSupport {
+		t.Errorf("HugePageSupport = false, want true")
+	}
+	if !cfg.SharedCPUPool {
+		t.Errorf("SharedCPUPool = false, want true")
+	}
+	if cfg.DefaultFirmwarePath != "/fw/firmware.elf" {
+		t.Errorf("DefaultFirmwarePath = %q, want /fw/firmware.elf", cfg.DefaultFirmwarePath)
+	}
+	if cfg.MiniVCPUNum != 1 {
+		t.Errorf("MiniVCPUNum = %d, want 1", cfg.MiniVCPUNum)
+	}
+	if !cfg.ExclusiveDom0CPU {
+		t.Errorf("ExclusiveDom0CPU = false, want true")
+	}
+	if cfg.MaxContainerMemMB != 512 {
+		t.Errorf("MaxContainerMemMB = %d, want 512", cfg.MaxContainerMemMB)
+	}
+	if cfg.MinContainerMemMB != 32 {
+		t.Errorf("MinContainerMemMB = %d, want 32", cfg.MinContainerMemMB)
+	}
+	// Keys under [Ignored] must not leak into the runtime config.
+	if cfg.MaxContainerVCPUs == 99 {
+		t.Errorf("MaxContainerVCPUs = 99: [Ignored] section leaked into runtime config")
 	}
 }

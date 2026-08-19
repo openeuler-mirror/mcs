@@ -15,7 +15,7 @@ func TestTaskStatusFromContainerState(t *testing.T) {
 		cntr.StatePaused:   task.Status_PAUSED,
 		cntr.StateStopped:  task.Status_STOPPED,
 		cntr.StateCreating: task.Status_UNKNOWN,
-		cntr.StateDown:     task.Status_UNKNOWN,
+		cntr.StateDown:     task.Status_STOPPED,
 		"future-state":     task.Status_UNKNOWN,
 	}
 

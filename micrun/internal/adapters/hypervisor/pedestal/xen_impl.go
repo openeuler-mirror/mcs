@@ -46,10 +46,14 @@ func (xen) SetCPUAffinity(ctx context.Context, clientID string, cpus cpuset.CPUS
 }
 
 func (xen) SetCPUWeight(ctx context.Context, clientID string, weight uint32) error {
-	return XlSchedCredit2(ctx, clientID, int(weight), 0)
+	// cap=-1 leaves the existing cap untouched: a weight-only update must
+	// not reset a previously set cap to unlimited.
+	return XlSchedCredit2(ctx, clientID, int(weight), -1)
 }
 
 func (xen) SetCPUCapacity(ctx context.Context, clientID string, capacity uint32) error {
+	// capacity>=0 is always passed explicitly: 0 means unlimited and must
+	// actually clear the hypervisor cap.
 	return XlSchedCredit2(ctx, clientID, 0, int(capacity))
 }
 
@@ -64,7 +68,7 @@ func (xen) Resume(ctx context.Context, clientID string) error {
 
 // StateQuerier implementation
 func (xen) ClientState(ctx context.Context, clientID string) (string, error) {
-	return xenStoreReadDomainState(ctx, clientID)
+	return xlListDomainState(ctx, clientID)
 }
 
 // MemoryManager implementation

@@ -34,18 +34,16 @@ func (s *Service) PrepareResize(ctx context.Context, runtime ports.TaskAttachRun
 }
 
 func shouldRestartAttachForResize(manager ports.IOManager, terminal bool, isRealAttach bool) bool {
-	// Always restart when the current manager is absent or not running.
-	// For non-terminal real attach sessions, a fresh manager is required to avoid
-	// stale stdio paths from previous runs.
-	isRunning := false
-	if !validation.IsNil(manager) {
-		isRunning = manager.IsRunning()
-	}
-
-	if validation.IsNil(manager) || !isRunning {
+	// Restart only when there is no live session. Production
+	// Session.RestartWithTTYs rejects already-started managers ("already
+	// started"), so a non-TTY running session must not force a restart —
+	// WinResize alone is enough for an active manager.
+	_ = terminal
+	_ = isRealAttach
+	if validation.IsNil(manager) {
 		return true
 	}
-	return isRealAttach && !terminal
+	return !manager.IsRunning()
 }
 
 func (s *Service) restartSessionForResize(
@@ -56,12 +54,25 @@ func (s *Service) restartSessionForResize(
 	snapshot attachTaskSnapshot,
 ) error {
 	log.Infof("[ATTACH] IO session not running for %s, restarting for attach", taskHandle.ID())
+
+	// Mark attached before the slow restart (open TTY, start session) so the
+	// auto-close timer resets during ResizePty reattach instead of racing
+	// internalKill — same contract as EnsureAttach.
+	withTaskLockIfAvailable(runtime, func() {
+		taskHandle.SetAttached(true)
+	})
+
 	factory, err := s.factoryForSessionRestart(snapshot.manager)
 	if err != nil {
+		clearAttachedUnlessLive(runtime, taskHandle)
 		return err
 	}
-	ttyHandles, err := openFreshTTYHandles(ctx, sandbox, taskHandle.ID())
+	// Detach from the short-lived ResizePty RPC context so a client timeout
+	// cannot abort TTY reopen mid-reattach (mirrors EnsureAttach).
+	sessionCtx := attachSessionContext(context.Background(), runtime)
+	ttyHandles, err := openFreshTTYHandles(sessionCtx, sandbox, taskHandle.ID())
 	if err != nil {
+		clearAttachedUnlessLive(runtime, taskHandle)
 		return err
 	}
 	updatedAttachInfo := buildAttachSessionInfo(attachSessionInfoRequest{
@@ -73,15 +84,19 @@ func (s *Service) restartSessionForResize(
 		freshTTY:   ttyHandles,
 	})
 
-	return s.restartOrBootstrapSession(sessionRestartRequest{
-		ctx:          ctx,
+	if err := s.restartOrBootstrapSession(sessionRestartRequest{
+		ctx:          sessionCtx,
 		runtime:      runtime,
 		taskHandle:   taskHandle,
 		manager:      snapshot.manager,
 		attachInfo:   updatedAttachInfo,
 		freshTTY:     ttyHandles,
 		errorContext: taskHandle.ID(),
-	})
+	}); err != nil {
+		clearAttachedUnlessLive(runtime, taskHandle)
+		return err
+	}
+	return nil
 }
 
 func (s *Service) factoryForSessionRestart(manager ports.IOManager) (ports.IOSessionFactory, error) {

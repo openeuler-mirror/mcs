@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"time"
 
 	micrunio "micrun/internal/adapters/io"
@@ -48,7 +49,7 @@ func New(ctx context.Context, id string, publisher shimv2.Publisher, shutdown fu
 	if err != nil {
 		return nil, err
 	}
-	if err := initializeDaemonMode(ctx, service, publisher, services.Recovery()); err != nil {
+	if err := initializeDaemonMode(ctx, service, publisher, services.Recovery(), services.Lifecycle()); err != nil {
 		return nil, err
 	}
 
@@ -62,11 +63,13 @@ func (s *shimService) RuntimeID() string {
 func (s *shimService) makeRecoveredTask(spec ports.RecoveredTask) ports.Task {
 	cType := recoveredContainerType(spec)
 	return &shimContainer{
-		s:           s,
-		id:          spec.ID,
-		cType:       cType,
-		exitIOch:    make(chan struct{}),
-		stdinCloser: make(chan struct{}),
+		s:             s,
+		id:            spec.ID,
+		cType:         cType,
+		exitIOch:      make(chan struct{}),
+		stdinCloser:   make(chan struct{}),
+		attachChanged: make(chan struct{}, 1),
+		recovered:     true,
 	}
 }
 
@@ -211,7 +214,7 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 		return "", err
 	}
 	if err = setupStateDir(defs.MicrunStateDir); err != nil {
-		log.Warnf("failed to setup micrun state directory: %v", err)
+		return "", fmt.Errorf("failed to setup micrun state directory: %w", err)
 	}
 
 	return sockAddr, nil
@@ -292,6 +295,14 @@ func killWithBackoffFunc(kill func() error, sleep func(time.Duration)) error {
 			}
 			return nil
 		}
+		// The process is already gone: that is the outcome we wanted. Retrying
+		// can never change it, and the backoff would burn ~1.5s and end with a
+		// misleading "kill failed after 5 attempts" warning on every teardown
+		// that races the shim exiting on its own.
+		if processAlreadyGone(err) {
+			log.Tracef("kill target already exited on attempt %d: %v", attempt+1, err)
+			return nil
+		}
 		lastErr = err
 		if attempt == maxAttempts-1 {
 			break
@@ -307,4 +318,11 @@ func killWithBackoffFunc(kill func() error, sleep func(time.Duration)) error {
 	}
 
 	return fmt.Errorf("kill failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// processAlreadyGone reports whether a kill failed because the target process
+// no longer exists (already reaped by the cmd.Wait goroutine, or exited on its
+// own). Both os.ErrProcessDone and a raw ESRCH mean "nothing left to kill".
+func processAlreadyGone(err error) bool {
+	return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
 }

@@ -68,7 +68,9 @@ func parseXlVcpuInfo(output string) (*XlVcpuInfo, error) {
 
 func parseVcpuLine(line string) (VCPUEntry, error) {
 	fields := strings.Fields(line)
-	if len(fields) < 8 {
+	// Newer xl prints a two-column "Hard/Soft" affinity; older versions a
+	// single affinity column (7 fields total, fields[6:] is the affinity).
+	if len(fields) < 7 {
 		return VCPUEntry{}, er.ErrOutputParse
 	}
 
@@ -123,37 +125,49 @@ func parseVcpuLine(line string) (VCPUEntry, error) {
 func ControlOSCpuset(ctx context.Context) cpuset.CPUSet {
 	vcpuInfo, err := xlvcpu(ctx)
 	if err != nil {
-		log.Debugf("failed to get vcpu info: %v", err)
-		return cpuset.NewCPUSet(0)
+		// Do not fall back to cpuset.NewCPUSet(0): a transient xl failure
+		// masquerading as "Dom0 pinned to CPU 0" would make every later CPU
+		// allocation believe only CPU 0 is available (the same hazard
+		// parseAffinity explicitly avoids). Return an empty set and let the
+		// caller decide; surface the failure at Warn so it is not invisible.
+		log.Warnf("failed to get vcpu info for Dom0 cpuset: %v", err)
+		return cpuset.NewCPUSet()
 	}
 
 	dom0VCPUs, exists := vcpuInfo.DomainVCPUMap["Domain-0"]
 	if !exists {
-		log.Debugf("Domain-0 not found in vcpu list")
-		return cpuset.NewCPUSet(0)
+		log.Warnf("Domain-0 not found in vcpu list; returning empty host cpuset")
+		return cpuset.NewCPUSet()
 	}
 
 	cpuSet := cpuset.NewCPUSet()
 	for _, vcpu := range dom0VCPUs {
 		affinityCPUs, err := parseAffinity(ctx, vcpu.HardAffinity)
 		if err != nil {
-			log.Debugf("failed to parse affinity '%s': %v", vcpu.HardAffinity, err)
+			log.Warnf("failed to parse affinity '%s': %v", vcpu.HardAffinity, err)
 			continue
 		}
 		cpuSet = cpuSet.Union(affinityCPUs)
 	}
 
 	if cpuSet.Size() == 0 {
-		return cpuset.NewCPUSet(0)
+		log.Warnf("Dom0 cpuset resolved to empty after parsing all vcpus")
+		return cpuset.NewCPUSet()
 	}
 	return cpuSet
 }
 
 func parseAffinity(ctx context.Context, affinity string) (cpuset.CPUSet, error) {
-	if affinity == "all" {
+	// Older xl prints "any cpu" for an unpinned vcpu; treat it like "all".
+	if affinity == "all" || affinity == "any cpu" {
 		xlInfo, err := xinfo(ctx)
 		if err != nil {
-			return cpuset.NewCPUSet(0, 1, 2, 3), nil
+			// Do not silently fall back to a single-CPU set: that would make
+			// every later CPU allocation believe only CPU 0 is available.
+			return cpuset.NewCPUSet(), fmt.Errorf("failed to get xl info for affinity: %w", err)
+		}
+		if xlInfo.nrCpus == 0 || xlInfo.nrCpus > 1024 {
+			return cpuset.NewCPUSet(), fmt.Errorf("invalid CPU count from xl info: %d", xlInfo.nrCpus)
 		}
 		cpuList := make([]int, xlInfo.nrCpus)
 		for i := uint32(0); i < xlInfo.nrCpus; i++ {

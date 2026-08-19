@@ -65,6 +65,7 @@ func (f *fakeRecoveredTask) ExitChan() chan struct{}                       { ret
 func (f *fakeRecoveredTask) IOExit()                                       {}
 func (f *fakeRecoveredTask) CanBeSandbox() bool                            { return false }
 func (f *fakeRecoveredTask) IsCriSandbox() bool                            { return false }
+func (f *fakeRecoveredTask) IsRecovered() bool                             { return true }
 func (f *fakeRecoveredTask) Annotations() map[string]string                { return nil }
 func (f *fakeRecoveredTask) IOManager() ports.IOManager                    { return nil }
 func (f *fakeRecoveredTask) SetIOManager(ports.IOManager)                  {}
@@ -72,8 +73,13 @@ func (f *fakeRecoveredTask) AttachInfo() *ports.AttachInfo                 { ret
 func (f *fakeRecoveredTask) SetAttachInfo(*ports.AttachInfo)               {}
 func (f *fakeRecoveredTask) SetStdinPipe(io.WriteCloser)                   {}
 func (f *fakeRecoveredTask) SetAttached(attached bool) bool                { return false }
+func (f *fakeRecoveredTask) IsAttached() bool                              { return false }
 
 type fakeSandbox struct{}
+
+func (fakeSandbox) WaitContainerExit(ctx context.Context, containerID string) (int32, error) {
+	return 0, nil
+}
 
 func (fakeSandbox) SandboxID() string                                 { return "sb" }
 func (fakeSandbox) Start(context.Context) error                       { return nil }
@@ -110,7 +116,7 @@ func TestServiceRecoverRestoresSandboxAndTasks(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Recover returned unexpected error: %v", err)
 	}
@@ -128,6 +134,35 @@ func TestServiceRecoverRestoresSandboxAndTasks(t *testing.T) {
 	}
 }
 
+func TestServiceRecoverStartsExitWatcherForRunningTask(t *testing.T) {
+	svc := NewService()
+	runtime := &fakeRecoveryRuntime{
+		namespace: "default",
+		runtimeID: "task-1",
+		tasks:     make(map[string]ports.Task),
+	}
+	backend := &fakeRecoveryBackend{
+		sandbox: fakeSandbox{},
+		tasks: []ports.RecoveredTask{
+			{ID: "task-running", IsRunning: true},
+			{ID: "task-stopped", IsRunning: false, IsStopped: true},
+		},
+	}
+
+	var watched []string
+	err := svc.Recover(context.Background(), runtime, backend, func(spec ports.RecoveredTask) ports.Task {
+		return &fakeRecoveredTask{id: spec.ID}
+	}, func(task ports.Task) {
+		watched = append(watched, task.ID())
+	})
+	if err != nil {
+		t.Fatalf("Recover returned unexpected error: %v", err)
+	}
+	if len(watched) != 1 || watched[0] != "task-running" {
+		t.Fatalf("exit watcher invoked for %v, want only [task-running]", watched)
+	}
+}
+
 func TestServiceRecoverWithNilBackend(t *testing.T) {
 	svc := NewService()
 	runtime := &fakeRecoveryRuntime{
@@ -138,7 +173,7 @@ func TestServiceRecoverWithNilBackend(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, nil, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Recover with nil backend should not error, got: %v", err)
 	}
@@ -158,7 +193,7 @@ func TestServiceRecoverWithTypedNilBackend(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Recover with typed nil backend should not error, got: %v", err)
 	}
@@ -180,7 +215,7 @@ func TestServiceRecoverHonorsCanceledContextBeforeCleanup(t *testing.T) {
 
 	err := svc.Recover(ctx, runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Recover error = %v, want context.Canceled", err)
@@ -195,7 +230,7 @@ func TestServiceRecoverRequiresRuntime(t *testing.T) {
 
 	err := svc.Recover(context.Background(), nil, &fakeRecoveryBackend{}, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("expected Recover to require runtime")
 	}
@@ -207,7 +242,7 @@ func TestServiceRecoverRequiresTypedNilRuntime(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, &fakeRecoveryBackend{}, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("expected Recover to require runtime")
 	}
@@ -226,7 +261,7 @@ func TestServiceRecoverWithRestoreError(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if !os.IsNotExist(err) {
 		t.Fatalf("expected os.ErrNotExist, got: %v", err)
 	}
@@ -243,7 +278,7 @@ func TestServiceRecoverRequiresTaskFactory(t *testing.T) {
 		sandbox: fakeSandbox{},
 	}
 
-	err := svc.Recover(context.Background(), runtime, backend, nil)
+	err := svc.Recover(context.Background(), runtime, backend, nil, nil)
 	if err == nil {
 		t.Fatal("expected Recover to require task factory")
 	}
@@ -263,7 +298,7 @@ func TestServiceRecoverWithEmptyTasks(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Recover with empty tasks should not error, got: %v", err)
 	}
@@ -295,7 +330,7 @@ func TestServiceRecoverStopsSavingTasksAfterContextCancellation(t *testing.T) {
 	err := svc.Recover(ctx, runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		cancel()
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Recover error = %v, want context.Canceled", err)
@@ -324,7 +359,7 @@ func TestServiceRecoverSkipsNilTaskFactory(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		return nil
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Recover should not error with nil task factory, got: %v", err)
 	}
@@ -353,7 +388,7 @@ func TestServiceRecoverSkipsInvalidTaskIDs(t *testing.T) {
 
 	err := svc.Recover(context.Background(), runtime, backend, func(spec ports.RecoveredTask) ports.Task {
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Recover returned unexpected error: %v", err)
 	}
@@ -379,7 +414,7 @@ func TestRestoreRecoveredTasksRequiresValidSpecBeforeFactory(t *testing.T) {
 	}, func(spec ports.RecoveredTask) ports.Task {
 		factoryCalls++
 		return &fakeRecoveredTask{id: spec.ID}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("restoreRecoveredTasks returned error: %v", err)
 	}

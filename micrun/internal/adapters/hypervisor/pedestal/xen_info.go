@@ -36,9 +36,9 @@ var xlInfoFields = map[string]xlInfoSetter{
 	"nr_cpus":               parseUint32Field("nr_cpus", func(i *XlInfo, v uint32) { i.nrCpus = v }),
 	"total_memory":          parseUint32Field("total_memory", func(i *XlInfo, v uint32) { i.totalMemoryMB = v }),
 	"free_memory":           parseUint32Field("free_memory", func(i *XlInfo, v uint32) { i.freeMemoryMB = v }),
-	"xen_major":             func(i *XlInfo, v string) error { i.xlver = v; return nil },
-	"xen_minor":             func(i *XlInfo, v string) error { i.xlver += "." + v; return nil },
-	"xen_extra":             func(i *XlInfo, v string) error { i.xlver += v; return nil },
+	"xen_major":             func(i *XlInfo, v string) error { i.xenMajor = v; return nil },
+	"xen_minor":             func(i *XlInfo, v string) error { i.xenMinor = v; return nil },
+	"xen_extra":             func(i *XlInfo, v string) error { i.xenExtra = v; return nil },
 	"max_cpu_id":            parseUint32Field("max_cpu_id", func(i *XlInfo, v uint32) { i.maxCpuId = v }),
 	"cores_per_socket":      parseUint32Field("cores_per_socket", func(i *XlInfo, v uint32) { i.coresPerSocket = v }),
 	"threads_per_core":      parseUint32Field("threads_per_core", func(i *XlInfo, v uint32) { i.threadsPerCore = v }),
@@ -83,6 +83,16 @@ func parseXlInfo(output string) (*XlInfo, error) {
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading xl info output: %w", err)
+	}
+
+	// Assemble the Xen version string from its components in a fixed order,
+	// independent of the field order in `xl info` output.
+	if info.xenMajor != "" {
+		info.xlver = info.xenMajor
+		if info.xenMinor != "" {
+			info.xlver += "." + info.xenMinor
+		}
+		info.xlver += info.xenExtra
 	}
 
 	return info, nil
@@ -138,27 +148,71 @@ func MemoryMB(ctx context.Context) (free, total uint32) {
 		log.Debugf("failed to get machine info: %v", err)
 		return free, total
 	}
-	return i.freeMemoryMB, i.totalMemoryMB
+	xlFree, xlTotal, ok := xlInfoMemoryMB(i)
+	if !ok {
+		log.Warnf("MemoryMB: xl info reported no usable total memory, falling back to host memory (%d MiB)", total)
+		return free, total
+	}
+	return xlFree, xlTotal
+}
+
+// xlInfoMemoryMB reports the memory `xl info` observed, and whether it is
+// usable at all. A zero total means `xl info` ran but reported no
+// total_memory line (trimmed xl build, renamed field, unexpected output
+// shape) — a parse anomaly, not a host with no memory. Callers must fall back
+// to the gopsutil reading instead of propagating the zero: it would clamp
+// MemHighThreshold to the 2 MiB floor, after which every configured container
+// memory value fails memoryWithinHostBounds and the runtime config silently
+// degrades to the floor. Same policy as MaxCPUNum's zero guard.
+func xlInfoMemoryMB(i *XlInfo) (free, total uint32, ok bool) {
+	if i == nil || i.totalMemoryMB == 0 {
+		return 0, 0, false
+	}
+	return i.freeMemoryMB, i.totalMemoryMB, true
 }
 
 var (
-	maxCPUNum     uint32
-	maxCPUNumOnce sync.Once
+	maxCPUNum    uint32
+	maxCPUNumSet bool
+	maxCPUNumMu  sync.Mutex
 )
 
+// MaxCPUNum returns the number of physical CPUs as reported by xl info,
+// cached after the first successful query. The (possibly slow) xl info
+// subprocess runs OUTSIDE the lock so concurrent callers are not serialized
+// behind it; on success the result is published under the lock (first result
+// wins — they are equivalent). A failed or zero query is never cached, so
+// the next call retries instead of poisoning CPU-capacity decisions.
 func MaxCPUNum(ctx context.Context) uint32 {
-	maxCPUNumOnce.Do(func() {
-		i, err := xinfo(ctx)
-		if err != nil {
-			log.Debugf("failed to get machine info: %v", err)
-			maxCPUNum = uint32(runtime.NumCPU())
-		} else {
-			maxCPUNum = i.nodePhysicalCPUNum()
-		}
-		log.Debugf("MaxCPUNum initialized to: %d", maxCPUNum)
-	})
+	maxCPUNumMu.Lock()
+	if maxCPUNumSet {
+		n := maxCPUNum
+		maxCPUNumMu.Unlock()
+		return n
+	}
+	maxCPUNumMu.Unlock()
 
-	return maxCPUNum
+	i, err := xinfo(ctx)
+	if err != nil {
+		log.Debugf("failed to get machine info: %v", err)
+		return uint32(runtime.NumCPU())
+	}
+	n := i.nodePhysicalCPUNum()
+	if n == 0 {
+		// A zero value indicates a parse anomaly; do not cache it, so a
+		// subsequent call can retry instead of poisoning every CPU-capacity
+		// decision with 0.
+		log.Warnf("MaxCPUNum: xl info reported 0 physical CPUs, not caching")
+		return uint32(runtime.NumCPU())
+	}
+	maxCPUNumMu.Lock()
+	if !maxCPUNumSet {
+		maxCPUNum = n
+		maxCPUNumSet = true
+	}
+	maxCPUNumMu.Unlock()
+	log.Debugf("MaxCPUNum initialized to: %d", n)
+	return n
 }
 
 func MemLowThreshold() uint32 {
@@ -167,10 +221,23 @@ func MemLowThreshold() uint32 {
 
 func MemHighThreshold(ctx context.Context) uint32 {
 	xi, err := xinfo(ctx)
-	if err != nil {
+	var xlTotal uint32
+	var usable bool
+	if err == nil {
+		_, xlTotal, usable = xlInfoMemoryMB(xi)
+	}
+	// A zero total is treated exactly like a failed query (see
+	// xlInfoMemoryMB): fall back to gopsutil instead of returning 0, because
+	// a zero high threshold makes host_profile clamp high=low=2 and every
+	// container memory request is then rejected as exceeding the host limit.
+	if !usable {
+		log.Debugf("failed to get usable machine memory info: %v", err)
+		if v, err := mem.VirtualMemory(); err == nil && v != nil {
+			return uint32(v.Total >> 20)
+		}
 		return 0
 	}
-	maxMem := xi.totalMemoryMB
+	maxMem := xlTotal
 	if maxMem < MemLowThreshold() {
 		maxMem = MemLowThreshold() + 1
 	}

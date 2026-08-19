@@ -25,7 +25,12 @@ description: 当任务明确落在 micrun 子项目时使用，包括相关的 r
 从这里开始：
 - `micrun/AGENTS.md`
 
+按任务类型选择 workflow skill：
+- 构建/QEMU 产物：`micrun/skills/micrun-qemu-build/SKILL.md`
+- QEMU 起机与排障：`micrun/skills/qemu-quickstart-debug/SKILL.md`
+
 ## 阅读指导
 
 - 先具备 `../mica-overview/SKILL.md` 的基础背景模型
 - 再阅读 `micrun/AGENTS.md`
+- 构建或排障任务继续读对应的 workflow skill

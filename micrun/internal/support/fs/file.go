@@ -9,7 +9,6 @@ import (
 	cdtypes "github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/mount"
 
-	defs "micrun/internal/support/definitions"
 	log "micrun/internal/support/logger"
 	"micrun/internal/support/validation"
 )
@@ -98,6 +97,48 @@ func SyncDir(dir string) error {
 	return f.Sync()
 }
 
+// WriteFileAtomic writes data via a synced temp file + rename so readers
+// (including a restarted process) never observe a truncated or half-written
+// file. The parent directory is fsynced after the rename.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".runtime-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+
+	cleanupTemp := func() {
+		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		cleanupTemp()
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanupTemp()
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanupTemp()
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanupTemp()
+		return err
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanupTemp()
+		return err
+	}
+
+	return SyncDir(filepath.Dir(path))
+}
+
 func EnsureDir(path string, mode os.FileMode) error {
 	cleanPath, err := CleanAbsolutePath(path)
 	if err != nil {
@@ -117,23 +158,6 @@ func EnsureDir(path string, mode os.FileMode) error {
 	}
 
 	return nil
-}
-
-func SetReadonly(path string) error {
-	return filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		mode := os.FileMode(0444)
-		if info.IsDir() {
-			mode = os.FileMode(0555)
-		}
-		return os.Chmod(path, mode)
-	})
-}
-
-func RemoveContainerCacheDir(id string) error {
-	return RemoveContainerCacheDirAt(defs.DefaultMicaContainersRoot, id)
 }
 
 func RemoveContainerCacheDirAt(containerRoot, id string) error {
@@ -167,6 +191,7 @@ func MountDirs(mounts []*cdtypes.Mount, dest string) error {
 	if err := EnsureDir(cleanDest, 0o711); err != nil {
 		return fmt.Errorf("mount destination is invalid: %w", err)
 	}
+	var mounted []string
 	for _, rm := range mounts {
 		m := &mount.Mount{
 			Type:    rm.Type,
@@ -175,8 +200,16 @@ func MountDirs(mounts []*cdtypes.Mount, dest string) error {
 		}
 
 		if err := m.Mount(cleanDest); err != nil {
+			// Rollback already-mounted entries in reverse order to avoid
+			// leaking mounts on partial failure.
+			for i := len(mounted) - 1; i >= 0; i-- {
+				if uerr := mount.UnmountAll(mounted[i], 0); uerr != nil {
+					log.Warnf("failed to unmount %s during rollback: %v", mounted[i], uerr)
+				}
+			}
 			return fmt.Errorf("failed to mount to %s: %w", cleanDest, err)
 		}
+		mounted = append(mounted, cleanDest)
 	}
 	return nil
 }

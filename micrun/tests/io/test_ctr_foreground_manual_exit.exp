@@ -119,7 +119,7 @@ expect_count "ctr task ls | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "
 expect_count "xl list | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "xen-after-first" 0
 expect_count "ctr container ls | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "containers-after-first" 1
 
-start_and_exit "second" {UniProton 24\.03-LTS} "uname"
+start_and_exit "second" {UniProton} "uname"
 expect_count "ctr task ls | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "tasks-after-second" 0
 expect_count "xl list | awk '\$1 == \"$cid\" { c++ } END { print c + 0 }'" "xen-after-second" 0
 

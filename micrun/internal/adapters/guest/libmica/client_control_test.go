@@ -266,9 +266,9 @@ func TestMicaUpdateRequestWireFormatUsesProtocolFields(t *testing.T) {
 	}{
 		{name: "vcpu", field: MicaUpdateVCPU, value: "2", want: "VCPU 2"},
 		{name: "pcpu constraints", field: MicaUpdatePCPUConstraints, value: "0-3", want: "CPU 0-3"},
-		{name: "cpu capacity protocol spelling", field: MicaUpdateCPUCapacity, value: "75", want: "CPUCpacity 75"},
+		{name: "cpu capacity protocol spelling", field: MicaUpdateCPUCapacity, value: "75", want: "CPUCapacity 75"},
 		{name: "cpu weight", field: MicaUpdateCPUWeight, value: "512", want: "CPUWeight 512"},
-		{name: "memory max", field: MicaUpdateMemoryMax, value: "128", want: "MaxMem 128"},
+		{name: "memory max", field: MicaUpdateMemoryMax, value: "128", want: "MaxMemory 128"},
 		{name: "memory current", field: MicaUpdateMemoryCurrent, value: "64", want: "Memory 64"},
 	}
 
