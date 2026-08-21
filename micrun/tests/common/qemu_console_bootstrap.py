@@ -90,9 +90,15 @@ PREP_STEPS = [
         # marker and forces a retry. Steps are kept short on purpose: the
         # serial line truncates reliably somewhere below ~400 bytes, so
         # each sshd setting travels as its own step.
-        "(sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config; "
+        # The marker is gated on `sshd -T` (effective config), not on a file
+        # grep: serial corruption can mangle the sed pattern, and an
+        # appended-but-shadowed line would still satisfy a naive grep while
+        # sshd keeps rejecting the setting (first match wins).
+        "(sed -i 's/^#[[:space:]]*\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config; "
+        "sed -i 's/^#[[:space:]]*\\?PermitRootLogin[[:space:]].*/PermitRootLogin yes/' /etc/ssh/sshd_config; "
         "grep -q '^PermitRootLogin yes' /etc/ssh/sshd_config "
-        "|| echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config) "
+        "|| echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config; "
+        "sshd -T 2>/dev/null | grep -q '^permitrootlogin yes$') "
         "&& echo PREP_SSHCFG_DONE",
         re.compile(rb"(?m)^PREP_SSHCFG_DONE\r?$"),
     ),
@@ -101,9 +107,14 @@ PREP_STEPS = [
         # variants ship it disabled (only publickey/keyboard-interactive
         # offered), which the sshpass-based test tooling cannot
         # authenticate with.
-        "(sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; "
+        # Same sshd -T gating as PermitRootLogin: an uncommented later
+        # append does not override an earlier `no` (first read wins), so a
+        # plain file grep can report DONE while password auth stays off.
+        "(sed -i 's/^#[[:space:]]*\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; "
+        "sed -i 's/^PasswordAuthentication[[:space:]]*no.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; "
         "grep -q '^PasswordAuthentication yes' /etc/ssh/sshd_config "
-        "|| echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config) "
+        "|| echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config; "
+        "sshd -T 2>/dev/null | grep -q '^passwordauthentication yes$') "
         "&& echo PREP_SSHPW_DONE",
         re.compile(rb"(?m)^PREP_SSHPW_DONE\r?$"),
     ),
@@ -221,13 +232,13 @@ SHELL_RE = re.compile(rb"#\s*$")
 UID_RE = re.compile(rb"uid=0")
 FAIL_RE = re.compile(rb"Login incorrect")
 
-PROMPT_WINDOW = 256
+PROMPT_WINDOW = 2048
 TAIL_LIMIT = 16384
 WAKE_INTERVAL = 15.0
 STATE_TIMEOUT = 90.0
 # Per-step wait must stay well under the image's bash TMOUT auto-logout
 # (observed firing at ~60s while sitting at a continuation prompt).
-STEP_TIMEOUT = 30.0
+STEP_TIMEOUT = 45.0
 MAX_LOGIN_ATTEMPTS = 3
 MAX_STEP_ATTEMPTS = 3
 # The emulated serial port drops input when a long line is written in one

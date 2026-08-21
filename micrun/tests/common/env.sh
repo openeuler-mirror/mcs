@@ -49,6 +49,9 @@ export K3S_MASTER_URL="${K3S_MASTER_URL:-https://192.168.1.100:6443}"
 export K3S_MASTER_NODE="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
 export K3S_WORKER_NODES="${K3S_WORKER_NODES:-}"
 export K3S_KUBECTL_BIN="${K3S_KUBECTL_BIN:-kubectl}"
+# agent-only 边侧镜像没有 kubectl 子命令时，run_k3s_tests.sh 会自动置 true
+# 并把 K3S_KUBECTL_BIN 切成 kubectl --kubeconfig（见 run_kubectl_snippet）
+export K3S_KUBECTL_LOCAL="${K3S_KUBECTL_LOCAL:-false}"
 export K3S_CTR_BIN="${K3S_CTR_BIN:-ctr}"
 export K3S_SINGLE_NODE="${K3S_SINGLE_NODE:-false}"
 export K3S_HOST_NETWORK="${K3S_HOST_NETWORK:-false}"
@@ -151,6 +154,7 @@ print_common_test_env() {
     echo "  K3S_MASTER=$K3S_MASTER_NODE"
     echo "  K3S_WORKERS=$K3S_WORKER_NODES"
     echo "  K3S_KUBECTL_BIN=$K3S_KUBECTL_BIN"
+    echo "  K3S_KUBECTL_LOCAL=$K3S_KUBECTL_LOCAL"
     echo "  K3S_CTR_BIN=$K3S_CTR_BIN"
     echo "  K3S_SINGLE_NODE=$K3S_SINGLE_NODE"
     echo "  K3S_HOST_NETWORK=$K3S_HOST_NETWORK"

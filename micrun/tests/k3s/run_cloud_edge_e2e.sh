@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+# 非交互加固：桌面会话可能全局设置 ksshaskpass（SSH_ASKPASS_REQUIRE=prefer），
+# 任何 ssh/git 凭据路径都会弹 GUI 密码窗并挂死自动化；入口处统一摘除
+unset SSH_ASKPASS SUDO_ASKPASS GIT_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/test_utils.sh"
 source "${SCRIPT_DIR}/../test-env.sh"
