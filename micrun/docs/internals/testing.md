@@ -65,6 +65,31 @@ micrun 没有托管 CI。强制执行的载体是 **`make ci` 本地验证门**�
 `docs/reference/annotations.md`（键位契约全集）+ features 套件
 auto-close/资源注解用例兜底。
 
+**K3s 通用用例集**（`run_all_tests.sh k3s`，场景 preflight /
+runtimeclass / pod-lifecycle / deployment / pod-logs / resource-limits /
+cpu-pinning / multi-node / self-healing / interaction / ota）是 K3s
+日常回归的统一入口，与验收 7/8 的场景套件互补：场景套件背书交付
+验收，通用集看护集群行为回归（含 vCPU pinning 注解的
+`cpu-pinning` 场景——回归看护 infra/stopped 容器不得被 pin 下发
+毒化，断言 Pod Running + 边侧 `xl vcpu-pin` affinity 记录）。云边
+形态跑通用集的两个环境要点（agent-only 边侧的 kubectl 回退、无 CNI
+的 hostNetwork/toleration）见 `tests/k3s/README.md`。
+
+**功能注解的 E2E 覆盖分类**（全集 22 键，`docs/reference/annotations.md`）：
+
+- E2E 显式看护（9 键）：`auto_close`、`auto_close_timeout`、`os`、
+  `firmware_path`、`ped.pedestal`、`ped.conf`、`min_memory_mb`、
+  `max_vcpu_num`（features/lifecycle/io/通用集用例直接注入并断言），
+  另有 `enable_vcpus_pinning` 经通用集 `cpu-pinning` 场景看护
+  （`shared_cpu_pool` 是配置文件键而非注解，不在此列）；
+- 单测背书解析与消费（其余键）：键值解析、默认值与非法值拒绝全部
+  有 Go 单测（`annotations_test.go`/`annotations.go` 常量契约 +
+  `oci` 层消费测试），部分键的运行态行为依赖特定环境（如
+  `hugepage_enable` 需大页内存、`exclusive_dom0_cpu` 需独占 CPU
+  布局），E2E 不强行覆盖；
+- 未接线键（`disable_new_netns`、`pipe_size`、`experimental`）：
+  仅解析无消费点，`annotations.md` 各条目已标注"尚未接线"。
+
 ## 1.6 端到端性能基线
 
 测量方法：guest 内 `date +%s.%N` 差值，多轮取中位数；可复现的测量与

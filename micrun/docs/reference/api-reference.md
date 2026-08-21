@@ -172,7 +172,7 @@ metrics 采集位于 `transport/shimv2` 内部，不属于 application/task 的 
 定义位置：
 `internal/ports/guest_executor.go`
 
-`GuestExecutor` 是一个复合接口，由三个子接口按 Interface Segregation Principle 组合而成：
+`GuestExecutor` 是一个复合接口，由四个子接口按 Interface Segregation Principle 组合而成：
 
 - **`GuestResourceReader`**: 读取当前资源状态
   - `ReadResource() *ResourceSnapshot`
@@ -180,22 +180,25 @@ metrics 采集位于 `transport/shimv2` 内部，不属于 application/task 的 
   - `MemoryThresholdMB() uint32`
 
 - **`GuestResourceUpdater`**: 应用资源变更
-  - `UpdateCPUCapacity(capacity uint32) error`
-  - `UpdateCPUWeight(weight uint32) error`
-  - `UpdateVCPUNum(vcpu uint32) (oldCPUs, newCPUs uint32, err error)`
-  - `UpdatePCPUConstraints(cpuSet string) error`
-  - `EnsureMemoryLimit(mb uint32) error`
-  - `UpdateMemoryThreshold(memMiB uint32) error`
-  - `UpdateMemory(memMiB uint32) error`
+  - `UpdateCPUCapacity(ctx, capacity uint32) error`
+  - `UpdateCPUWeight(ctx, weight uint32) error`
+  - `UpdateVCPUNum(ctx, vcpu uint32) (oldCPUs, newCPUs uint32, err error)`
+  - `RecordVCPUCount(vcpu uint32)`
+  - `UpdatePCPUConstraints(ctx, cpuSet string) error`
+  - `EnsureMemoryLimit(ctx, mb uint32) error`
+  - `UpdateMemoryThreshold(ctx, memMiB uint32) error`
+  - `UpdateMemory(ctx, memMiB uint32) error`
   - `RecordMemoryState(current, threshold uint32)`
-  - `VCPUPin(cpuList []int) error`
+  - `VCPUPin(ctx, cpuList []int) error`
 
-- **`GuestResourceDiff`**: 检查是否需要资源更新
-  - `NeedUpdateCPUCap(target uint32) bool`
+- **`GuestResourceDiff`**: 检查纯本地增量是否需要资源更新
   - `NeedUpdateMemLimit(target uint32) bool`
   - `NeedUpdateCPUSet(oldSet, newSet string) bool`
-  - `NeedUpdateCPUShare(target uint32) bool`
-  - `NeedUpdateVCPUs(target uint32) bool`
+  - `NeedUpdateCPUWeight(target uint32) bool`
+
+- **`GuestResourceCapacityDiff`**: 检查可能需要宿主上限参与判定的资源增量
+  - `NeedUpdateCPUCap(ctx, target uint32) bool`
+  - `NeedUpdateVCPUs(ctx, target uint32) bool`
 
 关联类型：
 
@@ -347,7 +350,7 @@ shim daemon start
 
 当前所有创建和恢复链路通过显式注入完成：
 
-- `containerDeps`（`Dependencies` 结构体，包含 `StateStoreFactory`、`GuestExecutorFactory` 等 9 个必需字段）
+- `containerDeps`（`Dependencies` 结构体，包含 `StateStoreFactory`、`GuestExecutorFactory` 等 10 个必需字段）
 - `resourcePolicy`（从 `Dependencies` 中提取的资源规划能力子集）
 - `runtimeResolver`（运行时配置解析器）
 - `HostProfile`（宿主平台画像）

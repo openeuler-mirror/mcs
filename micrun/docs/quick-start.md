@@ -605,7 +605,7 @@ nerdctl attach <container_id>
 
 **命名空间说明**：
 - `ctr` 默认使用 `default` 命名空间
-- `nerdctl` 在此 openEuler Embedded 环境中默认使用 `default` 命名空间（与标准 nerdctl 不同，标准版本默认使用 `k8s.io`）
+- `nerdctl` 在此 openEuler Embedded 环境中默认使用 `default` 命名空间，与标准 nerdctl 的默认一致；`k8s.io` 是 K8s/CRI 场景下容器所在的命名空间，由 kubelet/crictl 使用
 - 可以用 `ctr -n <namespace>` 或 `nerdctl -n <namespace>` 来指定命名空间
 - 使用 `ctr namespace ls` 或 `nerdctl namespace ls` 查看所有命名空间
 

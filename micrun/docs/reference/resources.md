@@ -211,7 +211,7 @@ spec:
 |------|------|
 | `internal/adapters/hypervisor/pedestal/planner.go` | 资源解析，`(*PedestalFacade).PlanEssentialResources()`, `linuxResourceToEssential()` |
 | `internal/adapters/hypervisor/pedestal/resources.go` | 资源结构定义 `EssentialResource` |
-| `internal/domain/container/container_resource_parse.go` | `ParseOCIResources()`、`ValidateResourceLimits()`、CPU/Memory 解析编排 |
+| `internal/domain/container/container_resource_parse.go` | `ParseOCIResourcesWithPolicy()`、`ValidateResourceLimitsWithPolicy()`、CPU/Memory 解析编排 |
 | `internal/domain/container/container_resource_cpu.go` | CPU capacity、cpuset 归一化、越界 CPU 过滤 |
 | `internal/domain/container/container_resource_memory.go` | memory limit / reservation 映射 |
 | `internal/adapters/config/oci/resource_defaults.go` | 内存阈值计算 `calculateClientMemThreshold()` |
@@ -224,11 +224,11 @@ func (f *PedestalFacade) PlanEssentialResources(spec *specs.Spec) *EssentialReso
 func linuxResourceToEssential(spec *specs.Spec, convertShares bool) *EssentialResource
 
 // 容器领域资源解析 (internal/domain/container/container_resource_parse.go)
-func (r *ContainerConfig) ParseOCIResources(spec *specs.Spec) error
-func ValidateResourceLimits(config *ContainerConfig) error
+func (r *ContainerConfig) ParseOCIResourcesWithPolicy(ctx context.Context, spec *specs.Spec, policy ResourcePolicy) error
+func ValidateResourceLimitsWithPolicy(ctx context.Context, config *ContainerConfig, policy ResourcePolicy) error
 
 // 容器领域 CPU mask 归一化 (internal/domain/container/container_resource_cpu.go)
-func normalizeCPUSet(mask string, fallbackVCPUs uint32) (string, uint32)
+func normalizeCPUSetWithLimit(mask string, fallbackVCPUs uint32, maxCPUs uint32) normalizedCPUSet
 
 // 内存阈值管理 (internal/adapters/config/oci/resource_defaults.go)
 func calculateClientMemThreshold(config *cntr.ContainerConfig, runtimeCfg *RuntimeConfig) uint32
