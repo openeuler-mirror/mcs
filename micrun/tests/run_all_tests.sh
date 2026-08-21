@@ -9,6 +9,11 @@
 #   ./run_all_tests.sh k3s interaction  # 运行 K3s 交互测试
 #   ./run_all_tests.sh k3s ota          # 运行 K3s OTA 测试
 
+
+# 非交互加固：桌面会话可能全局设置 ksshaskpass（SSH_ASKPASS_REQUIRE=prefer），
+# 任何 ssh/git 凭据路径都会弹 GUI 密码窗并挂死自动化；入口处统一摘除
+unset SSH_ASKPASS SUDO_ASKPASS GIT_ASKPASS
+export SSH_ASKPASS_REQUIRE=never
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +55,7 @@ MicRun 测试套件 - 全局入口
   category    测试类别 (io, k3s, lifecycle, performance)
   test_id     场景名。k3s 类别用语义名：preflight / runtimeclass /
               pod-lifecycle / deployment / pod-logs / resource-limits /
-              multi-node / self-healing / interaction / ota
+              cpu-pinning / multi-node / self-healing / interaction / ota
               （旧 K3S-00x 编号仍作兼容别名）；lifecycle/performance
               类别传 Go 测试名正则
 

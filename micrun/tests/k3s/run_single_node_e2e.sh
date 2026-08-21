@@ -110,8 +110,8 @@ require_remote_file "$K3S_BIN" || {
     exit 1
 }
 
-preclean_single_node_runtime
-
+# 预检必须先于 preclean：preclean 会停掉 micrun-k3s-agent 并删除 k3s
+# 配置，云边场景下被 skip 路径执行会导致 agent 拆除后无人恢复
 AVAILABLE_MB="$(remote_mem_available_mb | tr -d '[:space:]')"
 SWAP_COUNT="$(remote_swap_device_count | tr -d '[:space:]')"
 
@@ -119,6 +119,8 @@ if [ -n "$AVAILABLE_MB" ] && [ "$AVAILABLE_MB" -lt "$MIN_AVAILABLE_MB" ] && [ "$
     log_warn "skip single-node k3s: MemAvailable=${AVAILABLE_MB}MB, swap=${SWAP_COUNT}, threshold=${MIN_AVAILABLE_MB}MB"
     exit 0
 fi
+
+preclean_single_node_runtime
 
 HOST_UTC="\$(date -u '+%Y-%m-%d %H:%M:%S')"
 cat > /tmp/k3s-single-node-bootstrap.local.sh <<EOF

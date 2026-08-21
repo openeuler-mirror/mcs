@@ -21,6 +21,16 @@ micrun/tests/bin/test-k3s-ota
 兼容别名）。OTA 用例场景名是 `ota`，需要准备 v2 RTOS 镜像，因此默认不随
 无场景参数的 K3s 类别运行；如需纳入默认类别，设置 `K3S_INCLUDE_OTA=true`。
 
+云边形态跑通用用例集的两个环境要点：
+
+- **边侧 kubectl**：oEE 镜像内置的 K3s 是 agent 形态，没有 `kubectl`
+  子命令。此时导出 `K3S_LOCAL_KUBECONFIG` 指向集群 kubeconfig（例如
+  从云侧 server 容器导出的 `k3s.yaml`，server 地址改为云侧 IP），套件
+  会自动回退为宿主 `kubectl` 直连同一集群。
+- **无 CNI 网络**：云边集群不带 CNI（控制面节点 `NotReady` 属预期），
+  Pod 类场景需要 `K3S_HOST_NETWORK=true` 与
+  `K3S_TOLERATE_NOTREADY=true`，否则 Pod sandbox 网络创建失败。
+
 底层场景脚本仍保留在本目录：
 
 ```bash

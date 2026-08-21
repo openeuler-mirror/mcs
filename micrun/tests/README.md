@@ -26,7 +26,8 @@ micrun/tests/run_all_tests.sh
 `kubectl attach`、边侧 containerd task、Xen domain 和删除清理。若只想跑
 某个场景，传入语义化场景名：`preflight`（环境预检）、`runtimeclass`、
 `pod-lifecycle`、`deployment`（扩缩容）、`pod-logs`、`resource-limits`、
-`multi-node`、`self-healing`、`interaction`、`ota`。`ota` 是 OTA 滚动升级
+`cpu-pinning`（vCPU pinning 注解回归）、`multi-node`、
+`self-healing`、`interaction`、`ota`。`ota` 是 OTA 滚动升级
 测试，默认不随 K3s 类别全量执行；如需纳入默认 K3s 类别，设置
 `K3S_INCLUDE_OTA=true`。（旧的 `K3S-000`～`K3S-009` 编号仍被接受为
 兼容别名。）

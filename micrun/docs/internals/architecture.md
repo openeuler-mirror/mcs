@@ -155,10 +155,11 @@ containerd / ctr / nerdctl / k3s
 ports 是应用层与基础设施之间的稳定边界。当前重点接口包括：
 
 - `GuestControl`: guest 生命周期与状态
-- `GuestExecutor`: 资源管理复合接口，由三个子接口组成：
+- `GuestExecutor`: 资源管理复合接口，由四个子接口组成：
   - `GuestResourceReader`: 读取当前资源状态（`ReadResource`、`CurrentMaxMem`、`MemoryThresholdMB`）
-  - `GuestResourceUpdater`: 应用资源变更（`UpdateCPUCapacity`、`UpdateCPUWeight`、`UpdateVCPUNum`、`UpdatePCPUConstraints`、`EnsureMemoryLimit`、`UpdateMemoryThreshold`、`UpdateMemory`、`RecordMemoryState`、`VCPUPin`）
-  - `GuestResourceDiff`: 检查是否需要更新（`NeedUpdateCPUCap`、`NeedUpdateMemLimit`、`NeedUpdateCPUSet`、`NeedUpdateCPUShare`、`NeedUpdateVCPUs`）
+  - `GuestResourceUpdater`: 应用资源变更（`UpdateCPUCapacity`、`UpdateCPUWeight`、`UpdateVCPUNum`、`RecordVCPUCount`、`UpdatePCPUConstraints`、`EnsureMemoryLimit`、`UpdateMemoryThreshold`、`UpdateMemory`、`RecordMemoryState`、`VCPUPin`）
+  - `GuestResourceDiff`: 检查纯本地增量是否需要更新（`NeedUpdateMemLimit`、`NeedUpdateCPUSet`、`NeedUpdateCPUWeight`）
+  - `GuestResourceCapacityDiff`: 检查可能需要宿主上限参与判定的增量（`NeedUpdateCPUCap`、`NeedUpdateVCPUs`）
 - `ResourceSnapshot`: guest 资源状态快照（`CPUCapacity`、`CPUWeight`、`ClientCPUSet`、`VCPU`、`MemoryMaxMB`）
 - `HypervisorControl`: 宿主/hypervisor 控制面
 - `StateStore`: 运行时快照持久化
