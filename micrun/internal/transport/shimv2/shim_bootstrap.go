@@ -21,6 +21,7 @@ import (
 	defs "micrun/internal/support/definitions"
 	log "micrun/internal/support/logger"
 
+	"github.com/containerd/containerd/namespaces"
 	shimv2 "github.com/containerd/containerd/runtime/v2/shim"
 )
 
@@ -146,7 +147,19 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 	}
 
 	log.Tracef("args: %v", os.Args)
-	cmd, err := newCommand(ctx, opts, bundle)
+	// The daemon must outlive this one-shot start process. shimv2.Command
+	// builds the child with exec.CommandContext, whose watcher kills the
+	// child when the context is canceled; this ctx is tied to the one-shot
+	// run() shutdown chain, so canceling it during start-exit races
+	// exit_group and can kill the just-forked daemon (observed as the
+	// probabilistic "TTRPC connection refused" first-container failure).
+	// Detach the fork from any cancellable context, keeping only the
+	// namespace Command() needs to build the child args.
+	detachedCtx := context.Background()
+	if ns, ok := namespaces.Namespace(ctx); ok {
+		detachedCtx = namespaces.WithNamespace(detachedCtx, ns)
+	}
+	cmd, err := newCommand(detachedCtx, opts, bundle)
 	if err != nil {
 		return "", err
 	}
