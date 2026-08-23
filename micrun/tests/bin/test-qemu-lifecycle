@@ -171,6 +171,10 @@ guest_ec() {
     guest_sh "$1" | sed -n 's/.*__MICRUN_EC__=//p' | tail -1
 }
 
+teardown_container() {
+    guest_sh "ctr task kill -s 9 $1 2>/dev/null; ctr task delete $1 2>/dev/null; ctr container delete $1 2>/dev/null; true" >/dev/null
+}
+
 guest_has_image() {
     guest_payload "ctr image ls" | grep -qF "$TEST_IMAGE"
 }
@@ -547,38 +551,56 @@ log_test "12. Attach interaction answers; EOF stop leaves no domain behind"
 # the EOF-driven teardown is clean: task terminal AND Xen domain gone.
 # (Detached-reattach racing is covered by unit tests for the event-bus
 # generation guard; nerdctl/kubectl real detach needs the IO/K3s suites.)
-REATTACH_RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-reattach")
-if [ "$REATTACH_RUN_EC" != "0" ]; then
-    log_warn "ctr run failed (ec=$REATTACH_RUN_EC); attach path not exercised"
-    record_result 1
+#
+# Each attempt rebuilds the container: ctr binds the task to the attach
+# client, so the EOF of a failed attempt has already stopped that task
+# and retrying attach on it reports "no running task found".
+lc_attach_eof_once() {
+    local i
     teardown_container lc-reattach
-else
-# Poll for RUNNING before attaching: a blind fixed sleep raced the task
-# registration on slow first boots (attach found no running task).
-REATTACH_READY=""
-i=0
-while [ "$i" -lt 10 ]; do
-    REATTACH_READY=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-reattach" { print $3 }')
-    [ "$REATTACH_READY" = "RUNNING" ] && break
-    sleep 1
-    i=$((i + 1))
-done
-ATTACH_OUT=$(guest_payload "printf '\\nuname\\n' | timeout ${ATTACH_TIMEOUT} ctr task attach lc-reattach > /tmp/lc-reattach.out 2>&1 || true; cat /tmp/lc-reattach.out")
-sleep 3
-EOF_STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-reattach" { print $3 }')
-EOF_DOMAIN=$(guest_payload "xl list" | awk '$1 == "lc-reattach" { c++ } END { print c+0 }')
+    REATTACH_RUN_EC=$(guest_ec "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} lc-reattach")
+    REATTACH_READY=""
+    ATTACH_OUT=""
+    EOF_STATUS=""
+    EOF_DOMAIN=""
+    if [ "$REATTACH_RUN_EC" != "0" ]; then
+        return 1
+    fi
+    # Poll for RUNNING before attaching: a blind fixed sleep raced the
+    # task registration on slow first boots (attach found no running task).
+    i=0
+    while [ "$i" -lt 10 ]; do
+        REATTACH_READY=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-reattach" { print $3 }')
+        [ "$REATTACH_READY" = "RUNNING" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+    ATTACH_OUT=$(guest_payload "printf '\\nuname\\n' | timeout ${ATTACH_TIMEOUT} ctr task attach lc-reattach > /tmp/lc-reattach.out 2>&1 || true; cat /tmp/lc-reattach.out")
+    sleep 3
+    EOF_STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "lc-reattach" { print $3 }')
+    EOF_DOMAIN=$(guest_payload "xl list" | awk '$1 == "lc-reattach" { c++ } END { print c+0 }')
+}
 
+lc_attach_eof_once
 # "UniProton [0-9]" (uname's version reply) or "command not found" (RPMSG
 # first-byte drop, known behavior) — never the echoed input or the boot
-# banner, which would pass with zero product output.
+# banner, which would pass with zero product output. The firmware shell
+# also drops the first command after printing its prompt (receive-window
+# blind spot; shim write path is clean). One bounded rebuild retry, same
+# policy as features case 15 and the IO suite. EOF-teardown failures are
+# not retried: that would hide a real cleanup bug.
+if ! echo "$ATTACH_OUT" | grep -qiE "UniProton [0-9]|command not found"; then
+    log_warn "case 12 first attach had no command reply; retrying on a rebuilt container"
+    sleep 2
+    lc_attach_eof_once
+fi
 if [ "$REATTACH_READY" = "RUNNING" ] && echo "$ATTACH_OUT" | grep -qiE "UniProton [0-9]|command not found" && { [ "$EOF_STATUS" = "STOPPED" ] || [ -z "$EOF_STATUS" ]; } && [ "$EOF_DOMAIN" = "0" ]; then
     record_result 0
 else
     log_warn "ready=$REATTACH_READY attach_out='$(echo "$ATTACH_OUT" | tr '\n' ' ' | tail -c 160)' status=${EOF_STATUS:-<gone>} domain=$EOF_DOMAIN"
     record_result 1
 fi
-guest_sh "ctr task delete lc-reattach 2>/dev/null; ctr container delete lc-reattach 2>/dev/null" >/dev/null
-fi
+teardown_container lc-reattach
 fi
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,10 @@ source "${COMMON_DIR}/remote.sh"
 QEMU_TAP_IF="${QEMU_TAP_IF:-tap0}"
 QEMU_SSH_FWD_PORT="${QEMU_SSH_FWD_PORT:-10022}"
 QEMU_CONSOLE_SOCK="${QEMU_CONSOLE_SOCK:-/tmp/micrun-tests/qemu-console.sock}"
+# Host directory exported read-only to the guest over virtfs (9p). The
+# console bootstrap ships its preparation script through it, so the
+# flaky emulated serial only ever carries a few short lines.
+QEMU_CONSOLE_PREP_DIR="${QEMU_CONSOLE_PREP_DIR:-/tmp/micrun-tests/console-prep}"
 # -rtc pins the guest clock to the host's current UTC time: the image's
 # root password carries a build-time last-change stamp, and a guest clock
 # below that stamp (the default 1970 RTC) makes pam_unix reject every
@@ -496,6 +500,7 @@ qemu_start_command() {
         -m "$QEMU_MACHINE_MEM_MB"
         -chardev "socket,id=con0,path=${QEMU_CONSOLE_SOCK},server=on,wait=off"
         -serial chardev:con0
+        -virtfs "local,path=${QEMU_CONSOLE_PREP_DIR},mount_tag=micrunprep,security_model=none,readonly=on"
         -rtc base="$(date -u +%Y-%m-%dT%H:%M:%S)"
         -display none
         -kernel "$QEMU_RESOLVED_XEN_KERNEL"
@@ -522,6 +527,15 @@ qemu_start_command() {
 # everything it reads into the log file.
 qemu_console_bootstrap() {
     local log_file="$1"
+
+    # A guest reused across suites (QEMU_KEEP_RUNNING) already has SSH
+    # working from the earlier bootstrap. Re-running the serial bootstrap
+    # would stake the whole campaign on the emulated serial again (it
+    # drops/duplicates bytes and inserts stray CRs); trust SSH instead.
+    if qemu_load_guest_password && qemu_local_ssh "echo ok" >/dev/null 2>&1; then
+        log_info "guest SSH already working; skipping serial bootstrap"
+        return 0
+    fi
 
     # NOTE: the plaintext chpasswd path runs through the guest's
     # pam_pwquality, so a custom QEMU_GUEST_PASSWORD must satisfy that
@@ -551,8 +565,10 @@ qemu_console_bootstrap() {
         tap|both) tap_ip="${QEMU_GUEST_TAP_IP-192.168.7.2/24}" ;;
     esac
 
+    mkdir -p "${QEMU_CONSOLE_PREP_DIR}"
     if sudo -n env \
         CONSOLE_SOCK="${QEMU_CONSOLE_SOCK}" \
+        PREP_DIR="${QEMU_CONSOLE_PREP_DIR}" \
         LOG_FILE="${log_file}" \
         INITIAL_ROOT_PASSWORD="${QEMU_INITIAL_ROOT_PASSWORD:-openEuler@2021}" \
         NEW_PASS="${password}" \
@@ -590,6 +606,9 @@ qemu_start_background() {
     # Drop stale console clients and the stale socket before QEMU binds it.
     sudo -n pkill -f "so[c]at.*${QEMU_CONSOLE_SOCK}" 2>/dev/null || true
     sudo -n rm -f "$QEMU_CONSOLE_SOCK"
+
+    # The virtfs export must exist before QEMU starts, or fsdev init fails.
+    mkdir -p "${QEMU_CONSOLE_PREP_DIR}"
 
     qemu_start_command || return 1
 

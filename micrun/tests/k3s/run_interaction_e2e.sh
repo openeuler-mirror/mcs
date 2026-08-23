@@ -269,13 +269,26 @@ has_uname_output() {
     grep -Eq 'UniProton [0-9]|Zephyr|command not found'
 }
 
+has_help_output() {
+    # help's own answer (the command list) is real command output from the
+    # firmware shell, never the echoed input word.
+    grep -Eq 'support shell commond|Available commands'
+}
+
 validate_shell_output() {
     local output="$1"
 
     printf '%s\n' "$output" | has_shell_markers || return 1
     if attach_input_requests_uname; then
-        printf '%s\n' "$output" | has_uname_output
-        return
+        # Any real command answer proves the attach round-trip. The
+        # firmware's input drops are not time-monotonic — cross-validation
+        # journal: 36s past the prompt, help came back in full while uname
+        # was swallowed whole — so demanding the uname version reply
+        # specifically turns a proven round-trip into a false failure
+        # (same criterion family as the io suite's shell-answer check).
+        printf '%s\n' "$output" | has_uname_output && return 0
+        printf '%s\n' "$output" | has_help_output && return 0
+        return 1
     fi
 }
 
@@ -574,6 +587,25 @@ verify_interaction() {
     if validate_attach_output "$clean"; then
         printf '%s\n' "$clean" | tail -n 40
         return 0
+    fi
+
+    # Firmware receive-window retry: the UniProton shell can swallow input
+    # sent right after it prints its prompt (upstream firmware window; the
+    # shim write path is verified clean — same standing as the interaction
+    # retries in the io/features/lifecycle suites). A swallowed line still
+    # elicits fresh prompts, so the retry is gated on shell markers being
+    # present: a markerless silence means deeper trouble and must not be
+    # retried. kubectl attach does not stop the container (auto-close 0),
+    # so the retry re-attaches to the same live task once the window has
+    # passed; a second failure is reported as-is.
+    if printf '%s\n' "$clean" | has_shell_markers; then
+        log_info "no command answer on first attach, retrying attach on the live pod"
+        raw="$(run_kubectl_attach 2>&1 || true)"
+        clean="$(printf '%s\n' "$raw" | sanitize_attach_output)"
+        if validate_attach_output "$clean"; then
+            printf '%s\n' "$clean" | tail -n 40
+            return 0
+        fi
     fi
 
     log_error "kubectl attach did not expose expected RTOS interaction markers"
