@@ -20,8 +20,12 @@ import (
 
 const (
 	// Default timeout for TTY wait.
-	// Set to 30s to accommodate micad startup time (typically 5-6s, but can be longer under load).
-	timeout    = 30 * time.Second
+	// Set to 60s to accommodate micad startup time (typically 5-6s) and
+	// the observed occasional multi-tens-of-seconds rpmsg registration
+	// delay under sustained container churn on the QEMU guest: a 30s
+	// budget failed intermittently there while the retry (fresh domain)
+	// succeeded immediately, i.e. the window is slow, not stuck.
+	timeout    = 60 * time.Second
 	retryDelay = 50 * time.Millisecond
 )
 

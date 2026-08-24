@@ -283,8 +283,13 @@ run_ctr_bg_attach() {
 
 expect_shell_output() {
   # Full help text is often truncated on the RPMSG graft. Any of these
-  # means the shell accepted a command and answered.
-  sanitize_command_output | grep -qE "support shell commond|Available commands:|command not found"
+  # means the shell accepted a command and answered. "UniProton [0-9]"
+  # is uname's version reply: the multi-command case may lose `help` to
+  # the firmware post-prompt blind window while `uname` answers for
+  # real, which still proves the shell executes and answers commands
+  # (same criterion as features case 15 / lifecycle case 12; the boot
+  # banner and prompt carry no version digits).
+  sanitize_command_output | grep -qE "support shell commond|Available commands:|command not found|UniProton [0-9]"
 }
 
 expect_shell_prompt_output() {

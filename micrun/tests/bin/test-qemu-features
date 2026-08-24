@@ -625,11 +625,17 @@ log_test "15. Attach interaction answers shell commands (acceptance #4)"
 # commands (help/uname) and return their output. This keeps the acceptance
 # covered in the standard suite chain even when the dedicated IO suite
 # environment (tap + guest-local registry) is not provisioned.
-teardown_container ft-attach
-guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} ft-attach" >/dev/null
-sleep 3
-
-ATTACH_OUT=$(guest_payload "printf '\nuname\n' | timeout ${ATTACH_TIMEOUT:-20} ctr task attach ft-attach > /tmp/ft-attach.out 2>&1 || true; cat /tmp/ft-attach.out")
+attach_answer() {
+    # A full container rebuild per attempt: ctr binds the task to the
+    # attach client, so the EOF at the end of a failed attempt has
+    # already stopped (and cleaned) that task — retrying the attach on
+    # it reports "no running task found".
+    teardown_container ft-attach
+    guest_sh "ctr run --runtime ${MICRUN_RUNTIME} --detach --annotation org.openeuler.micrun.container.auto_close=false ${TEST_IMAGE} ft-attach" >/dev/null
+    sleep 3
+    guest_payload "printf '\nuname\n' | timeout ${ATTACH_TIMEOUT:-20} ctr task attach ft-attach > /tmp/ft-attach.out 2>&1 || true; cat /tmp/ft-attach.out"
+}
+ATTACH_OUT=$(attach_answer)
 
 # Only a real command RESPONSE proves the acceptance ("send uname, get its
 # output"): with a TTY the input is echoed back verbatim and the boot banner
@@ -639,6 +645,14 @@ ATTACH_OUT=$(guest_payload "printf '\nuname\n' | timeout ${ATTACH_TIMEOUT:-20} c
 # same policy as the K3s interaction suite). ctr binds the task to the attach
 # client (EOF stops it), so the post-EOF teardown is covered by lifecycle
 # case 12; here only the answer matters.
+if ! echo "$ATTACH_OUT" | grep -qiE "UniProton [0-9]|command not found"; then
+    # The firmware shell drops the first command after printing its prompt
+    # occasionally (firmware-side receive window, root-caused; see the IO
+    # suite's warmup/retry rationale). One bounded retry on a fresh attach,
+    # same policy as io_run's single retry.
+    sleep 2
+    ATTACH_OUT=$(attach_answer)
+fi
 if echo "$ATTACH_OUT" | grep -qiE "UniProton [0-9]|command not found"; then
     record_result 0
 else

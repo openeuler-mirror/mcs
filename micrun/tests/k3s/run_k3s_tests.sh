@@ -238,8 +238,12 @@ record_result() {
 cleanup_k3s() {
     local node="${K3S_MASTER_NODE:-$TEST_REMOTE_HOST}"
 
-    remote_kubectl "$node" "delete pod --all --ignore-not-found=true" >/dev/null 2>&1 || true
-    remote_kubectl "$node" "delete deployment --all --ignore-not-found=true" >/dev/null 2>&1 || true
+    # Delete controllers before their pods, and never wait: a pod stuck
+    # Terminating (e.g. sandbox never created on a CNI-less node) would
+    # otherwise block `delete pod --all` indefinitely and stall the suite
+    # at startup cleanup.
+    remote_kubectl "$node" "delete deployment --all --ignore-not-found=true --wait=false" >/dev/null 2>&1 || true
+    remote_kubectl "$node" "delete pod --all --ignore-not-found=true --force --grace-period=0" >/dev/null 2>&1 || true
 }
 
 # ============================================
@@ -760,6 +764,11 @@ test_k3s_008_interaction() {
 
     end=$(date +%s)
     time=$((end - start))
+    # Keep the full output on disk for forensics: the retry marker sits far
+    # above the tail that record_result shows, and a failure without it
+    # reads as "no retry happened".
+    mkdir -p /tmp/micrun-tests
+    printf '%s\n' "$out" > /tmp/micrun-tests/k3s-interaction-fail.log
     record_result "interaction: RuntimeClass Pod 交互与清理" "FAIL" "$(printf '%s\n' "$out" | tail -n 20)" "$time"
     echo -e "$FAIL"
 }

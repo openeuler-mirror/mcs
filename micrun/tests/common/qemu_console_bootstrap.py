@@ -33,6 +33,13 @@ import sys
 import time
 
 SOCK = os.environ.get("CONSOLE_SOCK", "")
+# Host directory exported to the guest over QEMU virtfs (9p). When set,
+# the whole preparation payload travels as a file over 9p and the serial
+# console only injects four short lines (mkdir/mount/umount-guard/sh):
+# the emulated serial corrupts long injected lines (drops, duplicates,
+# stray CRs), so keeping every injected line under ~60 bytes removes the
+# corruption window instead of retrying around it.
+PREP_DIR = os.environ.get("PREP_DIR", "")
 LOG = os.environ.get("LOG_FILE", "")
 INITIAL_PASS = os.environ.get("INITIAL_ROOT_PASSWORD", "openEuler@2021")
 NEW_PASS = os.environ.get("NEW_PASS", "micrun")
@@ -80,6 +87,18 @@ else:
 # anchors on a line-leading continuation prompt, not the bare ">" that
 # older revisions matched.
 PREP_STEPS = [
+    (
+        # First-boot journald lifecycle messages (journal flush/rotation
+        # around the 30s mark) are printk'd to the console and interleave
+        # with injected step lines on the emulated serial, shredding long
+        # commands mid-stream. Silence the console first — this line is
+        # ~50 bytes, short enough to fit inside any noise gap — so the
+        # long sshd steps below inject into a quieter console. The
+        # emulated serial still drops/duplicates bytes occasionally; step
+        # retries plus a whole-guest smoke restart absorb the rest.
+        "echo 4 > /proc/sys/kernel/printk && echo PREP_MUTE_DONE",
+        re.compile(rb"(?m)^PREP_MUTE_DONE\r?$"),
+    ),
     (
         PASSWD_LINE + " && echo PREP_PASS_DONE",
         re.compile(rb"(?m)^PREP_PASS_DONE\r?$"),
@@ -240,7 +259,13 @@ STATE_TIMEOUT = 90.0
 # (observed firing at ~60s while sitting at a continuation prompt).
 STEP_TIMEOUT = 45.0
 MAX_LOGIN_ATTEMPTS = 3
-MAX_STEP_ATTEMPTS = 3
+MAX_STEP_ATTEMPTS = 6
+# Seconds to hold off after the first login prompt: the first-boot journald
+# flush/rotation printk burst (~30s mark) corrupts injected serial lines.
+LOGIN_HOLD_OFF = 27
+# Pause between serial-injected lines so the tty can commit and echo
+# each one before the next arrives.
+LINE_PAUSE = 0.2
 # The emulated serial port drops input when a long line is written in one
 # burst (observed: a ~380 byte command arrived split by a stray CR and
 # truncated, leaving the shell at a continuation prompt). Trickling in
@@ -302,14 +327,43 @@ def main():
             if view:
                 time.sleep(SEND_DELAY)
 
+    mount_lines = [
+        # First line doubles as the console mute (printk loglevel 4): the
+        # journald burst noise shrinks, and a line this short has never
+        # been observed corrupted. No marker: the mount that follows
+        # proves the console is usable.
+        "echo 4 > /proc/sys/kernel/printk",
+        "mkdir -p /mnt/mp",
+    ]
+    if PREP_DIR:
+        # Ship the whole preparation as one file over 9p; the serial only
+        # carries these short lines. All per-step markers still print on
+        # the console for diagnosis; completion is gated on the final
+        # BOOTSTRAP_DONE marker (same semantics as before).
+        prep_sh = os.path.join(PREP_DIR, "prep.sh")
+        with open(prep_sh, "w") as f:
+            f.write("#!/bin/sh\n")
+            for cmd, _m in PREP_STEPS[1:]:  # step 0 (console mute) rides the mount sequence
+                f.write(cmd + "\n")
+        mount_lines += [
+            "umount /mnt/mp 2>/dev/null; true",
+            "mount -t 9p -o trans=virtio,version=9p2000.L micrunprep /mnt/mp",
+            "sh /mnt/mp/prep.sh",
+        ]
+        final_re = re.compile(rb"(?m)^BOOTSTRAP_DONE\r?$")
+        note("prep payload via 9p: %s" % prep_sh)
+    else:
+        mount_lines = None
+
     tail = b""
     state = "login"
     attempts = 0
-    step_idx = 0
+    step_idx = 1 if PREP_DIR else 0  # 9p mode starts at the mount sequence
     step_attempts = 0
     state_since = time.monotonic()
     last_rx = time.monotonic()
     last_wake = 0.0
+    login_waited = False
 
     def enter(new_state):
         nonlocal state, state_since, tail
@@ -325,6 +379,12 @@ def main():
             return False
         note("sending step %d/%d (attempt %d)"
              % (step_idx + 1, len(PREP_STEPS), step_attempts))
+        if mount_lines is not None and step_idx >= 1:
+            for line in mount_lines:
+                send(line.encode() + b"\r")
+                time.sleep(LINE_PAUSE)
+            enter("step")
+            return True
         send(PREP_STEPS[step_idx][0].encode() + b"\r")
         enter("step")
         return True
@@ -336,6 +396,15 @@ def main():
         step_attempts = 0
         if step_idx >= len(PREP_STEPS):
             return True
+        if mount_lines is not None and step_idx == 1:
+            # 9p mode: the console mute step is the only preparation step
+            # sent over the serial; everything else ships as prep.sh.
+            note("console muted; mounting 9p prep payload and running it")
+            for line in mount_lines:
+                send(line.encode() + b"\r")
+                time.sleep(LINE_PAUSE)
+            enter("step")
+            return False
         note("step %d verified, sending step %d/%d"
              % (step_idx, step_idx + 1, len(PREP_STEPS)))
         send(PREP_STEPS[step_idx][0].encode() + b"\r")
@@ -365,6 +434,16 @@ def main():
                     if attempts > MAX_LOGIN_ATTEMPTS:
                         note("login failed %d times; giving up" % attempts)
                         return 1
+                    if attempts == 1 and not login_waited:
+                        # The first login prompt arrives ~13s into boot,
+                        # right before the first-boot journald flush and
+                        # rotation printk burst (~30s) that shreds injected
+                        # lines on this emulated serial. Hold off until
+                        # that window has passed before typing anything.
+                        login_waited = True
+                        note("login prompt seen; waiting out the first-boot journald burst")
+                        time.sleep(LOGIN_HOLD_OFF)
+                        tail = b""
                     note("login prompt seen, sending user (attempt %d)" % attempts)
                     send(b"root\r")
                     enter("password")
@@ -415,9 +494,10 @@ def main():
                     note("no shell prompt; back to login watch")
                     enter("login")
             elif state == "step":
-                marker = PREP_STEPS[step_idx][1]
+                marker = final_re if (mount_lines is not None and step_idx >= 1) else PREP_STEPS[step_idx][1]
                 if marker.search(tail):
-                    last_step = step_idx == len(PREP_STEPS) - 1
+                    last_step = (mount_lines is not None and step_idx >= 1) \
+                        or step_idx == len(PREP_STEPS) - 1
                     if last_step and not UID_RE.search(tail):
                         # Marker raced ahead of the id output; keep waiting.
                         pass
