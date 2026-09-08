@@ -134,7 +134,14 @@ func (c *Copier) handleStdinEOF() stdinLoopDecision {
 		log.Infof("[IO] stdin EOF for %s (no attach client yet, waiting)", c.config.ContainerID)
 		c.stdinEOFSeen = true
 		// start -d: StartInitialSession marked attached for nerdctl -i;
-		// no writer means that was not a live client.
+		// no writer means that was not a live client. Detached is
+		// published unconditionally (not via noteLiveClientGone's CAS):
+		// the optimistic attached marking must flip even when no
+		// ClientAttached was ever published. The flag is reset alongside
+		// it — a Start-window transient writer may already have
+		// published a spurious ClientAttached, and a stuck-true flag
+		// would swallow the next real client's ClientAttached.
+		c.liveClientPublished.Store(false)
 		c.publishEvent(ClientDetached, nil)
 	}
 	if !c.waitForStdinReattach() {
