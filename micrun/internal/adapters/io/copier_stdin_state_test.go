@@ -84,6 +84,53 @@ func TestHandleStdinEOFNonTTYKeepsSessionForReattach(t *testing.T) {
 	}
 }
 
+func TestHandleStdinEOFFirstEOFResetsPublishFlagAfterTransientWriter(t *testing.T) {
+	bus := NewEventBus(context.Background())
+	t.Cleanup(bus.Close)
+	attached := bus.Subscribe(ClientAttached)
+	detached := bus.Subscribe(ClientDetached)
+	copier := NewCopier(Config{
+		ContainerID: "transient-writer-first-eof",
+		Terminal:    false,
+		EventBus:    bus,
+	})
+	t.Cleanup(func() { copier.finishStop(0, false) })
+
+	// Start-window transient writer: the EAGAIN path publishes ClientAttached
+	// without ever setting attachClientConnected (stdinEOFSeen is still
+	// false), mirroring copyStdin's EAGAIN branch before the first EOF.
+	copier.noteLiveClient()
+	select {
+	case <-attached:
+	case <-time.After(time.Second):
+		t.Fatal("expected spurious ClientAttached from the transient writer")
+	}
+
+	// The transient writer closes: the first EOF must publish ClientDetached
+	// AND reset liveClientPublished so a real client can publish again.
+	if got := copier.handleStdinEOF(); got != stdinLoopContinue {
+		t.Fatalf("handleStdinEOF = %v, want continue", got)
+	}
+	if copier.liveClientPublished.Load() {
+		t.Fatal("liveClientPublished must reset on the first EOF")
+	}
+	select {
+	case <-detached:
+	case <-time.After(time.Second):
+		t.Fatal("expected ClientDetached on the first EOF")
+	}
+
+	// The real client's first input must be able to publish ClientAttached
+	// again; a stuck-true flag swallows it and auto-close kills the
+	// interactive session 30s after Start.
+	copier.markStdinDataReceived()
+	select {
+	case <-attached:
+	case <-time.After(time.Second):
+		t.Fatal("real client ClientAttached was swallowed after the transient-writer first EOF")
+	}
+}
+
 func TestHandleStdinEAGAINIsNoOp(t *testing.T) {
 	copier := NewCopier(Config{ContainerID: "stdin-eagain"})
 	defer copier.finishStop(0, false)

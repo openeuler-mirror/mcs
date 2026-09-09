@@ -16,6 +16,7 @@
 
 ### 想理解当前实现
 
+0. [容器生命周期与 IO 会话语义](user/lifecycle-semantics.md)（停止/detach/auto-close/task 可见性的权威口径）
 1. [架构设计](internals/architecture.md)
 2. [目标架构](internals/target-architecture.md)
 3. [状态管理](internals/state-management.md)

@@ -137,6 +137,28 @@ Verify the generated `compile.yaml` before building. Expect:
 - `packagegroup-k3s-agent` in `IMAGE_INSTALL`
 - `K3S_EXTERNAL_ENDPOINT` is `containerd`
 
+**Kernel selection**: the layer defaults to kernel 5.10. `linux-openeuler.inc`
+sets `LINUX_VERSION = 6.6` only when `DISTRO_FEATURES` contains `kernel6`.
+The kp920 delivery targets kernel 6, so the test QEMU image must be built
+with the same kernel. After `generate`, add
+
+```
+DISTRO_FEATURES:append = " kernel6 "
+```
+
+to **both** the `local_conf:` block of `compile.yaml` **and**
+`conf/local.conf` (compile.yaml is what oebuild re-generates conf from;
+local.conf is what bitbake actually reads). A kernel6 switch recompiles
+the whole kernel chain from scratch even with a warm sstate.
+
+**Never run `oebuild compile.yaml` or `oebuild <path>/compile.yaml` inside
+the build dir** — it treats that as a workspace init request, prompts
+interactively (Y/N/C), deletes `conf/`, and can wipe the build dir down to
+a bare compile.yaml. The only build entry is `cd "$BUILD_DIR" && oebuild
+bitbake openeuler-image`. Also note `oebuild generate -d qemu-aarch64`
+resets the whole build dir (tmp/cache/output included); the shared sstate
+under `src/sstate-cache` survives, so rebuilds still hit the cache.
+
 ```bash
 cd "$BUILD_DIR"
 oebuild bitbake openeuler-image > /tmp/bitbake.log 2>&1

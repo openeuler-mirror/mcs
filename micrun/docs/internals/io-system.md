@@ -882,7 +882,7 @@ ctr CLI:
    - stdin 关闭触发超时退出（**所有 IO 模式默认 30 秒超时**）
    - 所有方式都不触发 shim 清理
 2. **shim 清理仅在显式删除时发生**：`ctr container delete`
-3. **超时机制**：为防止资源泄漏，所有 IO 模式（TTY/Non-TTY、前台/后台）默认启用 30 秒超时。如需长期运行，需显式设置 `auto_close=false` 或 `auto_close_timeout=0` 注解
+3. **超时机制**：为防止资源泄漏，所有 IO 模式（TTY/Non-TTY、前台/后台）默认启用 30 秒超时，计时从最后一个 stdin 写端消失起算（attach 期间挂起）。如需长期运行，需显式设置 `auto_close=false` 或 `auto_close_timeout=0` 注解。用户可见的完整停止语义（含 attach 客户端进程死亡、task 记录可见性）以 [容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md) 为权威口径
 4. **RTOS 容器的推荐使用方式**：
    - 开发调试：使用 `ctr task start`（前台，便于查看输出）
    - 生产环境：使用 `ctr task start -d`（后台，符合 daemon 模式）+ `auto_close=false` 注解
