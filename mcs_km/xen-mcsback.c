@@ -388,9 +388,15 @@ static void mcs_cleanup_gnttab(struct mcs_backend_info *mcs_info, int num_pages)
 
 	for (i = 0; i < num_pages; i++) {
 		if (mcs_info->grant_refs[i] != INVALID_GRANT_REF) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+			/* Keep page ownership (NULL page); the compound
+			 * allocation is freed as a whole below. */
+			gnttab_end_foreign_access(mcs_info->grant_refs[i], NULL);
+#else
 			/* This already frees pages. No need to free them ourselves. */
 			gnttab_end_foreign_access(mcs_info->grant_refs[i], 0,
 				(unsigned long)mcs_info->shmem_virt + i * PAGE_SIZE);
+#endif
 			mcs_info->grant_refs[i] = INVALID_GRANT_REF;
 
 			/* Remove gref key from xenstore */
@@ -401,6 +407,9 @@ static void mcs_cleanup_gnttab(struct mcs_backend_info *mcs_info, int num_pages)
 
 	(void) xenbus_rm(XBT_NIL, mcs_info->xdev->nodename, XENSTORE_KEY_GREF_NUM);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+	free_pages((unsigned long)mcs_info->shmem_virt, SHMEM_ORDER);
+#endif
 	mcs_info->shmem_virt = NULL;
 	pr_info("Ending access for grant ref\n");
 }
@@ -443,11 +452,35 @@ static int mcs_init_gnttab(struct xenbus_device *dev, struct mcs_backend_info *m
 	mcs_info->shmem_virt = page_address(page);
 	mcs_info->shmem_phys = page_to_phys(page);
 
+	for (i = 0; i < num_pages; i++) {
+		mcs_info->grant_refs[i] = INVALID_GRANT_REF;
+	}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+	/* kernel >= 5.16 dropped xenbus_grant_ring(); grant the compound
+	 * allocation manually. xenbus_setup_ring() is not usable here: it
+	 * hands back a vmalloc address, while the physical base of the
+	 * shared memory is reported to user space and mmapped by it, so
+	 * the allocation must stay physically contiguous. */
+	for (i = 0; i < num_pages; i++) {
+		int gref = gnttab_grant_foreign_access(dev->otherend_id,
+				(mcs_info->shmem_phys >> PAGE_SHIFT) + i, 0);
+
+		if (gref < 0) {
+			ret = gref;
+			pr_err("Failed to grant foreign access for %pK: %d\n",
+					mcs_info->shmem_virt, ret);
+			goto err_free_grefs;
+		}
+		mcs_info->grant_refs[i] = gref;
+	}
+#else
 	ret = xenbus_grant_ring(dev, mcs_info->shmem_virt, num_pages, mcs_info->grant_refs);
 	if (ret) {
 		pr_err("Failed to grant foreign access for %pK\n", mcs_info->shmem_virt);
 		goto err_free_pages;
 	}
+#endif
 
 	for ( i = 0; i < num_pages; i++) {
 		pr_info("gref %u: 0x%llx\n", mcs_info->grant_refs[i], (unsigned long long)mcs_info->shmem_virt + i * PAGE_SIZE);
@@ -476,6 +509,16 @@ err_printf_grefs:
 		snprintf(gref_key, sizeof(gref_key), "%s%u", XENSTORE_KEY_GREF_PREFIX, i);
 		(void)xenbus_rm(XBT_NIL, dev->nodename, gref_key);
 	}
+
+err_free_grefs:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+	while (i-- > 0) {
+		if (mcs_info->grant_refs[i] != INVALID_GRANT_REF) {
+			gnttab_end_foreign_access(mcs_info->grant_refs[i], NULL);
+			mcs_info->grant_refs[i] = INVALID_GRANT_REF;
+		}
+	}
+#endif
 
 err_free_pages:
 	__free_pages(page, SHMEM_ORDER);
