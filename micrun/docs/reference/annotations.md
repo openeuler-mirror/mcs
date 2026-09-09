@@ -166,9 +166,13 @@ metadata:
 - 特殊值：`"0"` 或 `"0s"` = 禁用（无超时，无限连接）
 
 **超时机制说明**：
-- 默认情况下，**所有容器**都会在 30 秒后自动关闭（无论 TTY/Non-TTY、前台/后台）
+- 30 秒默认值计时的起点是**最后一个 stdin 写端消失**（detach、stdin EOF、无人 attach），
+  不是容器启动时刻；attach 客户端保持连接期间计时挂起，**永远不会触发**
 - 这是为防止测试/调试会话资源泄漏而设计的保护机制
 - 如需长期运行服务，请显式设置 `auto_close=false` 或 `auto_close_timeout=0`
+- 注意：`auto_close=false` 不能阻止 attach 客户端**进程死亡**（关终端/断 SSH/Ctrl+C 杀死
+  attach 进程）导致的容器停止。完整语义见
+  [容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md)（权威口径）
 
 **示例**：
 ```yaml
@@ -543,5 +547,7 @@ nerdctl run --runtime io.containerd.mica.v2 \
 6. **超时机制使用注意**：
    - ⚠️ `auto_close` 是布尔值注解，**不要**使用数字（如 `auto_close=60`）
    - 如需设置超时时长，使用 `auto_close_timeout` 注解（如 `auto_close_timeout=60s`）
-   - **所有 IO 模式默认启用 30 秒超时**，防止资源泄漏
+   - 默认 30 秒超时从最后一个 stdin 写端消失起算（attach 期间挂起）
    - 长期运行服务需显式禁用：`auto_close=false` 或 `auto_close_timeout=0`
+   - 完整的停止/回收语义与边界见
+     [容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md)

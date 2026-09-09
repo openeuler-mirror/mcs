@@ -465,8 +465,9 @@ micrun/tests/bin/test-k3s-interaction
 - 创建 `RuntimeClass micrun`
 - 创建带 `stdin: true` 和 `tty: false` 的 RTOS Pod
 - **`stdin: true` 不可省略**：未 attach 的 RTOS 任务默认在 30 秒后自动关闭
-  （auto-close）。如需无 stdin 的常驻任务，显式设置注解
-  `org.openeuler.micrun.container.auto_close_timeout: "0"` 禁用计时
+  （auto-close，计时从最后一个 stdin 写端消失起算）。如需无 stdin 的常驻任务，显式设置注解
+  `org.openeuler.micrun.container.auto_close_timeout: "0"` 禁用计时。
+  完整停止语义见 [容器生命周期与 IO 会话语义](lifecycle-semantics.md)
 - 通过 `kubectl attach -i` 按行发送 `help`、`uname`
 - 匹配 UniProton shell 或 hello 输出
 - 核对边侧 containerd task

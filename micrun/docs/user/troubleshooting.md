@@ -389,6 +389,9 @@ failed to pin vcpu: invalid argument
 
 ### 10. auto_close 不生效
 
+> 停止/回收/task 记录可见性的完整语义（含"attach 客户端进程死亡会绕过 auto-close
+> 直接停止容器"等边界）见 [容器生命周期与 IO 会话语义](lifecycle-semantics.md)。
+
 #### 症状
 
 客户端断开后容器继续运行。

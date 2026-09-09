@@ -414,7 +414,10 @@ ctr container delete <container_name>
 | `org.openeuler.micrun.container.auto_close` | 是否在 IO 关闭时自动停止容器 | `true`/`false` |
 | `org.openeuler.micrun.container.auto_close_timeout` | 自动关闭超时时间 | `30s`（默认），支持 `60s`、`5m` 等格式 |
 
-> **说明**：`auto_close` 默认为 `true`，当用户断开连接（如关闭终端）或超时后，容器会自动停止。如果希望容器保持运行以支持多次 attach，可以设置 `auto_close=false` 或使用较长的超时时间（>60秒）。
+> **说明**：`auto_close` 管的是"最后一个 stdin 写端消失后 N 秒回收容器"，**不是容器运行时长上限**，
+也不能阻止 attach 客户端进程死亡（关终端、断 SSH、Ctrl+C 杀死 ctr attach 等）导致的容器停止——
+那条路径不经过 auto-close 计时。完整的停止语义、task 记录可见性与正确姿势，
+见 [容器生命周期与 IO 会话语义](user/lifecycle-semantics.md)（权威口径）。
 
 ### 5.3 使用`nerdctl`运行容器（推荐用于生产）
 
