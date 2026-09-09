@@ -339,7 +339,16 @@ done
 FD_AFTER=$(guest_payload "ls /proc/1/fd | wc -l" | tr -d '[:space:]')
 log_info "fd after: $FD_AFTER attach_ok=$CYCLE_ATTACH_OK run_ok=$CYCLE_RUN_OK"
 
-DOMAINS=$(guest_payload "xl list" | awk 'NR > 1 && $1 != "Name" && $1 != "Domain-0" { c++ } END { print c+0 }')
+# Domain teardown after task delete is asynchronous (guest RPC -> xl
+# destroy); poll instead of a single fixed-delay check so a slow teardown
+# does not flake the case (observed: domain still listed right after the
+# cycle, gone on re-check — same class as the features crash convergence).
+DOMAINS=1
+for _ in $(seq 1 10); do
+    DOMAINS=$(guest_payload "xl list" | awk 'NR > 1 && $1 != "Name" && $1 != "Domain-0" { c++ } END { print c+0 }')
+    [ "$DOMAINS" = "0" ] && break
+    sleep 1
+done
 LEFT=$(guest_payload "ctr tasks ls" | awk 'NR > 1 && $1 ~ /^lc-cycle-/ { c++ } END { print c+0 }')
 
 # The fd counter is part of the verdict, not just a log line: this case is
