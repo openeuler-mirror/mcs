@@ -307,8 +307,20 @@ SHIM_PIDS_KILLED=$(guest_payload "pgrep -c -f containerd-shim-mica-v2" | tail -1
 sleep 4
 
 # Any task query forces containerd to respawn the shim, which runs recovery.
-STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "ft-recover" {print $3}')
-DOM=$(guest_payload "xl list" | awk '$1 == "ft-recover" {print $1}')
+# Convergence (task record cleared + orphan domain destroyed) is asynchronous
+# and occasionally takes longer than the initial sleep: poll for it instead
+# of failing on a slow teardown (observed: domain still present at 4s, gone
+# by the time a human re-checked — a pure timing flake, not an orphan).
+STATUS=""
+DOM="x"
+for _ in $(seq 1 12); do
+    STATUS=$(guest_payload "ctr tasks ls" | awk '$1 == "ft-recover" {print $3}')
+    DOM=$(guest_payload "xl list" | awk '$1 == "ft-recover" {print $1}')
+    if [ "$STATUS" != "RUNNING" ] && [ -z "$DOM" ]; then
+        break
+    fi
+    sleep 1
+done
 # PASS requires: the container was really running before the crash, the
 # kill really landed (shim count dropped), and afterwards neither a zombie
 # RUNNING task nor an orphan domain remains.
