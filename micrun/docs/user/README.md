@@ -6,8 +6,9 @@
 
 | 文档 | 说明 |
 |------|------|
+| [lifecycle-semantics.md](./lifecycle-semantics.md) | **容器生命周期与 IO 会话语义（权威口径）**：停止/回收/task 可见性/attach-detach 的唯一权威 |
 | [kubernetes.md](./kubernetes.md) | Kubernetes 云边协同部署指南 |
-| [troubleshooting.md](./troubleshooting.md) | 故障排查指南 |
+| [troubleshooting.md](./troubleshooting.md) | 故障排查指南（先读 lifecycle-semantics 分清正常行为与故障） |
 | [performance-tuning.md](./performance-tuning.md) | 性能调优指南 |
 
 ## 快速链接

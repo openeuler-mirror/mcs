@@ -153,30 +153,9 @@ metadata:
 
 ## 日志性能
 
-### 日志级别
-
-生产环境使用 `info` 级别：
-
-```json
-{
-  "log": {
-    "level": "info"
-  }
-}
-```
-
-### 调试构建 vs 发布构建
-
-| 构建类型 | 日志输出 | 性能 |
-|----------|----------|------|
-| Debug (`-tags debug`) | 双输出（FIFO + 文件） | 较低 |
-| Release | 仅 FIFO 输出 | 较高 |
-
-生产环境使用 Release 构建：
-```bash
-cd micrun
-make build BUILD_TYPE=release
-```
+调优结论：生产环境用 `info` 级别 + Release 构建（`make build BUILD_TYPE=release`；
+debug 构建是 FIFO+文件双输出，开销更高）。日志配置文件结构、级别表与
+debug/release 双模式的完整说明见[日志系统](../internals/logging.md)（权威）。
 
 ## 资源限制建议
 

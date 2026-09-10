@@ -335,26 +335,9 @@ image_path = /usr/local/share/mica/xen-image.bin
 
 ## 日志配置
 
-日志配置位于 `/etc/mica/micrun/config.json`，由 logger 包读取。
-
-配置结构：
-```json
-{
-  "log": {
-    "level": "info",
-    "file": "/var/log/mica/mica-runtime.log",
-    "color": false,
-    "caller": true
-  }
-}
-```
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `level` | 字符串 | `info` | 日志级别 (debug, info, warn, error) |
-| `file` | 字符串 | `/var/log/mica/mica-runtime.log` | 日志文件路径 |
-| `color` | 布尔 | `false` | 是否启用颜色输出 |
-| `caller` | 布尔 | `true` | 是否显示调用位置 |
+日志配置文件（`/etc/mica/micrun/config.json`）的完整结构、配置项表、
+debug/release 双模式差异与环境变量，见[日志系统](../internals/logging.md)
+（权威）；本文件的"环境变量"节已列出日志相关的三个变量。
 
 ## 相关文档
 

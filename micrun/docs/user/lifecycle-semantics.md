@@ -28,7 +28,10 @@ nerdctl 从 containerd 拿不到 task 信息而回退显示的初始态。判断
 这是全部困惑的根源。同一个"用户不再敲键盘"，在字节层面是三件不同的事：
 
 1. **detach 键序（Ctrl+P Ctrl+Q，字节真正送达）**——TTY 容器专属。
-   copier 以"保留模式"停止：FIFO 与 rpmsg tty **不关闭**，容器**继续运行**，等下一次 attach。
+   copier 以"保留模式"停止：FIFO 与 rpmsg tty **不关闭**，容器**不因此停止**，
+   等待下一次 attach。但 detach 意味着最后一个 stdin 写端离开：默认 `auto_close`
+   下 **30 秒内无人 reattach 即按 auto-close 回收**（计时从 detach 起算）；
+   需要"detach 后长期保活"，创建时设 `auto_close=false`。
 2. **attach 客户端进程死亡（SIGINT 杀死、关闭终端、SSH 断开、进程被 kill）**——
    stdin 写端与 stdout 读端**同时**消失。容器会在秒级停止（与容器是否 TTY、
    auto_close 设置**无关**），随后 shim 进程退出、task 记录消失。
@@ -53,18 +56,21 @@ nerdctl 从 containerd 拿不到 task 信息而回退显示的初始态。判断
 | 3 | 非 TTY | 任意（含 false） | 同上（attach 进程死亡） | **秒级停止** | 消失 | 退出 |
 | 4 | 非 TTY | 默认 | 仅 stdin EOF（客户端存活，如管道 attach 结束、`ctr task start -d` 无人 attach） | 30s 后回收 | 短暂 STOPPED 后消失 | — |
 | 5 | 非 TTY | `false` | 仅 stdin EOF | **继续运行**，等待重连 | RUNNING 保留 | 驻留 |
-| 6 | TTY `-t` | 任意 | **detach 键序送达**（Ctrl+P Ctrl+Q，raw 终端） | **继续运行** | RUNNING 保留 | 驻留 |
+| 6a | TTY `-t` | 默认 | **detach 键序送达**（Ctrl+P Ctrl+Q，raw 终端） | **不立即停止**；30s 无人 reattach 后回收（计时从 detach 起算） | 短暂 STOPPED | — |
+| 6b | TTY `-t` | `false` | 同上（detach 键序送达） | **继续运行**，等待 reattach | RUNNING 保留 | 驻留 |
 | 7 | TTY `-t` | 默认 | 无人 attach（`start -d`） | 30s 后回收 | 短暂 STOPPED | — |
 | 8 | 任意 | 任意 | UniProton shell 内输入 `exit` | 停止，退出码 0 | STOPPED 保留 | 驻留 |
 | 9 | 任意 | 任意 | `ctr task kill`（映射信号）/ `nerdctl stop` | 停止，kill 预写退出码 | STOPPED 保留 | 驻留 |
-| 10 | 任意 | 任意 | `ctr task delete` / `nerdctl rm` | 停止并删除 | 删除 | 退出（正常清理） |
+| 10 | 任意 | 任意 | `ctr task delete` / `nerdctl rm`（**须先停止**；对 RUNNING 容器 delete 会被拒绝：`task must be stopped before deletion: failed precondition`） | 停止并删除 | 删除 | 退出（正常清理） |
 | 11 | 任意 | 任意 | shim 进程被杀（崩溃） | containerd 判定任务终止并收敛，域被清理 | 消失 | 已死 |
 | 12 | 任意 | 任意 | Xen 域被外部销毁（`xl destroy` / 固件崩溃） | 停止（watcher 观测到域消失） | STOPPED | 驻留 |
 
 对矩阵的三个要点：
 
-- **auto-close 的真实语义**：它管的是"**最后一个 stdin 写端消失后** N 秒回收"（第 4/7 行），
+- **auto-close 的真实语义**：它管的是"**最后一个 stdin 写端消失后** N 秒回收"
+  （第 4/6a/7 行——detach 键序送达、stdin EOF、start 后无人 attach 都是"写端消失"），
   既不是"容器运行时长上限"，也不能阻止第 2/3 行的进程级死亡——后者不走 auto-close 计时。
+  attach 期间计时挂起，detach/EOF 后重新起算。
 - **task 记录 STOPPED 保留 vs 消失的分界**：走 MicRun 正常停止路径（interrupt/exit/kill/
   auto-close/域消失）的，task 以 STOPPED 保留一段可观窗口；**attach 客户端进程死亡**与
   **shim 自身死亡**两类会让 shim 退出，containerd 随之移除该 shim 名下全部 task 记录
@@ -96,7 +102,7 @@ flowchart TB
 
     FIFO --> COP --> KEY2{"字节解释"}
     KEY2 -- "0x03 (Interrupt)" --> POLICY -->|立即| STOP1["容器 STOPPED(130)<br/>task 保留 / shim 驻留"]
-    KEY2 -- "Ctrl+P Ctrl+Q (Detach)" --> POLICY -->|保留模式| RUN["容器继续运行<br/>等 reattach"]
+    KEY2 -- "Ctrl+P Ctrl+Q (Detach)" --> POLICY -->|保留模式| RUN["容器不因此停止<br/>默认 auto_close 下 N 秒 reattach 窗口"]
     PROC -- "进程死亡" --> EOF["stdin EOF + stdout 无读者"]
     EOF --> SESS["IO 会话终止<br/>rpmsg tty 关闭"] --> STOP2["容器秒级停止<br/>shim 退出 / task 消失"]
     WATCH -- "stdin 写端消失 + auto_close" -->|N 秒| STOP3["容器回收"]
@@ -107,7 +113,7 @@ stateDiagram-v2
     [*] --> CREATED: create
     CREATED --> RUNNING: start
     RUNNING --> STOPPED_保留: interrupt / exit / kill<br/>auto-close / 域消失
-    RUNNING --> RUNNING: detach 键序(保活)<br/>stdin EOF + auto_close=false
+    RUNNING --> RUNNING: detach 键序 + auto_close=false<br/>stdin EOF + auto_close=false
     RUNNING --> 消失: attach 进程死亡<br/>(shim 退出)
     STOPPED_保留 --> 消失: shim 最终退出
     消失 --> [*]: 显式 delete 清 container 记录
@@ -148,9 +154,10 @@ shim 的唯一正常退出开关是 **containerd 侧的 Delete → Shutdown 序�
 
 ## 6. 正确姿势清单
 
-- **想离开但容器继续跑**：TTY 容器用 detach 键序（需 raw 终端，`nerdctl run -it` / `nerdctl attach`
-  满足；`ctr task attach` 在普通终端下按键到不了 shim），或创建时 `auto_close=false` 后直接关掉
-  非交互式 attach（仅 stdin 结束一类）。
+- **想离开但容器继续跑**：创建时 `auto_close=false` 最可靠（detach/EOF/无人 attach 都不回收）；
+  默认 `auto_close` 下用 detach 键序（需 raw 终端，`nerdctl run -it` / `nerdctl attach`
+  满足；`ctr task attach` 在普通终端下按键到不了 shim）离开后，**请在 30 秒内 reattach**，
+  否则按 auto-close 回收。非交互式 attach 只关输入流（仅 stdin 结束一类）同理。
 - **想停止容器**：`nerdctl stop` / `ctr task kill -s INT`（远程、可靠、退出码 130），
   或 RTOS shell 内 `exit`；TTY + raw 终端下 Ctrl+C 也可以。
 - **管道喂命令**：`printf 'help\n' | ...` 形态命令发完 stdin 即 EOF，容器按 auto-close 策略
@@ -165,7 +172,8 @@ shim 的唯一正常退出开关是 **containerd 侧的 Delete → Shutdown 序�
 | 误解 | 事实 |
 |------|------|
 | "Ctrl+C 后容器应该显示 STOPPED" | 普通终端下 Ctrl+C 只杀死了 attach 进程（终端 ISIG 行为），容器随后停止且 task 记录消失（§3 第 2/3 行）；STOPPED(130) 只在字节真正送达时出现（§3 第 1 行） |
-| "auto_close=false 能保住容器" | 只对"仅 stdin 结束"有效；attach 进程死亡会直接停止容器，与 auto_close 无关 |
+| "auto_close=false 能保住容器" | 只对"仅 stdin 结束/detach"一类有效；attach 进程死亡会直接停止容器，与 auto_close 无关 |
+| "detach 之后容器会一直活着" | detach 只保证**不立即停止**；默认 auto_close 下 30s 无人 reattach 即回收（计时从 detach 起算），长期保活需 `auto_close=false`（§3 第 6a/6b 行） |
 | "attach 退出了说明 interrupt 生效了" | attach 立即退出是终端把 Ctrl+C 转成了 SIGINT，与 MicRun 无关 |
 | "非 TTY 容器按 Ctrl+P Ctrl+Q / Ctrl+C 没反应是 bug" | 非 TTY 输入按数据流处理，无键序语义（与 docker 一致） |
 | "nerdctl 显示 Created 说明容器没停" | Created 是 task 记录消失后的回退显示；停没停看 Xen 域 |

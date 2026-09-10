@@ -137,19 +137,25 @@ Verify the generated `compile.yaml` before building. Expect:
 - `packagegroup-k3s-agent` in `IMAGE_INSTALL`
 - `K3S_EXTERNAL_ENDPOINT` is `containerd`
 
-**Kernel selection**: the layer defaults to kernel 5.10. `linux-openeuler.inc`
-sets `LINUX_VERSION = 6.6` only when `DISTRO_FEATURES` contains `kernel6`.
-The kp920 delivery targets kernel 6, so the test QEMU image must be built
-with the same kernel. After `generate`, add
+**Kernel selection**: the layer defaults to kernel 5.10. The kp920
+delivery targets kernel 6, so the test QEMU image must be built with the
+same kernel - select it through the **feature system**, never by hand-
+editing compile.yaml/local.conf:
 
-```
-DISTRO_FEATURES:append = " kernel6 "
+```bash
+oebuild generate -p qemu-aarch64 -d qemu-aarch64 \
+  -f mcs/xen -f mcs/micrun -f containers/k3s/k3s-agent \
+  -f kernel/kernel6 -y
 ```
 
-to **both** the `local_conf:` block of `compile.yaml` **and**
-`conf/local.conf` (compile.yaml is what oebuild re-generates conf from;
-local.conf is what bitbake actually reads). A kernel6 switch recompiles
-the whole kernel chain from scratch even with a warm sstate.
+`kernel/kernel6` sets `DISTRO_FEATURES:append = " kernel6 "` (plus the
+6.6 PREFERRED_VERSION pins) which `linux-openeuler.inc` needs to build
+6.6 instead of 5.10. Requires a layer carrying the fixed kernel6
+feature (the LTS-Next backport of master 58aa11c/1a1f118, issue #1408);
+the pre-fix feature set only `PREFERRED_VERSION = 6.1%` without the
+DISTRO_FEATURES flag and silently produced a 5.10 kernel. A kernel6
+switch recompiles the whole kernel chain from scratch even with a warm
+sstate.
 
 **Never run `oebuild compile.yaml` or `oebuild <path>/compile.yaml` inside
 the build dir** — it treats that as a workspace init request, prompts

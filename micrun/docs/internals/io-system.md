@@ -274,56 +274,11 @@ mode.SupportsDetach = r.Terminal && mode.HasStdin
 
 ### 面向用户的统一交互语义
 
-MicRun 的 IO 行为尽量贴近 Docker/runc 的用户直觉，但 RTOS shell 没有完整的
-POSIX 进程/信号模型，所以需要把“终端会话”和“字节流输入”分开理解。
-
-用户侧只需要记住四条：
-
-1. **停容器**：用 `nerdctl stop` / `ctr task kill`。在 UniProton shell 内输入
-   `exit` 是兼容兜底方式；TTY 会话内按 `Ctrl+C` 会被转换为 interrupt/stop。
-2. **离开但不停**：TTY 会话按 `Ctrl+P` 再按 `Ctrl+Q`，只 detach，不停止 RTOS。
-3. **回来继续操作**：用 `nerdctl attach <name>` 或 `ctr task attach <id>`。
-4. **管道就是字节流**：非 TTY 输入里不要把 `Ctrl+C`、`Ctrl+P Ctrl+Q` 当成容器
-   控制命令；它们可能只是普通输入字节。
-
-当前实现语义：
-
-| 用户动作 | 行为 |
-|----------|------|
-| `Ctrl+P Ctrl+Q` in TTY | detach：只离开，不停止 |
-| `Ctrl+C` in TTY | interrupt：停止当前前台/attach 容器，退出状态为 130 |
-| `exit` in UniProton shell | 兼容兜底退出，退出状态为 0 |
-| `nerdctl stop` / `ctr task kill` | 停止 task/domain |
-| `0x03` in non-TTY pipe | 普通输入字节，避免破坏管道语义 |
-| stdin EOF | 只表示输入端关闭，不直接等同于容器退出 |
-
-更直观的用户场景（按使用意图）：
-
-| 你想干什么 | 应该用的操作 | 在 MicRun 里的效果 |
-|-------------|---------------|------------------|
-| 退出当前交互会话，回到本机命令行 | `Ctrl+P` 然后 `Ctrl+Q`（TTY） | 会话断开，容器继续运行 |
-| 想结束容器运行 | `Ctrl+C`（TTY）或 `ctr task kill`/`nerdctl stop` | 容器停止，退出码写入 `io_exit` |
-| 想结束 shell，而不一定是服务 | 输入 `exit` | shell 兼容退出，容器停止 |
-| 只看输出，不想交互 | 不带 `-i`，保持连接 | 可能无输入，容器按启动模式退出 |
-| 非 TTY 下想发个 Control-C 字符 | 向 stdin 写 `0x03` | 当成普通字节，不会触发停止 |
-
-与常见容器工具对齐的差异（当前）：
-
-| 场景 | Docker / runc 的常见直觉 | MicRun 当前实现 |
-|------|---------------------------|------------------|
-| TTY 会话里 `Ctrl+C` | 通常向前台进程组发送中断信号 | 转成 `interrupt` 停止任务，shim 不退出 |
-| `Ctrl+P Ctrl+Q` | detach 到本地，不停止容器 | 一致：detach 后可 `attach` 回来 |
-| 非 TTY 管道里的特殊字节 | 常见命令行工具按需转义 | 一律按原始字节透传，避免误杀输入语义 |
-| `exit` 是否总是退出容器 | 多数 Linux shell 直接退出进程 | 作为兼容兜底，仅当控制输入识别命中时生效 |
-
-这套规则的边界是：**detach 和 stop 永远分开**。`Ctrl+P Ctrl+Q` 不应该停止容器；
-`stop/kill/TTY Ctrl+C` 才表达停止意图。各模式的 attach/detach 能力见上方
-“MicRun 支持的 6 种 IO 模式”表。
-
-自定义 detach key 语法与容器工具的常见写法保持一致：使用逗号分隔的 `ctrl-x`
-片段，例如 `ctrl-p,ctrl-q` 或 `ctrl-],ctrl-^`。字母键支持 `ctrl-a` 到 `ctrl-z`；
-符号键支持 `ctrl-@`、`ctrl-[`、`ctrl-\`、`ctrl-]`、`ctrl-^`、`ctrl-_`、`ctrl-?`。
-只要任一片段非法，整条自定义序列会被拒绝，避免半生效造成不可预期 detach。
+用户可见的停止/离开/回连/管道语义的**唯一权威**是
+[容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md)：
+§2（三种离开方式）、§3（结局矩阵）、§6（正确姿势清单）。此处只保留 IO 视角的一句话概括：**detach 与 stop 永远分开**
+（`Ctrl+P Ctrl+Q` 只离开不停止，`stop/kill/raw 终端 Ctrl+C` 表达停止意图）；
+非 TTY/管道输入一律按普通字节流处理，无键序语义。
 
 ### 使用场景推荐
 
@@ -481,388 +436,30 @@ bash tests/io/test_newline_fix_verify.sh
 
 **生命周期行为**
 
-| 场景 | RTOS | Sandbox | Shim | 说明 |
-|------|------|---------|------|------|
-| 容器启动 | Start | Start | Running | 初始状态 |
-| 用户输入 "exit" 命令 | Stop | Stop | **继续运行** ✓ | shim 检测到 "exit" 命令，触发 IO 关闭和容器停止 |
-| 容器自然退出 | Stop | Stop | **继续运行** ✓ | `lifecycle.waitForExit` 停止容器，shim 继续运行 |
-| `ctr task delete` | Stop | Delete | **继续运行** ✓ | 显式删除任务，shim 继续响应 API |
-| `ctr container delete` | Stop | Delete | **退出** ✓ | 清理完成，shim 退出 |
-| stdin 关闭 (ctr disconnect) | Stop | Stop | **继续运行** ✓ | ctr 关闭 stdin，shim 继续运行 |
+事件 → 结局（task 记录、shim 存活、容器形态）的完整矩阵由
+[容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md) §3 权威维护，
+本文不再复述。实现侧只需记住两条契约：
 
-**关键区别 - RTOS vs 传统容器**
-
-- **传统容器**：容器退出时，shim 也退出（1:1 绑定）
-- **RTOS 容器**：容器退出时，shim 继续运行（1:1:1 分离）
-  - 无论前台还是后台模式
-  - 只有显式 `ctr container delete` 时才退出
-
-⚠️ **重要澄清**：
-- **前台模式和后台模式的区别**主要在于 **ctr CLI 的行为**，而不是 shim 的生命周期
-- 前台模式：ctr CLI 保持连接并等待容器退出
-- 后台模式：ctr CLI 立即返回，不保持连接
-- **但 shim 的生命周期行为在两种模式下是一致的**：容器停止后继续运行，直到显式删除
-
-**设计原因**
-1. Shim 需要持续响应 containerd 的 API 调用（State, Delete, Exec 等）
-2. 支持多次 attach/detach 周期
-3. 只有显式删除时才完全清理资源
-
-**实现细节**
-
-1. **输入语义解释** (`internal/domain/console/input.go`):
-
-```go
-interpreter := console.NewInputInterpreter(console.InputConfig{
-    Terminal: true,
-})
-
-actions := interpreter.Interpret(stdinBytes)
-// actions 只描述语义：WriteTTY / LocalEcho / TrackEcho /
-// EventExitCommand / EventDetach / EventInterrupt
-```
-
-`Copier` 不维护 exit、detach、interrupt、CRLF、backspace 的行状态；
-它只负责执行 `InputInterpreter` 返回的动作并把领域事件映射到 IO EventBus。
-
-2. **事件处理器** (`internal/application/attach/service_events.go`):
-
-```go
-func (s *Service) handleIOEvent(runtime ports.TaskAttachRuntime, taskHandle ports.Task, event ports.IOEvent) {
-    match := s.lookupIOEventPlanForTask(taskHandle.ID(), event)
-    if !match.matched {
-        return
-    }
-    match.handler(s, runtime, taskHandle, event, match.plan)
-}
-
-func (s *Service) stopFromIOEvent(runtime ports.TaskAttachRuntime, taskHandle ports.Task, reason ioStopReason) {
-    if runtime == nil {
-        log.Warnf("[EVENTS] Stop event for %s without runtime lock", taskHandle.ID())
-    } else {
-        runtime.Lock()
-        defer runtime.Unlock()
-    }
-    alreadyStopped := taskHandle.Status() == task.Status_STOPPED
-    if !alreadyStopped {
-        taskHandle.SetStatus(task.Status_STOPPED)
-        taskHandle.SetExitInfo(reason.exitStatus, time.Now())
-    }
-
-    if alreadyStopped {
-        return
-    }
-
-    taskHandle.IOExit()
-    stopAndClearIOManager(taskHandle)
-}
-
-// WithIOEventPolicies 可复用默认事件策略，也可局部覆写（含自定义 stop reason）。
-// 该层使用 `match := s.lookupIOEventPlanForTask(taskID, event)` 取策略；
-// 若 !match.matched，则事件将被忽略（非本任务事件或未配置处理器）。
-// 非停止类策略默认 match.plan 没有 stop 标记，停止策略通过 makeIOEventPolicyWithStop 构建。
-```
-
-3. **IO 事件策略层** (`internal/application/attach/io_event_plan.go`)：
-
-`Service` 将所有可观测的 IO 事件类型与处理策略放在实例级 `ioPolicies` 中，默认策略包括：
-
-- `IOEventExitCommand`：标记任务停止并终止 attach session
-- `IOEventInterrupt`：标记任务停止并终止 attach session
-- `IOEventStdinClosed`：只断开会话，不结束任务
-- `IOEventDetach`：只断开会话，不清理 FIFO
-- `IOEventError`：只上报错误
-
-策略集合在构建和覆盖时会强制执行一致性校验：
-- `eventTypeList` 与 `byType` 映射数量必须一致
-- `eventTypeList` 每个事件类型都必须有对应 handler 与映射
-- 覆盖时不允许重复事件类型
-
-`WithIOEventPolicies` 不是“替换全部”，而是“在默认策略上覆写/扩展”，
-因此不提供策略列表时仍保留默认行为。新增事件类型会继续参与订阅流程。
-
-4. **容器退出处理** (`internal/application/attach/service.go` + `internal/application/lifecycle/service_wait.go`):
-
-**重要**: `sandbox.Stop()` 必须在锁外部调用，否则会阻塞 State() API 导致 "context deadline exceeded" 错误。
-
-`waitForExit(...)` 现在位于 application 层，负责：
-
-- 等待 `task.ExitChan()` 或 `auto_close` 超时
-- 在锁外调用 `sandbox.Stop()` / `sandbox.StopContainer()`
-- 更新 task 状态
-- 通过 runtime port 把 exit 事件上报回 transport
-
-5. **显式删除处理** (`internal/application/task/service.go`):
-
-```go
-func (s *shimService) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
-    // ...
-    if c.cType.CanBeSandbox() {
-        if s.sandbox != nil {
-            s.sandbox.Stop(ctx, true)   // 停止 RTOS
-            s.sandbox.Delete(ctx)        // ← 删除 sandbox
-            s.sandbox = nil
-        }
-    }
-    // ...
-    return &taskAPI.DeleteResponse{...}, nil
-}
-```
-
-**测试验证**
-
-运行生命周期测试（在边侧主机上）：
-
-```bash
-export EDGE_SSH_USER="${EDGE_SSH_USER:-root}"
-export EDGE_IP="${EDGE_IP:-192.168.7.2}"
-export TEST_REMOTE_HOST="${TEST_REMOTE_HOST:-${EDGE_SSH_USER}@${EDGE_IP}}"
-
-# 方法1: 运行 IO 测试套件（推荐）
-cd tests/io
-./run_all_io_tests.sh
-
-# 方法2: 手动测试步骤
-# 创建容器
-ctr container create --runtime io.containerd.mica.v2 localhost:5000/mica-uniproton-app:xen-0.1 test-lifecycle
-
-# 启动容器（使用 -d 标志进行后台启动）
-ctr task start -d test-lifecycle
-
-# 等待 30 秒超时
-sleep 35
-
-# 检查 shim 是否仍在运行
-ps aux | grep containerd-shim-mica-v2
-
-# 查询任务状态
-ctr task status test-lifecycle
-
-# 显式删除
-ctr task delete test-lifecycle
-ctr container delete test-lifecycle
-```
-
-**重要：启动模式说明**
-
-| 启动方式 | 命令 | Shim 行为 | 说明 |
-|---------|------|----------|------|
-| 前台 | `ctr task start` | **Shim 保持运行** ✓ | ctr CLI 保持连接，shim 持续响应 API |
-| 后台 | `ctr task start -d` | **Shim 保持运行** ✓ | 正确的 daemon 模式 |
-
-**测试注意事项：**
-1. **推荐使用 `-d` 标志**进行后台启动，以测试 daemon shim 的持久性
-2. **前台模式下 shim 也保持运行**，1:1:1 生命周期在两种模式下都适用
-3. 只有显式调用 `ctr container delete` 时，shim 才会退出
-
-测试验证：
-1. ✓ 容器创建和启动
-2. ✓ RTOS 启动成功
-3. ✓ 30秒超时后 Shim 继续运行
-4. ✓ 可以查询任务状态（State API）
-5. ✓ 显式删除正确清理
-6. ✓ Shim 在删除后退出
-
-**调试技巧**
-
-**检查 shim 是否仍在运行：**
-```bash
-ps aux | grep containerd-shim-mica-v2
-```
-
-**检查任务状态：**
-```bash
-ctr task ls
-ctr task status <container-id>
-```
-
-**检查 sandbox 状态：**
-```bash
-# 查看 micad 日志
-journalctl -u micad -f
-```
-
-**常见问题**
-
-**Q: 输入 "exit" 命令后容器状态是什么？**
-A: 容器状态变为 `STOPPED`，但 shim 继续运行。这是 1:1:1 生命周期的正确行为。
-
-**Q: 如何完全清理容器？**
-A: 使用 `ctr task delete` 和 `ctr container delete` 显式删除。这会停止 RTOS、删除 sandbox，并导致 shim 退出。
-
-**Q: Shim 什么时候退出？**
-A: Shim 只在以下情况退出：
-1. 显式调用 `ctr container delete` 删除所有容器
-2. 收到 SIGTERM/SIGINT 信号（containerd 重启/停止）
-3. Shutdown API 被调用
-
-**Q: 为什么不直接发送 SIGTERM 到 RTOS？**
-A: RTOS (micad) 是底层管理器，不能被信号杀死。必须通过 libmica.Stop() 正确停止。
-
-**Q: 如何退出 RTOS 容器？**
-A: 在 RTOS shell 中输入 `exit` 命令并按回车，shim 会检测到该命令并安全停止容器。
+- **shim 自己从不因为"容器停止"而退出**：容器退出后 shim 驻留，等待
+  containerd 侧的 **Delete → Shutdown 收尾链**（`internal/transport/shimv2/events.go`
+  注释原文 "keeping shim running for cleanup"）。
+- **收尾链的触发源**包括显式 `ctr task delete` / `ctr container delete` /
+  `nerdctl rm`，以及 attach 客户端进程死亡（亚秒级自动发起）；机理详见权威 §5。
 
 ## 前台模式 vs 后台模式：Shim 生命周期设计
 
-### 问题背景
+### 问题背景与 containerd 设计
 
-1:1:1 生命周期模型（RTOS 停止 → Sandbox 停止 → Shim 继续运行）在两种启动模式下行为一致；
-差异只在 ctr 客户端：前台模式客户端与任务绑定，客户端退出会触发任务停止，后台模式不会。
-本节给出官方文档与代码调用链佐证。
-
-### containerd 的前台/后台模式设计
-
-#### 调用流程对比
-
-```
-Foreground mode (ctr task start):
-+--------------+
-|   ctr CLI    |
-+-------+------+
-        | 1. CreateTask
-        v
-+--------------+
-|  containerd  | <--- Keep TTRPC connection open
-+-------+------+
-        | 2. Start (attach IO, wait for exit)
-        v
-+--------------+
-|  Shim process|
-+-------+------+
-        | 3. Wait for container exit
-        v
-+--------------+
-|  RTOS container|
-+--------------+
-        |
-        | ctr client exits on EOF/Ctrl-C
-        v
-+------------------+
-| Task stop        | <--- client-bound task stops (foreground semantics)
-| shim continues   |     per the 1:1:1 model, then exits when unused
-+------------------+
-
-Background mode (ctr task start -d):
-+--------------+
-|   ctr CLI    |
-+-------+------+
-        | 1. CreateTask
-        v
-+--------------+
-|  containerd  | <--- Return immediately, close connection
-+-------+------+
-        | 2. Start (detach mode)
-        v
-+--------------+
-|  Shim process| <--- Continue running, respond to API
-+-------+------+
-        | 3. Wait for container exit
-        v
-+--------------+
-|  RTOS container|
-+--------------+
-        |
-        | Container exits
-        v
-+--------------+
-| Shim keeps running| <--- Daemon mode, respond to subsequent API
-+--------------+
-```
-
-#### 官方文档说明
-
-根据 containerd 官方文档和社区文章：
-
-> **[iximiuz - Implementing Container Runtime Shim](https://iximiuz.com/en/posts/implementing-container-runtime-shim/)**:
->
-> In contrast to foreground mode, in detached mode there is no long-running foreground runc process once the container has started. In fact, there is no long-running `runc` process at all. However, this means that it is up to the caller to handle the stdio after `runc` has set it up for you.
->
-> The main use-case of detached mode is for higher-level tools that want to be wrappers around `runc`. By running `runc` in detached mode, those tools have far more control over the container's `stdio` without `runc` getting in the way (most wrappers around `runc` like `cri-o` or `containerd` use detached mode for this reason).
-
-> **[云原生实验室 - Containerd shim 原理深入解读](https://icloudnative.io/posts/shim-shiminey-shim-shiminey/)**:
->
-> shim 将 Containerd 进程从容器的生命周期中分离出来，具体的做法是 runc 在创建和运行容器之后退出，并将 shim 作为容器的父进程，即使 Containerd 进程挂掉或者重启，也不会对容器造成任何影响。
-
-#### containerd 源码调用链
-
-根据 containerd 的源码分析，前台模式和后台模式的调用链如下：
-
-**前台模式 (`ctr task start`)**:
-
-```
-用户执行: ctr task start <container-id>
-  ↓
-ctr CLI (cmd/ctr/commands/tasks/):
-  → client.Task.Start(ctx, id)
-    → containerd.service.Start(ctx, req)
-      → shim.Start(ctx, req)  [通过 TTRPC]
-        → [shim 启动容器，建立 IO]
-        → [返回 StartResponse]
-    → [containerd 保持 TTRPC 连接]
-    → client.Wait(ctx)  // 阻塞等待容器退出
-    ↓
-[用户输入 "exit" 命令] ← 当前交互式兼容退出方式
-  ↓
-IO 层检测到 "exit" 命令
-  → 触发中断处理器
-  → 关闭 IO 会话
-  → lifecycle.waitForExit 检测到 IO 关闭
-  → sandbox.Stop() 停止容器
-  ↓
-[容器退出]
-  → client.Wait() 返回
-  → [ctr CLI 退出，不调用 Delete]
-  ↓
-[shim 继续运行，等待后续 API 调用]
-```
-
-**注意**：
-- **TTY Ctrl+C 会触发 interrupt/stop**：IO 层只在 TTY 会话中拦截 `0x03`，并上报 interrupt 事件
-- **当前交互式兜底退出方式**：在 RTOS shell 中输入 `exit` 命令
-- **非 TTY 保持字节流**：管道中的 `0x03` 仍保持普通输入字节，不升级为 signal
-- **外部终止方式**：使用 `ctr task kill -s SIGTERM` 或 `SIGKILL`
-
-**后台模式 (`ctr task start -d`)**:
-
-```
-用户执行: ctr task start -d <container-id>
-  ↓
-ctr CLI:
-  → client.Task.Start(ctx, id)
-    → containerd.service.Start(ctx, req)
-      → shim.Start(ctx, req)
-        → [shim 启动容器，建立 IO]
-        → [返回 StartResponse]
-    → [ctr CLI 立即返回]
-    → [不保持连接，不调用 Wait]
-  ↓
-[shim 继续运行，等待 API 调用]
-```
-
-**删除任务 (`ctr task delete` 或 `ctr container delete`)**:
-
-```
-用户执行: ctr task delete <container-id>
-  ↓
-ctr CLI:
-  → client.Task.Delete(ctx, id)
-    → containerd.service.Delete(ctx, req)
-      → shim.Delete(ctx, req)  [通过 TTRPC]
-        → [shim 停止容器，释放资源]
-      → shim.Shutdown(ctx)  [通过 TTRPC]
-        → [shim 关闭 TTRPC server 并退出]
-  ↓
-[shim 进程结束]
-```
+1:1:1 生命周期模型（RTOS 停止 → Sandbox 停止 → Shim 继续运行）在两种启动模式下
+行为一致；差异只在 ctr CLI：前台模式客户端与任务绑定（保持 gRPC 连接等待退出），
+后台模式启动后立即返回。containerd 侧 Create/Start/Delete/Shutdown 的调用链与
+containerd `runtime/v2/shim.go` 源码一致，细节移步上游源码或
+[容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md) §5（含 Delete→Shutdown
+收尾链与 "shim disconnected" 兜底清理的实测日志链）。
 
 ### 前台模式 vs 后台模式的实际差异
 
-基于 containerd 源码分析和实际测试，**shim 的生命周期在两种模式下是一致的**：
-
-**共同点**：
-- shim 都会持续运行，响应 State、Delete、Exec 等 API 调用
-- 只有显式调用 `ctr container delete` 时才会清理 shim（containerd 不主动清理）
-- stdin 关闭都不会自动清理 shim
+两种模式下 shim 生命周期一致（上文两条契约）；实际差异全在 ctr CLI 一侧：
 
 **差异点**：
 | 特性 | 前台模式 | 后台模式 |
@@ -875,17 +472,14 @@ ctr CLI:
 
 ### 总结
 
-1. **容器退出方式**：
-   - TTY 会话内按 `Ctrl+C` 触发 interrupt/stop，退出状态为 130
-   - 使用 `ctr task kill -s SIGTERM` / `SIGKILL` 或 `nerdctl stop` 外部终止
-   - 用户在 UniProton shell 内输入 "exit" 命令触发容器退出（交互式兜底）
-   - stdin 关闭触发超时退出（**所有 IO 模式默认 30 秒超时**）
-   - 所有方式都不触发 shim 清理
-2. **shim 清理仅在显式删除时发生**：`ctr container delete`
-3. **超时机制**：为防止资源泄漏，所有 IO 模式（TTY/Non-TTY、前台/后台）默认启用 30 秒超时，计时从最后一个 stdin 写端消失起算（attach 期间挂起）。如需长期运行，需显式设置 `auto_close=false` 或 `auto_close_timeout=0` 注解。用户可见的完整停止语义（含 attach 客户端进程死亡、task 记录可见性）以 [容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md) 为权威口径
-4. **RTOS 容器的推荐使用方式**：
-   - 开发调试：使用 `ctr task start`（前台，便于查看输出）
-   - 生产环境：使用 `ctr task start -d`（后台，符合 daemon 模式）+ `auto_close=false` 注解
+容器退出方式、auto-close 超时、shim 清理时机的完整语义以
+[容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md) §3（结局矩阵）
+与 §5（shim 退出机理）为唯一权威，此处不再复述清单。
+
+本文件独有的实操建议：
+
+- 开发调试：`ctr task start`（前台，便于查看输出）
+- 生产环境：`ctr task start -d`（后台，daemon 模式）+ `auto_close=false` 注解
 
 ---
 
@@ -1192,20 +786,9 @@ IO 适配器内部的进一步拆分：
 - `application/attach` 不直接 import `internal/adapters/io`
 - 重新 attach / resize 时若 `IOManager` 缺失，通过统一 session factory 重建 session 与事件订阅
 
-当前 `run -it`、`run -dt`、`attach`、`Ctrl-P Ctrl-Q`、`Ctrl-C`、`exit` 的主行为可以按下面的状态流理解：
-
-```mermaid
-stateDiagram-v2
-  [*] --> Created
-  Created --> Running: Start
-  Running --> Attached: attach session opens
-  Attached --> Running: Ctrl-P Ctrl-Q detach
-  Running --> Attached: reattach
-  Attached --> Stopping: Ctrl-C or exit
-  Running --> Stopping: stop / kill
-  Stopping --> Stopped: RTOS stopped
-  Stopped --> Deleted: task delete / rm
-```
+用户可见的状态流（含 detach/进程死亡/EOF 各离开方式的结局）以
+[容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md) §4 的
+权威状态图为准，此处不再重复维护一份。
 
 ### 日志标识
 
@@ -1218,7 +801,7 @@ stateDiagram-v2
 
 ### 常见问题
 
-退出容器与 exit/shim 生命周期类问题见上文"Exit 命令处理和 1:1:1 生命周期"的常见问题小节。
+退出容器与 exit/shim 生命周期类问题见 [容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md) §5（shim 退出机理）与 §6（正确姿势）。
 
 **Q: attach 后没有输出**
 A: 检查 FIFO 路径是否正确，TTY 是否已打开

@@ -21,6 +21,7 @@ MicRun 是面向 RTOS workload 的 `containerd` shim v2 runtime。用户可以�
 ## 优先阅读
 
 - `README.md`：项目总览和当前架构草图
+- `docs/user/lifecycle-semantics.md`：容器生命周期与 IO 会话语义（**权威口径**，其他文档涉及这些语义一律以它为准）
 - `docs/internals/architecture.md`：分层 runtime 架构
 - `docs/internals/contribution-guide.md`：贡献与评审指南（代码风格、修改边界、提交拆分）
 - `docs/quick-start.md`：构建、QEMU、镜像和 K3s workflow

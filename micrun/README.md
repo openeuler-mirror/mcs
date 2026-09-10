@@ -110,6 +110,7 @@ micrun/
 
 - [文档总览](docs/README.md)
 - [快速入门](docs/quick-start.md)
+- [容器生命周期与 IO 会话语义（权威口径）](docs/user/lifecycle-semantics.md)
 - [当前架构](docs/internals/architecture.md)
 - [状态管理](docs/internals/state-management.md)
 - [Pedestal 设计](docs/internals/pedestal-architecture.md)
