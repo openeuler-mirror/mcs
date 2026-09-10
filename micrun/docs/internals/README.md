@@ -4,19 +4,18 @@
 
 ## 推荐阅读顺序
 
-1. [architecture.md](./architecture.md)：当前分层、架构特性、已知边界。
-2. [target-architecture.md](./target-architecture.md)：目标分层、重实现原则、迁移顺序与判断标准。
-3. [state-management.md](./state-management.md)：`StateStore`、runtime snapshot、恢复链路、legacy 回退。
-4. [io-system.md](./io-system.md)：FIFO / TTY / copier / attach 语义。
-5. [pedestal-architecture.md](./pedestal-architecture.md)：pedestal 抽象、平台 bootstrap、显式 host 绑定与收敛方向。
-6. [sandbox-validation.md](./sandbox-validation.md)：shim 崩溃后的 sandbox 校验与清理。
-7. [concurrency.md](./concurrency.md)：并发模型——锁清单与层级顺序、生命周期门控、goroutine 契约、历史违例。
-8. [task-state-machine.md](./task-state-machine.md)：任务状态转移表、每条边的语义与写入契约。
-9. [micad-protocol.md](./micad-protocol.md)：libmica 线缆协议——create_msg 布局、控制命令、超时与存活性判定。
-10. [testing.md](./testing.md)：测试分层、make ci 本地验证门、回归测试红-绿手册、覆盖基线。
-11. [logging.md](./logging.md)：日志分层与调试方法。
-12. [贡献指南](contribution-guide.md)：红-绿纪律、严重度分级、提交前检查。
-13. [可靠性架构](reliability.md)：缺陷模式分类与防复发机制、修复者 checklist。
+1. [architecture.md](./architecture.md)：当前分层、架构特性、已知边界与后续方向（含目标态差量）。
+2. [state-management.md](./state-management.md)：`StateStore`、runtime snapshot、恢复链路、legacy 回退。
+3. [io-system.md](./io-system.md)：FIFO / TTY / copier / attach 语义（用户可见的停止/离开结局以[生命周期语义](../user/lifecycle-semantics.md)为权威）。
+4. [pedestal-architecture.md](./pedestal-architecture.md)：pedestal 抽象、平台 bootstrap、显式 host 绑定与收敛方向。
+5. [sandbox-validation.md](./sandbox-validation.md)：shim 崩溃后的 sandbox 校验与清理。
+6. [concurrency.md](./concurrency.md)：并发模型——锁清单与层级顺序、生命周期门控、goroutine 契约、历史违例。
+7. [task-state-machine.md](./task-state-machine.md)：任务状态转移表、每条边的语义与写入契约。
+8. [micad-protocol.md](./micad-protocol.md)：libmica 线缆协议——create_msg 布局、控制命令、超时与存活性判定。
+9. [testing.md](./testing.md)：测试分层、make ci 本地验证门、回归测试红-绿手册、覆盖基线。
+10. [logging.md](./logging.md)：日志分层与调试方法。
+11. [贡献指南](contribution-guide.md)：红-绿纪律、严重度分级、提交前检查。
+12. [可靠性架构](reliability.md)：缺陷模式分类与防复发机制、修复者 checklist。
 
 ## 流程图导航
 

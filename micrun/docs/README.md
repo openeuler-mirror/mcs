@@ -18,14 +18,20 @@
 
 0. [容器生命周期与 IO 会话语义](user/lifecycle-semantics.md)（停止/detach/auto-close/task 可见性的权威口径）
 1. [架构设计](internals/architecture.md)
-2. [目标架构](internals/target-architecture.md)
-3. [状态管理](internals/state-management.md)
-4. [IO 系统](internals/io-system.md)
-5. [Pedestal 架构](internals/pedestal-architecture.md)
-6. [并发模型](internals/concurrency.md)
-7. [任务状态机](internals/task-state-machine.md)
-8. [micad 控制协议](internals/micad-protocol.md)
-9. [API 参考](reference/api-reference.md)
+2. [状态管理](internals/state-management.md)
+3. [IO 系统](internals/io-system.md)
+4. [Pedestal 架构](internals/pedestal-architecture.md)
+5. [并发模型](internals/concurrency.md)
+6. [任务状态机](internals/task-state-machine.md)
+7. [micad 控制协议](internals/micad-protocol.md)
+8. [API 参考](reference/api-reference.md)
+
+### 面向 agent 的自动化工作流
+
+- [micrun-qemu-build](../skills/micrun-qemu-build/SKILL.md)：构建 + QEMU + 镜像 + 测试套件驱动的全流程 workflow
+- [qemu-quickstart-debug](../skills/qemu-quickstart-debug/SKILL.md)：QEMU 起机与分层排障 workflow
+
+（skills/ 下的 SKILL.md 面向 AI agent，与本文档集互补。）
 
 ### 做问题排查或回归验证
 
@@ -166,8 +172,9 @@ sequenceDiagram
     S->>S: 保留 FIFO 供 reattach,启动 auto-close 计时
     U->>S: reattach
     S->>G: 刷新 fresh TTY 句柄
-    U->>G: Ctrl-C
+    U->>G: Ctrl-C (raw 终端, 字节送达)
     S->>G: 0x03 → 停止容器(exit 130)
+    Note over U,S: 普通终端下 Ctrl-C 被 ISIG 转 SIGINT 杀 attach 客户端<br/>(进程死亡路径,秒级停+task 消失,不走计时)
     G-->>S: exit 命令
     S->>U: 会话结束,任务终止
 ```
@@ -228,6 +235,7 @@ graph LR
 入口：[user/README.md](user/README.md)。
 
 - [快速入门](quick-start.md)
+- [容器生命周期与 IO 会话语义（权威口径）](user/lifecycle-semantics.md)
 - [Kubernetes 集成](user/kubernetes.md)
 - [故障排查](user/troubleshooting.md)
 - [性能调优](user/performance-tuning.md)
@@ -235,6 +243,7 @@ graph LR
 ### 参考文档
 
 - [参考文档入口](reference/README.md)
+- [交付规格](reference/spec.md)（需求快照，功能交付与测试验收的基准）
 - [注解参考](reference/annotations.md)
 - [配置参考](reference/configuration.md)
 - [API 参考](reference/api-reference.md)
@@ -244,7 +253,7 @@ graph LR
 
 入口：[internals/README.md](internals/README.md)（含阅读顺序）。
 
-- 架构与状态：[架构设计](internals/architecture.md) · [目标架构](internals/target-architecture.md) · [Pedestal 架构](internals/pedestal-architecture.md) · [状态管理](internals/state-management.md) · [Sandbox 校验](internals/sandbox-validation.md)
+- 架构与状态：[架构设计](internals/architecture.md) · [Pedestal 架构](internals/pedestal-architecture.md) · [状态管理](internals/state-management.md) · [Sandbox 校验](internals/sandbox-validation.md)
 - 行为契约：[并发模型](internals/concurrency.md) · [任务状态机](internals/task-state-machine.md) · [micad 协议](internals/micad-protocol.md) · [IO 系统](internals/io-system.md)
 - 工程流程：[测试体系](internals/testing.md) · [贡献指南](internals/contribution-guide.md) · [可靠性架构](internals/reliability.md) · [日志系统](internals/logging.md)
 

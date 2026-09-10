@@ -4,6 +4,9 @@
 
 ## 文档列表
 
+- [spec.md](./spec.md)
+  交付规格快照——功能交付与测试验收的基准（只读基准，修改需走需求流程）。
+
 - [annotations.md](./annotations.md)
   MicRun 支持的注解、优先级和使用方式。
 
@@ -18,6 +21,7 @@
 
 ## 使用建议
 
+- 想核对交付/验收标准：看 `spec.md`
 - 想写 Pod/Container 清单：先看 `annotations.md`
 - 想调整默认值或 drop-in：看 `configuration.md`
 - 想从代码入口理解主要接口：看 `api-reference.md`

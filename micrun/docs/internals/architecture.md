@@ -185,32 +185,7 @@ ports 是应用层与基础设施之间的稳定边界。当前重点接口包�
 
 ### 3.1 创建与启动链路
 
-```mermaid
-sequenceDiagram
-  participant C as containerd
-  participant S as shimv2
-  participant R as runtimeconfig.Resolver
-  participant T as application/task
-  participant L as application/lifecycle
-  participant D as domain/container
-  participant P as ports
-  participant A as adapters
-  participant M as micad/Xen
-
-  C->>S: CreateTask
-  S->>R: Resolve runtime config
-  R-->>S: RuntimeConfig + annotations
-  S->>T: Create sandbox/container
-  T->>D: Build domain objects
-  D->>P: Save state and prepare controls
-  P->>A: StateStore / libmica / pedestal
-  C->>S: Start
-  S->>L: Start task
-  L->>D: Start container
-  D->>P: GuestControl + HypervisorControl
-  P->>A: Start client and wire IO
-  A->>M: micad starts Xen DomU
-```
+（流程图见 [文档总览·流程图速览](../README.md#流程图速览)的创建与启动时序图）
 
 ```text
 CreateTaskRequest
@@ -231,23 +206,7 @@ CreateTaskRequest
 
 ### 3.2 Attach 与 IO 链路
 
-```mermaid
-flowchart LR
-  attachReq["Attach / ResizePty / CloseIO"]
-  shim["transport/shimv2"]
-  app["application/attach.Service"]
-  portsIO["ports<br/>IOSessionFactory / IOManager / IOEventStream"]
-  session["adapters/io.Session"]
-  copier["adapters/io.Copier"]
-  console["domain/console<br/>detach / interrupt / exit / CRLF"]
-  tty["RPMSG TTY"]
-  rtos["UniProton shell"]
-
-  attachReq --> shim --> app --> portsIO --> session --> copier
-  copier --> console --> tty --> rtos
-  rtos --> tty --> copier
-  copier -. IO events .-> app
-```
+（流程图见 [文档总览·流程图速览](../README.md#流程图速览)的 IO 链路图）
 
 ```text
 ResizePty / Attach / CloseIO
@@ -272,27 +231,7 @@ detach、interrupt、exit、TTY 写入、local echo 等动作。
 
 ### 3.3 恢复链路
 
-```mermaid
-flowchart TD
-  start["shim daemon start"]
-  recovery["application/recovery.Service"]
-  backend["shimRecoveryBackend.Restore"]
-  load["LoadSandboxWithDependencies"]
-  repo["stateRepository.LoadSandbox"]
-  store["StateStore runtime.json"]
-  legacy["legacy state.json fallback"]
-  validate["ValidateSandboxState"]
-  rebuild["rebuild task handles"]
-  stale["cleanup stale state"]
-
-  start --> recovery --> backend --> load --> repo
-  repo --> store
-  repo --> legacy
-  store --> validate
-  legacy --> validate
-  validate -->|recoverable| rebuild
-  validate -->|stale| stale
-```
+（流程图见 [文档总览·流程图速览](../README.md#流程图速览)的恢复与校验图）
 
 ```text
 shim daemon start
@@ -313,75 +252,23 @@ shim daemon start
 
 ## 4. 状态架构
 
-权威状态存储收敛于 `internal/adapters/state/file.Store`，根目录默认为 `/run/micrun`。
+权威状态存储收敛于 `internal/adapters/state/file.Store`（根目录默认 `/run/micrun`）：
+一个 sandbox 的全部持久化状态收敛为**一个原子写入的合并文档**
+（`/run/micrun/runtime/sandbox/<id>/runtime.json`，携带 sandbox 与全部容器状态），
+配合三层恢复回退（合并文档 → 旧格式每容器快照 → legacy `state.json`）。
 
-### 4.1 合并文档模型（单一权威文档）
-
-一个 sandbox 的全部持久化状态现在收敛为**一个原子写入的文档**：
-
-- sandbox snapshot: `/run/micrun/runtime/sandbox/<sandbox-id>/runtime.json`
-
-该文档同时携带：
-
-- sandbox 自身的 state / config / network / shim pid
-- 每个容器的完整 config（`Config.ContainerConfigs`）
-- 每个容器的运行时记录（`Containers` map：state、mounts、container path）
-
-由此得到的结构性保证：
-
-1. **每次容器状态转换是一次原子文件写**（temp file + rename + dir sync），
-   不存在“容器文件已更新而 sandbox 文件未更新”的崩溃分歧窗口。
-2. **删除即缺席**：容器被删除后不在 containers map 中，任何迟到的持久化
-   写出的文档天然不含该容器的记录，状态复活在构造上不可能发生。
-3. **恢复时一次性消费**：重建路径对每个容器一次性取走内嵌记录，
-   同 id 的删除后重建从全新状态开始，不会复活重启前的状态。
-
-### 4.2 兼容路径
-
-以下路径在恢复时读取，但不是写入目标：
-
-- `/run/micrun/runtime/container/<container-path-or-id>/runtime.json`
-  （合并文档之前的每容器快照）
-- `/run/micrun/sandbox/<sandbox-id>/state.json`
-- `/run/micrun/<container-path>/state.json`
-- `/run/micrun/<container-id>/state.json`
-
-当前策略是：
-
-1. 新状态只写合并的 sandbox `runtime.json`
-2. 恢复时若文档缺 `containers` 键（旧格式），容器状态回退读取
-   每容器 `runtime.json`，再回退 legacy `state.json`
-3. 重建完成后的第一次 `StoreSandbox` 会把文档迁移为合并格式；
-   容器删除时顺带清理旧格式的每容器文件
-
-注意：合并格式写出后**不支持降级**回旧版本 shim（旧版本会读到过期的
-每容器文件）；跨该版本降级需要清空 `/run/micrun` 运行时状态。
+文档模型的结构性保证（原子写/删除即缺席/恢复一次性消费）、兼容路径清单与
+恢复链路的完整说明，见[状态管理](state-management.md)（权威）。
 
 ## 5. 配置与资源解析
 
-当前 `RuntimeConfig` 的解析顺序以 `internal/adapters/config/runtimeconfig/resolver.go` 为准
-（[配置与资源控制图](../README.md#配置与资源控制)）：
+`RuntimeConfig` 的六层解析顺序（传入实例 → 注解 config path → CRI options →
+环境变量 → 自动发现 → annotations overlay）与 INI/TOML 文件格式，见
+[配置参考](../reference/configuration.md)（权威）；CPU/内存/cpuset 的资源映射
+与归一化规则见[资源映射](../reference/resources.md)。架构侧只强调两条原则：
 
-1. 如果调用方已经传入 `current *RuntimeConfig`，直接复用
-2. 注解中的 sandbox config path
-3. CRI runtime options 里的 `ConfigPath`
-4. 环境变量 `MICRUN_CONF_FILE`
-5. 自动发现配置文件集合：
-   - `MICRUN_CONF_DIR`
-   - `/etc/mica/micrun/conf.d/*.conf|*.toml`
-   - `/etc/mica/micrun/micrun.conf`
-6. 最后统一叠加 annotations
-
-需要注意两点：
-
-1. 环境变量在当前实现里主要用于“选择配置文件来源”，不是直接承载 workload 值。
-2. 注解是最终 overlay，而不是简单地和环境变量并列比较优先级。
-
-资源链路的要点：
-
-- 宿主画像通过 `HostProfile` 注入
-- 资源规划策略通过 `ResourcePolicy` 注入
-- `cpuset` 归一化与越界 CPU 过滤在 `domain/container` 本地完成
+1. 环境变量用于"选择配置文件来源"，不直接承载 workload 值；
+2. 注解是最终 overlay，而非与环境变量并列比较优先级。
 
 ## 6. 架构特性
 

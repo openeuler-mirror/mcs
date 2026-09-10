@@ -63,7 +63,11 @@ metadata:
 
 **说明**：
 - 支持 64 位十六进制摘要，或带 `sha256:` 前缀的摘要
-- 如果摘要与实际固件不匹配，容器创建会失败
+- **校验时机是 task start（shim 创建任务）**，不是 `ctr container create`：
+  `create` 是 containerd 的纯元数据操作，不会触达 shim，因此任何注解校验
+  （本键、非法格式等）都发生在 start 阶段并使 start 失败（错误形如
+  `failed to create shim task: firmware sha256 mismatch ...` / `invalid firmware sha256 length`）
+- 摘要不匹配或格式非法时，容器不会启动，固件也不会被加载——这是校验可生效的最早时机
 
 **示例**：
 ```yaml
@@ -120,7 +124,7 @@ metadata:
 
 ### org.openeuler.micrun.container.auto_close
 
-控制容器是否在 stdin 关闭后自动退出。
+控制"最后一个 stdin 写端消失"后是否按超时回收容器。
 
 | 属性 | 值 |
 |------|-----|
@@ -129,14 +133,17 @@ metadata:
 | 优先级 | `auto_close_timeout` > `auto_close` > 默认 |
 
 **行为**：
-- `true`：客户端断开后，容器会在超时后自动退出
-- `false`：禁用自动关闭（除非设置了 `auto_close_timeout`）
+- `true`：最后一个 stdin 写端消失（detach 键序送达 / stdin EOF / start 后无人 attach）后，
+  计时开始，超时（默认 30s）内无人重新 attach 即回收容器
+- `false`：禁用自动回收（除非设置了非零 `auto_close_timeout`），容器保持运行等待重连
+- **无效值（非布尔字符串）不报错，静默按默认值 `true` 处理**
 
 **重要说明**：
 - ⚠️ **不要使用数字值**（如 `"60"`）。此注解是布尔值，数字值会被忽略。
 - 如需设置超时时长，请使用 `auto_close_timeout` 注解。
-- **所有 IO 模式**（TTY/Non-TTY、前台/后台）默认都启用超时机制
-- 只有显式设置 `auto_close=false` 或 `auto_close_timeout=0` 才能禁用超时
+- 计时起点是**最后一个 stdin 写端消失**，attach 期间挂起（详见 `auto_close_timeout` 节）
+- `false` 只对"仅 stdin 结束 / detach"类离开方式有效，**不能阻止 attach 客户端进程死亡**
+  （关终端 / 断 SSH / Ctrl+C 杀死 attach 进程）导致的秒级停止
 
 **示例**：
 ```yaml
@@ -439,6 +446,8 @@ metadata:
 ---
 
 ### org.openeuler.micrun.runtime.hugepage_enable
+
+> 仅适用于 Xen 底座（代码中标注 only for Xen；默认 false）。
 
 启用 HugePage 支持。
 

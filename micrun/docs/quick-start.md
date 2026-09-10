@@ -97,12 +97,15 @@
 
 ```bash
 oebuild generate -p qemu-aarch64 \
-  -f zephyr \
-  -f micrun \
   -f mcs/xen \
-  -f systemd \
-  -f containerd \
-  -d <build_dir>   # 构建目录名称，自定义（如 playmicrun）
+  -f mcs/micrun \
+  -f containers/k3s/k3s-agent \
+  -f kernel/kernel6 \
+  -y -d <build_dir>   # 构建目录名称，自定义（如 playmicrun）
+
+> kp920 交付目标为 kernel 6，测试 QEMU 镜像需与交付同内核，故默认带上
+> `kernel/kernel6`（需层包含修复版 kernel6 feature；旧版 feature 会静默
+> 构建出 5.10 内核）。Zephyr RTOS 形态可改用 `-f mcs/rtos/zephyr`。
 
 cd <build_dir>
 oebuild bitbake
@@ -135,13 +138,11 @@ bitbake micrun
 
 ```bash
 oebuild generate -p qemu-aarch64 \
-  -f zephyr \
-  -f micrun \
   -f mcs/xen \
-  -f systemd \
-  -f containerd \
-  -f k3s-agent \
-  -d <build_dir>
+  -f mcs/micrun \
+  -f containers/k3s/k3s-agent \
+  -f kernel/kernel6 \
+  -y -d <build_dir>
 ```
 
 ---
@@ -546,31 +547,18 @@ nerdctl run -d -t \
 
 **交互行为速记**：
 
-把 MicRun 的交互先按这四句话理解：
-
-1. 想让容器继续跑、自己先离开：在 TTY 会话里按 `Ctrl+P`，再按 `Ctrl+Q`。
-2. 想回到正在跑的容器：执行 `nerdctl attach <container_name>`。
-3. 想停止容器：TTY 会话里按 `Ctrl+C`，或在外部执行 `nerdctl stop <container_name>`；在 UniProton shell 内也可以输入 `exit` 作为兼容退出方式。
-4. 使用非 TTY 或管道输入时，把它当作普通字节流；不要依赖 `Ctrl+P Ctrl+Q` 或 `Ctrl+C` 这类终端按键。
-
-常见情况如下：
-
-| 你想做什么 | 推荐操作 | 容器状态 |
-|------------|----------|----------|
-| 暂时离开交互 shell | `Ctrl+P` 后 `Ctrl+Q` | 继续运行 |
-| 重新进入容器 | `nerdctl attach <container_name>` | 继续运行 |
-| 在 TTY 会话内停止容器 | `Ctrl+C` | 停止 |
-| 正常停止容器 | `nerdctl stop <container_name>` | 停止，之后可 `nerdctl rm` |
-| 强制清理容器 | `nerdctl rm -f <container_name>` | 停止并删除 |
-| 在 UniProton shell 内退出 | 输入 `exit` 并回车 | 停止 |
-| 管道输入命令 | `printf 'help\n' \| nerdctl run -i ...` | 按输入和 auto-close 策略运行 |
+停止用 `nerdctl stop` / `ctr task kill -s INT`；离开用 `Ctrl+P` `Ctrl+Q`（默认
+auto_close 下 30 秒内回来，长期保活设 `auto_close=false`）；非 TTY/管道输入按普通
+字节流处理。三种"离开方式"的结局矩阵与正确姿势清单，见
+[容器生命周期与 IO 会话语义](user/lifecycle-semantics.md)（唯一权威，含
+Ctrl+C 的 raw 终端限定）。
 
 TTY detach 默认使用 `Ctrl+P Ctrl+Q`。如果通过 `--detach-keys` 配置自定义序列，
 MicRun 支持 `ctrl-a` 到 `ctrl-z`，也支持 `ctrl-@`、`ctrl-[`、`ctrl-\`、`ctrl-]`、
 `ctrl-^`、`ctrl-_`、`ctrl-?` 这些常见符号控制键。序列中只要有一个片段非法，整条
 自定义 detach 配置就不会生效。
 
-> `Ctrl+C` 只在 TTY 会话里表示停止容器。非 TTY 或管道输入中的 `0x03` 仍按普通输入字节处理，避免破坏脚本和二进制输入。
+> `Ctrl+C` 只有在**raw 终端**的 TTY 会话里才表示停止容器（`0x03` 字节真正送达，如 `nerdctl run -it` 前台天然满足）。普通终端下 `Ctrl+C` 被终端转成 SIGINT 杀死 attach 客户端，容器会随之秒级停止且 task 记录消失——这与"interrupt 停止"是两条不同路径。非 TTY 或管道输入中的 `0x03` 仍按普通输入字节处理，避免破坏脚本和二进制输入。完整离开/停止语义见 [容器生命周期与 IO 会话语义](user/lifecycle-semantics.md)。
 
 **使用示例**：
 ```bash
@@ -580,7 +568,7 @@ nerdctl run -it --rm --runtime io.containerd.mica.v2 <image>
 # 在容器中工作...
 # 按 Ctrl+P，然后按 Ctrl+Q
 
-# 容器在后台继续运行
+# 容器不因此停止（默认 auto_close 下请在 30 秒内 reattach）
 nerdctl ps
 
 # 重新连接到容器
@@ -731,17 +719,13 @@ A：参考 [Kubernetes 集成指南 - 故障排查](user/kubernetes.md#常见问
 
 ## 常见问题
 
-### Q：`micran`和`micrun`有什么区别？
-
-**A**：`micran`是旧名称，现在统一使用`micrun`。
-
 ### Q：为什么需要`-t`参数？
 
 **A**：`-t`为容器分配伪终端，支持交互式操作和 `exit` 命令退出。
 
 ### Q：如何退出 RTOS 容器？
 
-**A**：在容器中输入 `exit` 命令。完全清理需要：
+**A**：优先用 `nerdctl stop <container_name>` 或 `ctr task kill -s INT`（远程、可靠）；交互 shell 内输入 `exit` 是兼容兜底方式（见上文交互速记与 [生命周期语义](user/lifecycle-semantics.md)）。完全清理需要：
 ```bash
 ctr task delete <container_name>
 ctr container delete <container_name>

@@ -5,6 +5,9 @@
 `ports.FinalizeTaskStopped`（终态化契约）。本文与代码同步维护：**改转移表必须同改本文，
 反之亦然**。
 
+> 本文是**实现层**转移表；用户可见的容器停止/task 记录可见性/attach-detach 结局语义
+> 见[容器生命周期与 IO 会话语义](../user/lifecycle-semantics.md)（权威口径）。
+
 ## 1. 为什么状态机集中在 ports 层
 
 历史反复出现的 BUG 类：某个操作在"无锁的 guest RPC 窗口"里被并发的查询路径或信号
