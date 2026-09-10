@@ -186,14 +186,27 @@ int load_client_image(struct mica_client *client)
 int start_client(struct mica_client *client)
 {
 	struct remoteproc *rproc = &client->rproc;
+	int ret;
 
-	return remoteproc_start(rproc);
+	ret = remoteproc_start(rproc);
+	if (ret)
+		rproc->state = RPROC_ERROR;
+
+	return ret;
 }
 
-void stop_client(struct mica_client *client)
+int stop_client(struct mica_client *client)
 {
-	if (client != NULL)
-		remoteproc_shutdown(&client->rproc);
+	int ret;
+
+	if (client == NULL)
+		return -EINVAL;
+
+	ret = remoteproc_shutdown(&client->rproc);
+	if (ret)
+		client->rproc.state = RPROC_ERROR;
+
+	return ret;
 }
 
 void destory_client(struct mica_client *client)
@@ -227,8 +240,8 @@ const char *show_client_status(struct mica_client *client)
 			rsc_table = client->rproc.rsc_table;
 			metal_cache_invalidate(rsc_table->reserved, sizeof(rsc_table->reserved));
 			if (rsc_table->reserved[0] == CPU_OFF_FUNCID) { /* check rproc offline */
-				mica_stop(client);
-				return client_status[RPROC_OFFLINE];
+				if (mica_stop(client) == 0)
+					return client_status[RPROC_OFFLINE];
 			}
 		}
 

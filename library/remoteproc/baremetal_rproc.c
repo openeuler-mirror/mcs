@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <syslog.h>
+#include <time.h>
 #include <metal/alloc.h>
 #include <metal/cache.h>
 #include <metal/io.h>
@@ -40,6 +41,8 @@ static int pipe_fd[2];
 #define IOC_CPUON          _IOW('A', 1, int)
 #define IOC_AFFINITY_INFO  _IOW('A', 2, int)
 #define IOC_QUERY_MEM      _IOW('A', 3, int)
+#define CPU_OFF_TIMEOUT_MS 3000
+#define CPU_OFF_POLL_MS    100
 
 /* PSCI FUNCTIONS */
 #define CPU_ON_FUNCID      0xC4000003
@@ -232,6 +235,41 @@ static uint32_t get_cpu_status(struct resource_table *rsc_table)
 	return rsc_table->reserved[0];
 }
 
+static int wait_cpu_off(struct mica_client *client)
+{
+	struct cpu_info info = {
+		.cpu = client->ped_setup.cpu_id,
+	};
+	struct timespec start, now, sleep_time = {
+		.tv_nsec = CPU_OFF_POLL_MS * 1000000L,
+	};
+	int ret;
+	long elapsed_ms;
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	for (;;) {
+		ret = ioctl(mcs_fd, IOC_AFFINITY_INFO, &info);
+		if (ret == 0)
+			return 0;
+		if (errno != EFAULT) {
+			syslog(LOG_ERR, "failed to query CPU%d PSCI state: %s\n",
+				info.cpu, strerror(errno));
+			return -errno;
+		}
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		elapsed_ms = (now.tv_sec - start.tv_sec) * 1000L;
+		elapsed_ms += (now.tv_nsec - start.tv_nsec) / 1000000L;
+		if (elapsed_ms >= CPU_OFF_TIMEOUT_MS) {
+			syslog(LOG_ERR, "CPU%d did not enter PSCI OFF state within %d ms\n",
+				info.cpu, CPU_OFF_TIMEOUT_MS);
+			return -ETIMEDOUT;
+		}
+
+		nanosleep(&sleep_time, NULL);
+	}
+}
+
 static int wait_cpu_status_reset(struct resource_table *rsc_table, unsigned int timeout)
 {
 	unsigned int diff;
@@ -402,12 +440,20 @@ static int rproc_shutdown(struct remoteproc *rproc)
 	struct remoteproc_mem *mem;
 	struct metal_list *node;
 	struct resource_table *rsc_table = rproc->rsc_table;
+	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	void *virt = NULL;
 	size_t size = 0;
+	int ret;
 
 	/* Tell clientos shut itself down by PSCI */
 	set_cpu_status((struct resource_table *)rsc_table, CPU_OFF_FUNCID);
-	rproc->ops->notify(rproc, 0);
+	ret = rproc->ops->notify(rproc, 0);
+	if (ret)
+		return ret;
+
+	ret = wait_cpu_off(client);
+	if (ret)
+		return ret;
 
 	/* Delete all the registered remoteproc memories */
 	metal_list_for_each(&rproc->mems, node) {
