@@ -230,11 +230,11 @@ def query_status() -> None:
                     name = filename[:-7]
                     print(f'Query {name} status failed!')
 
-def send_ctrl_msg(command: str, client: str, key: str, value: str) -> None:
+def send_ctrl_msg(command: str, client: str, key: str, value: str) -> int:
     ctrl_socket = f'/run/mica/{client}.socket'
     if not os.path.exists(ctrl_socket):
         print(f"Cannot find {client}. Please run 'mica create <config>' to create it.")
-        return
+        return 1
 
     with mica_socket(ctrl_socket) as socket:
         if command == 'set':
@@ -244,8 +244,12 @@ def send_ctrl_msg(command: str, client: str, key: str, value: str) -> None:
         response = socket.recv()
         if response == 'MICA-SUCCESS':
             print(f'{command} {client} successfully!')
+            return 0
         elif response == 'MICA-FAILED':
             print(f'{command} {client} failed!')
+            return 1
+
+    return 1
 
 
 
@@ -308,21 +312,23 @@ def main() -> None:
             parser.print_help()
     elif args.command == 'start':
         print(f'starting {args.client}...')
-        send_ctrl_msg(args.command, args.client, '', '')
+        return send_ctrl_msg(args.command, args.client, '', '')
     elif args.command == 'stop':
         print(f'stopping {args.client}...')
-        send_ctrl_msg(args.command, args.client, '', '')
+        return send_ctrl_msg(args.command, args.client, '', '')
     elif args.command == 'rm':
         print(f'removing {args.client}...')
-        send_ctrl_msg(args.command, args.client, '', '')
+        return send_ctrl_msg(args.command, args.client, '', '')
     elif args.command == 'set':
         print(f'setting {args.client}...')
-        send_ctrl_msg(args.command, args.client, args.key, args.value)
+        return send_ctrl_msg(args.command, args.client, args.key, args.value)
     elif args.command == 'status':
         query_status()
     elif args.command == "gdb":
-        send_ctrl_msg(args.command, args.client, '', '')
+        return send_ctrl_msg(args.command, args.client, '', '')
+
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

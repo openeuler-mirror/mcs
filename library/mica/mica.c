@@ -52,7 +52,7 @@ int mica_start(struct mica_client *client)
 	return ret;
 }
 
-void mica_stop(struct mica_client *client)
+int mica_stop(struct mica_client *client)
 {
 	/*
 	 * step1: remove all the registered services
@@ -60,21 +60,34 @@ void mica_stop(struct mica_client *client)
 	 * step3: shutdown remoteproc
 	 */
 	struct remoteproc *rproc = &client->rproc;
+	int ret;
 
-	remoteproc_stop(rproc);
+	if (rproc->ops->stop) {
+		ret = remoteproc_stop(rproc);
+		if (ret)
+			return ret;
+	} else {
+		/* baremetal has no separate remoteproc stop operation. */
+		remoteproc_stop(rproc);
+	}
 	mica_unregister_all_services(client);
 	release_rpmsg_device(client);
 	if (client->debug)
 		destroy_rbuf_device(client);
-	stop_client(client);
+
+	return stop_client(client);
 }
 
-void mica_remove(struct mica_client *client)
+int mica_remove(struct mica_client *client)
 {
 	struct remoteproc *rproc = &client->rproc;
+	int ret;
 
-	if (rproc->state != RPROC_OFFLINE)
-		mica_stop(client);
+	if (rproc->state != RPROC_OFFLINE) {
+		ret = mica_stop(client);
+		if (ret)
+			return ret;
+	}
 
 	if (client->gdb_server_thread) {
 		pthread_cancel(client->gdb_server_thread);
@@ -83,6 +96,7 @@ void mica_remove(struct mica_client *client)
 		
 
 	destory_client(client);
+	return 0;
 }
 
 int mica_set(struct mica_client *client, char *key, char *value)

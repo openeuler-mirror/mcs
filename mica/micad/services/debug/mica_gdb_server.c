@@ -126,7 +126,11 @@ static inline int restart_client(struct mica_client *client)
 	 */
 	sleep(1);
 
-	mica_stop(client);
+	ret = mica_stop(client);
+	if (ret) {
+		syslog(LOG_ERR, "%s: Stop failed, ret(%d)", __func__, ret);
+		return ret;
+	}
 
 	// wait for the remote to stop
 	while (rbuf_rsc->state != RBUF_STATE_CPU_STOP) {

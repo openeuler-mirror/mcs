@@ -343,15 +343,23 @@ static int client_ctrl_handler(int epoll_fd, void *data)
 		}
 	} else if (strncmp(msg, "stop", CTRL_MSG_SIZE) == 0) {
 		syslog(LOG_INFO, "Stopping %s", unit->name);
-		mica_stop(unit->client);
-	} else if (strncmp(msg, "rm", CTRL_MSG_SIZE) == 0) {
-		syslog(LOG_INFO, "Removing %s", unit->name);
-		ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, unit->socket_fd, NULL);
-		if (ret < 0) {
-			syslog(LOG_ERR, "Failed to remove fd from epoll, ret(%d)", ret);
+		ret = mica_stop(unit->client);
+		if (ret) {
+			syslog(LOG_ERR, "Stop failed, ret(%d)", ret);
 			goto err;
 		}
-		mica_remove(unit->client);
+	} else if (strncmp(msg, "rm", CTRL_MSG_SIZE) == 0) {
+		syslog(LOG_INFO, "Removing %s", unit->name);
+		ret = mica_remove(unit->client);
+		if (ret) {
+			syslog(LOG_ERR, "Remove failed, ret(%d)", ret);
+			goto err;
+		}
+
+		ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, unit->socket_fd, NULL);
+		if (ret < 0)
+			syslog(LOG_WARNING, "Failed to remove fd from epoll: %s",
+			       strerror(errno));
 	} else if (strncmp(msg, "set", 3) == 0) {
 		strlcpy(msg_copy, msg, sizeof(msg_copy));
 
