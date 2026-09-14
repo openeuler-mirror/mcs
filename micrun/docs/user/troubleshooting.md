@@ -431,6 +431,52 @@ metadata:
     org.openeuler.micrun.container.auto_close_timeout: "60s"  # 60秒后回收
 ```
 
+### 11. start 报 "mica daemon reported failure: unknown"
+
+#### 症状
+
+```bash
+ctr task start -d <container-id>
+# ctr: failed to start sandbox for <container-id>:
+#      failed to start container <container-id>:
+#      mica daemon reported failure: unknown
+```
+
+`unknown` 是 micad 控制通道失败应答的固定文案，具体失败原因在
+systemd 日志里，不在命令行输出中。
+
+#### 排查步骤
+
+```bash
+# 查看 micad 日志中的失败细节（域创建、固件加载等阶段信息都在这里）
+journalctl -u micad --no-pager | tail -50
+# 或全量过滤（guest 无 journalctl -u 时）
+journalctl --no-pager | grep -i micad | tail -50
+```
+
+#### 典型原因
+
+- `min_memory_mb` 注解超过宿主可用内存：Xen 拒绝创建域，日志可见
+  域创建失败记录（注解值本身已正确写入 xen cfg，属资源不足而非
+  配置未生效）
+- 固件加载/解析失败（如镜像内固件与平台不匹配）：日志可见
+  `load client image failed` / `failed to parse rsc table` 等行
+- rpmsg tty 等待超时（60s）：报错文案为
+  `wait for rpmsg tty ... context deadline exceeded`，域已启动但
+  RTOS 侧 rpmsg 前端未就绪，详见 micad 日志与 `/dev/ttyRPMSG*` 状态
+
+### 12. CLI 输出与进程可见性的正常行为速查
+
+以下观察结果都不是故障，无需处理：
+
+| 你观察到的 | 实际语义 |
+|------------|----------|
+| `nerdctl ps` 的 CONTAINER ID 只有 12 个字符 | docker/nerdctl 生态的短 ID 显示惯例（`docker ps` 同此），数据未丢失；`nerdctl ps --no-trunc` 展开完整 ID，`ctr container ls` 始终显示完整 ID |
+| `ctr task delete` 打印 `WARN ... exit with non-zero exit code 137`（或 130/143 等） | ctr 对非零退出码 task 删除时的通用提示性日志，**删除本身已成功**；`N-128` 即信号编号（137=SIGKILL、130=SIGINT、143=SIGTERM），是容器真实退出状态的如实反映 |
+| `ctr container delete` / `ctr task delete` 后 `ps` 仍能看到 `containerd-shim-mica-v2` 进程 | delete 后的收尾窗口（退出事件转发与服务退出），数秒（约 5s）后进程自行消失；窗口过后仍存在才需按第 7 节排查 |
+| start 失败后 `ctr task ls` 显示 CREATED | 失败但可重试的状态：直接再次 `ctr task start -d` 即可重试。如需清理，containerd 要求 task 为 STOPPED 才能 delete，先 `ctr task kill -s 9 <container-id>` 再 `ctr task delete` / `ctr container delete` |
+| start 失败报 `wait for rpmsg tty ... context deadline exceeded` | rpmsg tty 等待超时（60s）：guest 域已启动但 RTOS 侧 rpmsg 前端未在窗口内就绪。偶发慢启动可直接重试；持续失败说明固件/平台不匹配，按第 11 节查 micad 日志 |
+
 ## 调试技巧
 
 ### 启用 Debug 日志

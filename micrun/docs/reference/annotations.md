@@ -113,6 +113,12 @@ metadata:
 | 类型 | 整数 |
 | 默认值 | 从运行时配置读取 |
 
+**语义说明**：该注解设置的是 vCPU **上限**（对应 Xen 域配置的
+`maxvcpus`）。`xl list` 的 `VCPUs` 列显示的是**当前在线** vCPU 数
+（域启动时初始为 1，容器内按需在线到上限），两者含义不同：注解
+`max_vcpu_num=2` 生效后，`xl list -l` 的域配置中 `b_info.max_vcpus`
+为 2，而 `VCPUs` 列显示 1 属正常现象，不代表注解未生效。
+
 **示例**：
 ```yaml
 metadata:
