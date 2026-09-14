@@ -35,6 +35,7 @@ func (s *Service) Start(ctx context.Context, runtime ports.TaskLifecycleRuntime,
 	if err := s.setupIO(tc, sandbox); err != nil {
 		cleanupTaskIOAfterStartFailure(runtime, taskHandle)
 		stopTaskAfterFailedStart(ctx, runtime, sandbox, taskHandle)
+		finalizeTaskStrandedRunning(runtime, taskHandle, s.clockNow())
 		return err
 	}
 

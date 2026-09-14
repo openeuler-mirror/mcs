@@ -425,6 +425,42 @@ func TestServiceStartWatcherIgnoresRequestCancellation(t *testing.T) {
 	close(taskHandle.exitCh)
 }
 
+func TestServiceStartFinalizesRunningTaskWhenIOSetupFails(t *testing.T) {
+	// A State refresh can legitimately publish RUNNING during Start's
+	// unlocked setupIO window (the guest domain is up). When IO setup then
+	// fails, the failure path tears the domain down without an exit watcher,
+	// so the task must be finalized instead of being stranded RUNNING.
+	expectedErr := errors.New("io stream failed")
+	svc := NewService(nil)
+	taskHandle := &fakeLifecycleTask{
+		id:          "task-io-failure-running",
+		status:      task.Status_RUNNING,
+		stdinCloser: make(chan struct{}),
+		exitCh:      make(chan struct{}),
+	}
+	sandbox := &fakeLifecycleSandbox{
+		ioErr: expectedErr,
+	}
+	runtime := &fakeLifecycleRuntime{
+		ctx:     context.Background(),
+		sandbox: sandbox,
+	}
+
+	err := svc.Start(context.Background(), runtime, taskHandle)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("Start error = %v, want %v", err, expectedErr)
+	}
+	if taskHandle.status != task.Status_STOPPED {
+		t.Fatalf("task status = %s, want %s (stranded RUNNING must be finalized)", taskHandle.status, task.Status_STOPPED)
+	}
+	if taskHandle.exitStatus != exitstatus.Interrupt() {
+		t.Fatalf("exit status = %d, want %d (Interrupt)", taskHandle.exitStatus, exitstatus.Interrupt())
+	}
+	if taskHandle.exitTime.IsZero() {
+		t.Fatal("exit time must be recorded when finalizing a stranded RUNNING task")
+	}
+}
+
 func TestServiceStartDoesNotMarkRunningWhenIOSetupFails(t *testing.T) {
 	expectedErr := errors.New("io stream failed")
 	svc := NewService(nil)

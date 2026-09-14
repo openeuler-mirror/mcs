@@ -4,6 +4,7 @@ import (
 	"io"
 	"time"
 
+	"micrun/internal/application/exitstatus"
 	"micrun/internal/ports"
 	"micrun/internal/support/lockutil"
 	log "micrun/internal/support/logger"
@@ -74,6 +75,25 @@ func markTaskStopped(runtime ports.TaskLifecycleRuntime, taskHandle ports.Task, 
 		// concurrent exit path or a Kill pre-write (e.g. 137 for SIGKILL)
 		// and closes the exit channel atomically with the terminal status.
 		ports.FinalizeTaskStopped(taskHandle, exitStatus, exitedAt)
+	})
+}
+
+// finalizeTaskStrandedRunning closes out a task that a concurrent State
+// refresh published as RUNNING during Start's unlocked setupIO window (the
+// guest domain is genuinely running then, so that write is legitimate — see
+// markTaskRunning). A failed start tears the domain down without spawning
+// the exit watcher, so a task left RUNNING has neither watcher nor IO and
+// is stranded forever: the domain is gone but `ctr task ls` keeps reporting
+// RUNNING and the shim never exits. CREATED is left untouched — a failed
+// start may legitimately be retried from CREATED (runc keeps the same
+// retry semantics), and Kill/Delete already handle the CREATED case.
+func finalizeTaskStrandedRunning(runtime ports.TaskLifecycleRuntime, taskHandle ports.Task, now time.Time) {
+	withTaskLock(runtime, func() {
+		if taskHandle.Status() != task.Status_RUNNING {
+			return
+		}
+		log.Warnf("task %s was RUNNING at start failure (state refresh raced setupIO); finalizing STOPPED", taskHandle.ID())
+		ports.FinalizeTaskStopped(taskHandle, exitstatus.Interrupt(), now)
 	})
 }
 
