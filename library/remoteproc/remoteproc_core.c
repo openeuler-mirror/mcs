@@ -25,6 +25,7 @@ extern const struct remoteproc_ops rproc_bare_metal_ops;
 extern const struct remoteproc_ops rproc_jailhouse_ops;
 extern const struct remoteproc_ops rproc_xen_ops;
 extern const struct remoteproc_ops rproc_riscv_ops;
+extern const struct remoteproc_ops rproc_stm32mp2_ops;
 
 METAL_DECLARE_LIST(g_client_list);
 
@@ -133,6 +134,8 @@ int create_client(struct mica_client *client)
 		ops = &rproc_xen_ops;
 	else if (client->ped == HETERO && strcmp(client->ped_setup.cpu_str, "riscv") == 0)
 		ops = &rproc_riscv_ops;
+	else if (client->ped == HETERO && strcmp(client->ped_setup.cpu_str, "stm32mp2_m33") == 0)
+		ops = &rproc_stm32mp2_ops;
 	else
 		return -EINVAL;
 
