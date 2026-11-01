@@ -23,8 +23,6 @@
 #include <remoteproc/remoteproc_module.h>
 #include <remoteproc/mica_rsc.h>
 
-#include <openamp/rsc_table_parser.h>
-
 struct cpu_info {
 	uint32_t cpu;
 	uint64_t boot_addr;

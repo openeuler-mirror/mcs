@@ -11,7 +11,45 @@
 extern "C" {
 #endif
 
+#include <stddef.h>
 #include <openamp/rpmsg.h>
+#include <openamp/remoteproc.h>
+
+/**
+ * mica_find_rsc - Find the offset of a resource type in the resource table
+ * @rsc_table: Pointer to the resource table
+ * @rsc_type: Type of the resource
+ * @index: Index of the resource of the specified type
+ *
+ * Return the offset of the resource on success, or 0 if it is not found.
+ *
+ * OpenAMP no longer installs its private rsc_table_parser.h since 2026.04,
+ * so keep a local copy here. The implementation is derived from OpenAMP's
+ * lib/remoteproc/rsc_table_parser.c:
+ * Copyright (c) 2014, Mentor Graphics Corporation
+ * Copyright (c) 2018, Xilinx Inc.
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+static inline size_t mica_find_rsc(void *rsc_table, unsigned int rsc_type,
+				   unsigned int index)
+{
+	struct resource_table *r_table = rsc_table;
+	struct fw_rsc_hdr *hdr;
+	unsigned int i, rsc_index = 0;
+
+	if (!r_table)
+		return 0;
+
+	for (i = 0; i < r_table->num; i++) {
+		hdr = (void *)((char *)r_table + r_table->offset[i]);
+		if (hdr->type != rsc_type)
+			continue;
+		if (rsc_index++ == index)
+			return r_table->offset[i];
+	}
+
+	return 0;
+}
 
 /**
  * enum mica_resource_type - types of mica resource entries

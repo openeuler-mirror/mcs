@@ -23,8 +23,6 @@
 #include <remoteproc/remoteproc_module.h>
 #include <remoteproc/mica_rsc.h>
 
-#include <openamp/rsc_table_parser.h>
-
 #define PIPE_READ_END  0
 #define PIPE_WRITE_END 1
 
