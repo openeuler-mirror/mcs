@@ -13,7 +13,9 @@ else
 
 	MCS_PED_COUNT := $(words $(filter y,$(CONFIG_MCS_PED_AARCH64) $(CONFIG_MCS_PED_HISI_RISCV) $(CONFIG_MCS_PED_STM32MP2)))
 	ifeq ($(MCS_PED_COUNT),0)
-		CONFIG_MCS_PED_AARCH64 := y
+		# command-line assignments beat plain assignments, so an explicit
+		# empty value would otherwise disable the fallback silently
+		override CONFIG_MCS_PED_AARCH64 = y
 		MCS_PED_COUNT := 1
 	endif
 	ifneq ($(MCS_PED_COUNT),1)
