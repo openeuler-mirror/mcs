@@ -199,6 +199,11 @@ static int init_aarch64_irq(void)
 #else
 	desc = irq_to_desc(IPI_MCS);
 #endif
+	if (!desc) {
+		pr_err("IRQ %d has no descriptor\n", IPI_MCS);
+		return -ENODEV;
+	}
+
 	if (desc->action) {
 		pr_err("IRQ %d is not free\n", IPI_MCS);
 		return -EBUSY;

@@ -14,6 +14,7 @@
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/kernel.h>
+#include <linux/limits.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -148,6 +149,12 @@ static int boot_riscv(u64 boot_addr)
 
 	pr_info("Booting clientos on RISCV at 0x%llx ...\n", boot_addr);
 
+	if (boot_addr > U32_MAX) {
+		pr_err("boot address 0x%llx does not fit the 32-bit boot register\n",
+		       boot_addr);
+		return -EINVAL;
+	}
+
 	for (index = 0; index < 4; index++) {
 		v_addr[index] = ioremap(phy_addr[index], RISCV_REG_SIZE);
 		if (!v_addr[index]) {
@@ -156,7 +163,7 @@ static int boot_riscv(u64 boot_addr)
 		}
 	}
 
-	writel(boot_addr, v_addr[0]); /* set start addr */
+	writel((u32)boot_addr, v_addr[0]); /* set start addr */
 	writel(0x10, v_addr[1]);      /* jtag to mcu */
 	writel(0x1, v_addr[3]);       /* core wait */
 	writel(0x3, v_addr[2]);       /* rst */

@@ -117,10 +117,17 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 	case IOC_QUERY_MEM:
 		break;
-	default:
+	case IOC_SENDIPI:
+	case IOC_XPUON:
+	case IOC_AFFINITY_INFO:
 		ret = copy_from_user(&info, (struct cpu_info __user *)arg,
 				     sizeof(info));
 		break;
+	case IOC_MCUOFF:
+		/* xpu_off() takes no argument */
+		break;
+	default:
+		return -EINVAL;
 	}
 	if (ret)
 		return -EFAULT;
