@@ -4,13 +4,18 @@ ifeq ($(CONFIG_XEN),y)
 else
 	# Exactly one pedestal backend must be selected.  The recipe passes
 	# all three variables, using 'y' for the selected backend and an
-	# empty value for the others.  Keep aarch64 as the default for
-	# standalone builds.
-	CONFIG_MCS_PED_AARCH64 ?= y
+	# empty value for the others.  For standalone builds fall back to
+	# aarch64 only when no backend was requested, so that selecting a
+	# single non-default backend does not require clearing the rest.
+	CONFIG_MCS_PED_AARCH64 ?=
 	CONFIG_MCS_PED_HISI_RISCV ?=
 	CONFIG_MCS_PED_STM32MP2 ?=
 
 	MCS_PED_COUNT := $(words $(filter y,$(CONFIG_MCS_PED_AARCH64) $(CONFIG_MCS_PED_HISI_RISCV) $(CONFIG_MCS_PED_STM32MP2)))
+	ifeq ($(MCS_PED_COUNT),0)
+		CONFIG_MCS_PED_AARCH64 := y
+		MCS_PED_COUNT := 1
+	endif
 	ifneq ($(MCS_PED_COUNT),1)
 $(error Exactly one MCS pedestal backend must be selected, got '$(MCS_PED_COUNT)')
 	endif
