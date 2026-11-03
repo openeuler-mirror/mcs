@@ -9,6 +9,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdbool.h>
+#include <stdlib.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <syslog.h>
@@ -52,6 +54,8 @@ struct mem_info {
 struct rproc_pdata {
 	int mcs_fd;
 	int pipe_fd[2];
+	pthread_t notifier_thread;
+	bool notifier_started;
 };
 
 static struct remoteproc *rproc_init(struct remoteproc *rproc,
@@ -65,9 +69,13 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	if (!client)
 		return NULL;
 
-	pdata = malloc(sizeof(*pdata));
+	pdata = calloc(1, sizeof(*pdata));
 	if (!pdata)
 		return NULL;
+
+	pdata->mcs_fd = -1;
+	pdata->pipe_fd[PIPE_READ_END] = -1;
+	pdata->pipe_fd[PIPE_WRITE_END] = -1;
 
 	/* open mcs device for rproc->ops */
 	pdata->mcs_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
@@ -213,12 +221,6 @@ static void *rproc_wait_event(void *arg)
 	struct rproc_pdata *pdata = rproc->priv;
 	struct pollfd fds[2];
 
-	ret = pipe(pdata->pipe_fd);
-	if (ret == -1) {
-		syslog(LOG_ERR, "unable to create pipe for notifier: %s\n", strerror(errno));
-		return NULL;
-	}
-
 	fds[0].fd = pdata->mcs_fd;
 	fds[0].events = POLLIN;
 	fds[1].fd = pdata->pipe_fd[PIPE_READ_END];
@@ -246,27 +248,39 @@ static void *rproc_wait_event(void *arg)
 			break;
 	}
 
-	close(pdata->pipe_fd[PIPE_READ_END]);
-	close(pdata->pipe_fd[PIPE_WRITE_END]);
 	pthread_exit(NULL);
 }
 
 static int rproc_register_notifier(struct remoteproc *rproc)
 {
+	struct rproc_pdata *pdata = rproc->priv;
 	int ret;
-	pthread_t thread;
 
-	ret = pthread_create(&thread, NULL, rproc_wait_event, rproc);
+	ret = pthread_create(&pdata->notifier_thread, NULL, rproc_wait_event, rproc);
 	if (ret)
 		return ret;
 
-	ret = pthread_detach(thread);
-	if (ret) {
-		pthread_cancel(thread);
-		return ret;
-	}
-
+	pdata->notifier_started = true;
 	return 0;
+}
+
+static void rproc_stop_notifier(struct rproc_pdata *pdata)
+{
+	char token = 0;
+
+	if (!pdata->notifier_started)
+		return;
+
+	if (write(pdata->pipe_fd[PIPE_WRITE_END], &token, sizeof(token)) < 0)
+		syslog(LOG_WARNING, "unable to wake up the notifier: %s\n", strerror(errno));
+
+	pthread_join(pdata->notifier_thread, NULL);
+	pdata->notifier_started = false;
+
+	close(pdata->pipe_fd[PIPE_READ_END]);
+	close(pdata->pipe_fd[PIPE_WRITE_END]);
+	pdata->pipe_fd[PIPE_READ_END] = -1;
+	pdata->pipe_fd[PIPE_WRITE_END] = -1;
 }
 
 /*
@@ -350,6 +364,9 @@ static int rproc_start(struct remoteproc *rproc)
 		.boot_addr = rproc->bootaddr
 	};
 
+	/* a retried start must not leak the waiter of the failed attempt */
+	rproc_stop_notifier(pdata);
+
 	/*
 	 * open-amp's ELF loader only writes p_vaddr for every PT_LOAD segment.
 	 * Make sure the segments whose load address differs are programmed too
@@ -361,10 +378,22 @@ static int rproc_start(struct remoteproc *rproc)
 		return ret;
 	}
 
+	/* create the pipe before the waiter, which only owns its read side */
+	ret = pipe(pdata->pipe_fd);
+	if (ret) {
+		ret = -errno;
+		syslog(LOG_ERR, "unable to create pipe for notifier: %s\n", strerror(errno));
+		return ret;
+	}
+
 	/* set up the notification waiter */
 	ret = rproc_register_notifier(rproc);
 	if (ret) {
 		syslog(LOG_ERR, "unable to register notifier, err: %d\n", ret);
+		close(pdata->pipe_fd[PIPE_READ_END]);
+		close(pdata->pipe_fd[PIPE_WRITE_END]);
+		pdata->pipe_fd[PIPE_READ_END] = -1;
+		pdata->pipe_fd[PIPE_WRITE_END] = -1;
 		return ret;
 	}
 
@@ -398,6 +427,9 @@ static int rproc_shutdown(struct remoteproc *rproc)
 	if (ret)
 		syslog(LOG_ERR, "ioctl(IOC_MCUOFF) failed: %s\n", strerror(errno));
 
+	/* Stop the waiter before releasing the resources it may still touch. */
+	rproc_stop_notifier(pdata);
+
 	/* Delete all the registered remoteproc memories */
 	metal_list_for_each(&rproc->mems, node) {
 		struct metal_list *tmpnode;
@@ -412,9 +444,6 @@ static int rproc_shutdown(struct remoteproc *rproc)
 		metal_free_memory(mem);
 	}
 
-	/* exit notifier */
-	(void)!write(pdata->pipe_fd[PIPE_WRITE_END], &info, sizeof(info));
-
 	rproc->rsc_table = NULL;
 	rproc->rsc_len = 0;
 	rproc->bitmap = 0;
@@ -426,6 +455,7 @@ static void rproc_remove(struct remoteproc *rproc)
 	struct rproc_pdata *pdata = rproc->priv;
 
 	/* clean up pdata etc. */
+	rproc_stop_notifier(pdata);
 	close(pdata->mcs_fd);
 	free(pdata);
 	rproc->priv = NULL;
