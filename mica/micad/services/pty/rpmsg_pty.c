@@ -467,7 +467,8 @@ static void rpmsg_tty_init(struct rpmsg_device *rdev, const char *name,
 	struct mica_client *client;
 #endif
 
-	tty_svc = malloc(sizeof(struct rpmsg_tty_service));
+	/* openamp 2026.04 destroy calls release_cb if set, keep it NULL */
+	tty_svc = calloc(1, sizeof(struct rpmsg_tty_service));
 	if (!tty_svc)
 		return;
 	tty_svc->ept.priv = tty_svc;

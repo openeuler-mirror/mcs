@@ -91,7 +91,8 @@ static void umt_service_init(struct rpmsg_device *rdev, const char *name, uint32
 	umt_send_msg_t msg = {0};
 	pthread_mutexattr_t attr;
 
-	umt_svc = malloc(sizeof(struct rpmsg_umt_service));
+	/* openamp 2026.04 destroy calls release_cb if set, keep it NULL */
+	umt_svc = calloc(1, sizeof(struct rpmsg_umt_service));
 	if (!umt_svc)
 		return;
 	umt_svc->ept.priv = umt_svc;
