@@ -4,12 +4,15 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
+#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -281,13 +284,70 @@ static void rproc_stop_notifier(struct rproc_pdata *pdata)
 	pdata->pipe_fd[PIPE_WRITE_END] = -1;
 }
 
+/*
+ * The M33 boots from its vector table: NSVTOR must hold the address of the
+ * .isr_vectors section, while the ELF entry point is the (Thumb) reset
+ * handler and is not necessarily 128-byte aligned. Read the section address
+ * the same way as the in-kernel stm32_rproc_get_vect_table().
+ */
+static uint64_t stm32mp2_get_boot_addr(const char *path, uint64_t fallback)
+{
+	Elf32_Ehdr ehdr;
+	Elf32_Shdr shdr;
+	Elf32_Shdr shstr;
+	char *names = NULL;
+	uint64_t addr = fallback;
+	FILE *fp;
+	int i;
+
+	fp = fopen(path, "rb");
+	if (!fp)
+		return fallback;
+
+	if (fread(&ehdr, sizeof(ehdr), 1, fp) != 1 ||
+	    memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
+	    ehdr.e_ident[EI_CLASS] != ELFCLASS32 ||
+	    !ehdr.e_shoff || !ehdr.e_shnum || !ehdr.e_shstrndx)
+		goto out;
+
+	if (fseek(fp, ehdr.e_shoff + ehdr.e_shstrndx * sizeof(shdr), SEEK_SET) ||
+	    fread(&shstr, sizeof(shstr), 1, fp) != 1 ||
+	    !shstr.sh_size || shstr.sh_size > 64 * 1024)
+		goto out;
+
+	names = malloc(shstr.sh_size);
+	if (!names)
+		goto out;
+	if (fseek(fp, shstr.sh_offset, SEEK_SET) ||
+	    fread(names, 1, shstr.sh_size, fp) != shstr.sh_size)
+		goto out;
+
+	for (i = 0; i < ehdr.e_shnum; i++) {
+		if (fseek(fp, ehdr.e_shoff + i * sizeof(shdr), SEEK_SET) ||
+		    fread(&shdr, sizeof(shdr), 1, fp) != 1)
+			break;
+		if (shdr.sh_name >= shstr.sh_size)
+			continue;
+		if (!strcmp(names + shdr.sh_name, ".isr_vectors")) {
+			addr = shdr.sh_addr;
+			break;
+		}
+	}
+
+out:
+	free(names);
+	fclose(fp);
+	return addr;
+}
+
 static int rproc_start(struct remoteproc *rproc)
 {
 	int ret;
 	struct rproc_pdata *pdata = rproc->priv;
+	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct cpu_info info = {
 		.cpu = 0,
-		.boot_addr = rproc->bootaddr
+		.boot_addr = stm32mp2_get_boot_addr(client->path, rproc->bootaddr),
 	};
 
 	/* a retried start must not leak the waiter of the failed attempt */
@@ -324,14 +384,10 @@ static int rproc_start(struct remoteproc *rproc)
 	return ret;
 }
 
-static int rproc_shutdown(struct remoteproc *rproc)
+static int rproc_stop(struct remoteproc *rproc)
 {
-	struct remoteproc_mem *mem;
-	struct metal_list *node;
 	struct rproc_pdata *pdata = rproc->priv;
 	struct cpu_info info = {0};
-	void *virt = NULL;
-	size_t size = 0;
 	int ret;
 
 	/*
@@ -341,6 +397,25 @@ static int rproc_shutdown(struct remoteproc *rproc)
 	ret = ioctl(pdata->mcs_fd, IOC_MCUOFF, &info);
 	if (ret)
 		syslog(LOG_ERR, "ioctl(IOC_MCUOFF) failed: %s\n", strerror(errno));
+
+	/*
+	 * Join the waiter here, before mica_unregister_all_services() and
+	 * release_rpmsg_device() destroy the virtqueues it may still touch.
+	 * Keeping it alive until remoteproc_shutdown() leaves a window where
+	 * a late kick makes it run rpmsg_virtio_rx_callback() on freed queues.
+	 */
+	rproc_stop_notifier(pdata);
+
+	return ret;
+}
+
+static int rproc_shutdown(struct remoteproc *rproc)
+{
+	struct remoteproc_mem *mem;
+	struct metal_list *node;
+	struct rproc_pdata *pdata = rproc->priv;
+	void *virt = NULL;
+	size_t size = 0;
 
 	/* Stop the waiter before releasing the resources it may still touch. */
 	rproc_stop_notifier(pdata);
@@ -407,7 +482,7 @@ const struct remoteproc_ops rproc_stm32mp2_ops = {
 	.config = rproc_config,
 	.handle_rsc = handle_mica_rsc,
 	.start = rproc_start,
-	.stop = NULL,
+	.stop = rproc_stop,
 	.shutdown = rproc_shutdown,
 	.mmap = rproc_mmap,
 	.notify = rproc_notify,
