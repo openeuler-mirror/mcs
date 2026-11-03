@@ -5,14 +5,12 @@
  */
 
 #include <errno.h>
-#include <elf.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
-#include <stdio.h>
 #include <syslog.h>
 #include <unistd.h>
 #include <metal/alloc.h>
@@ -283,81 +281,9 @@ static void rproc_stop_notifier(struct rproc_pdata *pdata)
 	pdata->pipe_fd[PIPE_WRITE_END] = -1;
 }
 
-/*
- * open-amp's ELF loader uses p_vaddr as the load address of every PT_LOAD
- * segment. Client runtime may keep the initial contents of .data at p_paddr (right after
- * the text) and copies them to p_vaddr during startup, so the load address
- * must be programmed too, exactly like the in-kernel remoteproc loader does.
- * Otherwise the M33 startup code overwrites the freshly loaded .data with
- * stale memory contents.
- */
-static int load_lma_segments(struct mica_client *client, int mcs_fd)
-{
-	Elf32_Ehdr ehdr;
-	Elf32_Phdr phdr;
-	long pagesize = sysconf(_SC_PAGE_SIZE);
-	FILE *fp;
-	int i, ret = 0;
-
-	fp = fopen(client->path, "rb");
-	if (!fp) {
-		syslog(LOG_ERR, "unable to open firmware %s: %s\n",
-		       client->path, strerror(errno));
-		return -errno;
-	}
-
-	if (fread(&ehdr, sizeof(ehdr), 1, fp) != 1 ||
-	    memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
-	    ehdr.e_ident[EI_CLASS] != ELFCLASS32) {
-		syslog(LOG_ERR, "%s is not a 32-bit ELF image\n", client->path);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	for (i = 0; i < ehdr.e_phnum; i++) {
-		off_t aligned;
-		size_t delta;
-		void *va;
-
-		if (fseek(fp, ehdr.e_phoff + i * sizeof(phdr), SEEK_SET) ||
-		    fread(&phdr, sizeof(phdr), 1, fp) != 1) {
-			ret = -EIO;
-			break;
-		}
-
-		if (phdr.p_type != PT_LOAD || phdr.p_filesz == 0 ||
-		    phdr.p_paddr == phdr.p_vaddr)
-			continue;
-
-		aligned = phdr.p_paddr & ~(off_t)(pagesize - 1);
-		delta = phdr.p_paddr - aligned;
-		va = mmap(NULL, delta + phdr.p_filesz, PROT_READ | PROT_WRITE,
-			  MAP_SHARED, mcs_fd, aligned);
-		if (va == MAP_FAILED) {
-			syslog(LOG_ERR, "unable to map load address 0x%x: %s\n",
-			       phdr.p_paddr, strerror(errno));
-			ret = -errno;
-			break;
-		}
-
-		if (fseek(fp, phdr.p_offset, SEEK_SET) ||
-		    fread((char *)va + delta, 1, phdr.p_filesz, fp) != phdr.p_filesz)
-			ret = -EIO;
-
-		munmap(va, delta + phdr.p_filesz);
-		if (ret)
-			break;
-	}
-
-out:
-	fclose(fp);
-	return ret;
-}
-
 static int rproc_start(struct remoteproc *rproc)
 {
 	int ret;
-	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct rproc_pdata *pdata = rproc->priv;
 	struct cpu_info info = {
 		.cpu = 0,
@@ -366,17 +292,6 @@ static int rproc_start(struct remoteproc *rproc)
 
 	/* a retried start must not leak the waiter of the failed attempt */
 	rproc_stop_notifier(pdata);
-
-	/*
-	 * open-amp's ELF loader only writes p_vaddr for every PT_LOAD segment.
-	 * Make sure the segments whose load address differs are programmed too
-	 * before the M33 startup code copies them around.
-	 */
-	ret = load_lma_segments(client, pdata->mcs_fd);
-	if (ret) {
-		syslog(LOG_ERR, "unable to load LMA segments, err: %d\n", ret);
-		return ret;
-	}
 
 	/* create the pipe before the waiter, which only owns its read side */
 	ret = pipe(pdata->pipe_fd);
