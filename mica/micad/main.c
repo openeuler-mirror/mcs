@@ -203,7 +203,7 @@ static void mica_create_all(void)
 		return;
 	} else if (pid == 0) {
 		execvp(command, argument_list);
-		syslog(LOG_ERR, "Failed to run 'mica create --all', %s", strerror(errno));
+		_exit(127);
 	} else {
 		waitpid(pid, &status, 0);
 
