@@ -48,6 +48,7 @@ req_t *build_req(unsigned char *data, const struct rpc_service *service,
 				 struct rpc_instance *inst, void *priv);
 
 int workers_init(void);
+void workers_flush(void);
 
 int lprintf(const char *fmt, ...);
 
