@@ -11,6 +11,7 @@
 #include <linux/file.h>
 #include <linux/wait.h>
 #include <linux/poll.h>
+#include <linux/workqueue.h>
 #include <linux/module.h>
 #include <linux/arm-smccc.h>
 #include <linux/interrupt.h>
@@ -63,6 +64,7 @@ struct mcs_backend_info {
 	unsigned int domuid;				/* Placeholder for domU ID (from external interface) */
 	wait_queue_head_t mcs_evtchn_wait;	/* Wait queue for event channel */
 	atomic_t irq_triggered;				/* Atomic flag to indicate IRQ triggered */
+	struct work_struct evtchn_wake_work;	/* Deferred wakeup from hard IRQ */
 };
 
 /* struct mcs_file_private_data - private data for mcs device file */
@@ -422,6 +424,7 @@ static void mcs_cleanup_evtchn(struct mcs_backend_info *mcs_info)
 {
 	if (mcs_info->evtchn_irq >= 0) {
 		unbind_from_irqhandler(mcs_info->evtchn_irq, mcs_info);
+		cancel_work_sync(&mcs_info->evtchn_wake_work);
 		mcs_info->evtchn_irq = 0;
 	}
 
@@ -525,11 +528,25 @@ err_free_pages:
 	return ret;
 }
 
+static void evtchn_wake_work_handler(struct work_struct *work)
+{
+	struct mcs_backend_info *mcs_info =
+		container_of(work, struct mcs_backend_info, evtchn_wake_work);
+
+	wake_up_interruptible(&mcs_info->mcs_evtchn_wait);
+}
+
 static irqreturn_t evtchn_handler(int irq, void *dev_id)
 {
 	struct mcs_backend_info *mcs_info = dev_id;
+
 	atomic_set(&mcs_info->irq_triggered, 1);
-	wake_up_interruptible(&mcs_info->mcs_evtchn_wait);
+	/*
+	 * On PREEMPT_RT the wait queue lock is a sleeping lock.  The
+	 * interrupted task may hold it inside poll_freewait(), so waking
+	 * up directly from the hard IRQ would deadlock; defer it.
+	 */
+	schedule_work(&mcs_info->evtchn_wake_work);
 	return IRQ_HANDLED;
 }
 
@@ -562,6 +579,7 @@ static int mcs_init_evtchn(struct xenbus_device *dev, struct mcs_backend_info *m
 
 err_free_irq:
 	unbind_from_irqhandler(mcs_info->evtchn_irq, mcs_info);
+	cancel_work_sync(&mcs_info->evtchn_wake_work);
 	mcs_info->evtchn_irq = 0;
 err_free_evtchn:
 	xenbus_free_evtchn(dev, mcs_info->evtchn);
@@ -592,6 +610,7 @@ static int mcs_backend_probe(struct xenbus_device *dev, const struct xenbus_devi
 	mcs_info->domuid = dev->otherend_id;
 	atomic_set(&mcs_info->irq_triggered, 0);
 	init_waitqueue_head(&mcs_info->mcs_evtchn_wait);
+	INIT_WORK(&mcs_info->evtchn_wake_work, evtchn_wake_work_handler);
 
 	/* Initialize memory sharing */
 	ret = mcs_init_gnttab(dev, mcs_info, SHMEM_NPAGES);
