@@ -29,7 +29,7 @@ static void rpc_service_init(struct rpmsg_device *rdev, const char *name,
 	struct rpmsg_endpoint *rpc_service_ept = NULL;
 	char message[] = "first message from rpc_service!";
 
-	rpc_service_ept = malloc(sizeof(struct rpmsg_endpoint));
+	rpc_service_ept = calloc(1, sizeof(struct rpmsg_endpoint));
 	if (!rpc_service_ept)
 		return;
 

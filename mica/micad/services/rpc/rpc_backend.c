@@ -13,6 +13,7 @@
 #include <sys/uio.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
@@ -56,7 +57,8 @@ int rpc_server_send(struct rpmsg_endpoint *ept, uint32_t rpc_id, int status, voi
 	msg.id = rpc_id;
 	msg.status = status;
 	memcpy(msg.params, request_param, param_size);
-	return rpmsg_send(ept, &msg, MAX_FUNC_ID_LEN + param_size);
+	return rpmsg_send(ept, &msg,
+			  offsetof(struct rpmsg_proxy_answer, params) + param_size);
 }
 
 static int rpmsg_handle_open(void *data, struct rpc_instance *inst, void *priv);

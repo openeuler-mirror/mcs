@@ -39,7 +39,8 @@ enum pedestal_type {
 enum mcs_km_pedestal_type {
 	MCS_KM_PED_BAREMETAL = 0,
 	MCS_KM_PED_RISCV = 1,
-	MCS_KM_PED_INVALID = 2,
+	MCS_KM_PED_STM32MP2 = 2,
+	MCS_KM_PED_INVALID = 3,
 };
 
 extern struct metal_list g_client_list;

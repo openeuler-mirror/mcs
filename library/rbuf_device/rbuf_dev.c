@@ -10,7 +10,6 @@
 #include <metal/io.h>
 #include <openamp/virtio.h>
 #include <openamp/remoteproc.h>
-#include <openamp/rsc_table_parser.h>
 
 #include "mica/mica.h"
 #include "memory/shm_pool.h"
@@ -39,7 +38,7 @@ static int setup_rbuf_dev(struct mica_client *client)
 	rsc_table = rproc->rsc_table;
 	DEBUG_PRINT("rsctable: %p\n", rsc_table);
 
-	size_t rbuf_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
+	size_t rbuf_rsc_offset = mica_find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0);
 
 	if (!rbuf_rsc_offset)
 		return -ENODEV;

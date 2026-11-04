@@ -6,7 +6,7 @@
 
 #include <stdio.h>
 #include <metal/cache.h>
-#include <openamp/rsc_table_parser.h>
+#include <openamp/remoteproc.h>
 
 #include <remoteproc/mica_rsc.h>
 #include <rpmsg/rpmsg_service.h>
@@ -48,7 +48,7 @@ int rsc_update_ept_table(struct remoteproc *rproc, struct rpmsg_device *rdev)
 	struct rpmsg_endpoint *ept;
 	uint32_t i;
 
-	ept_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_EPT_TABLE, 0);
+	ept_rsc_offset = mica_find_rsc(rsc_table, RSC_VENDOR_EPT_TABLE, 0);
 	/* If there is no ept table, do nothing */
 	if (ept_rsc_offset == 0)
 		return 0;

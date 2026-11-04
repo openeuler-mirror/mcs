@@ -10,7 +10,6 @@
 #include <metal/io.h>
 #include <openamp/virtio.h>
 #include <openamp/remoteproc.h>
-#include <openamp/rsc_table_parser.h>
 
 #include "mica/mica.h"
 #include "memory/shm_pool.h"
@@ -39,7 +38,7 @@ static int setup_vdev(struct mica_client *client)
 	 * Here we just set up vdev 0
 	 * TODO: Initialise the corresponding vdev via client.
 	 */
-	vdev_rsc_offset = find_rsc(rsc_table, RSC_VDEV, 0);
+	vdev_rsc_offset = mica_find_rsc(rsc_table, RSC_VDEV, 0);
 	if (!vdev_rsc_offset)
 		return -ENODEV;
 
@@ -47,7 +46,7 @@ static int setup_vdev(struct mica_client *client)
 	num_vrings = vdev_rsc->num_of_vrings;
 
 	if (client->shmem_dynamic) {
-		vring_offset_rsc_offset = find_rsc(rsc_table, RSC_VENDOR_VRING_OFFSET, 0);
+		vring_offset_rsc_offset = mica_find_rsc(rsc_table, RSC_VENDOR_VRING_OFFSET, 0);
 		if (vring_offset_rsc_offset > 0)
 			vring_offset_rsc = (struct fw_rsc_vring_offset *)(rsc_table + vring_offset_rsc_offset);
 		else
@@ -169,16 +168,26 @@ err1:
 void release_rpmsg_device(struct mica_client *client)
 {
 	struct rpmsg_virtio_device *rpmsg_vdev;
+	struct virtio_device *vdev;
 
 	if (!client->rdev)
 		return;
 
 	rpmsg_vdev = metal_container_of(client->rdev, struct rpmsg_virtio_device, rdev);
 
+	/*
+	 * rpmsg_deinit_vdev() clears rpmsg_vdev->vdev, so save it first.
+	 * Otherwise remoteproc_remove_virtio() is a no-op and the virtio
+	 * device stays in rproc->vdevs with already freed virtqueues:
+	 * the next create_rpmsg_device() returns that dead vdev and frees
+	 * the dangling virtqueues again.
+	 */
+	vdev = rpmsg_vdev->vdev;
+
 	/* destroy all epts */
 	rpmsg_deinit_vdev(rpmsg_vdev);
 
-	remoteproc_remove_virtio(&client->rproc, rpmsg_vdev->vdev);
+	remoteproc_remove_virtio(&client->rproc, vdev);
 	metal_free_memory(rpmsg_vdev);
 	client->rdev = NULL;
 }

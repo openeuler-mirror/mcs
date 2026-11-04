@@ -119,10 +119,6 @@
 
 #define MAX_FILE_MODE_LEN 6
 
-#ifndef MAX_FUNC_ID_LEN
-#define MAX_FUNC_ID_LEN sizeof(unsigned long)
-#endif
-
 typedef unsigned int uint32_t;
 
 typedef unsigned long fileHandle;
