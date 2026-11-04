@@ -351,7 +351,8 @@ static int loadbin(int mcs_fd, unsigned long memaddr, const char *binfilepath)
 	int fd;
 	unsigned char *pu8buf = NULL;
 	unsigned char *pu8filebuf = NULL;
-	unsigned long slbinsize = 0;
+	off_t binsize;
+	unsigned long slbinsize;
 	unsigned long long u64phyaddr = memaddr;
 	int ret;
 
@@ -366,12 +367,12 @@ static int loadbin(int mcs_fd, unsigned long memaddr, const char *binfilepath)
 		goto fail_open;
 	}
 
-	slbinsize = lseek(fd, 0, SEEK_END);
-	if (slbinsize < 0) {
+	binsize = lseek(fd, 0, SEEK_END);
+	if (binsize <= 0) {
 		syslog(LOG_ERR, "file len invalid!");
 		goto fail_size;
 	}
-	lseek(fd, 0, SEEK_SET);
+	slbinsize = (unsigned long)binsize;
 
 	pu8buf = (unsigned char *)mmap(NULL, slbinsize, PROT_READ | PROT_WRITE, MAP_SHARED, mcs_fd, memaddr);
 	if (pu8buf == MAP_FAILED) {
@@ -406,7 +407,7 @@ static int loadbin(int mcs_fd, unsigned long memaddr, const char *binfilepath)
 		goto fail_end;
 	}
 
-	syslog(LOG_INFO, "load %s Size %ld to PhyAddr 0x%llx finish.", binfilepath, slbinsize, u64phyaddr);
+	syslog(LOG_INFO, "load %s Size %lu to PhyAddr 0x%llx finish.", binfilepath, slbinsize, u64phyaddr);
 	return 0;
 
 fail_end:
