@@ -20,6 +20,7 @@
 #include <linux/of_irq.h>
 #include <linux/poll.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 
 #include "mcs_km_pedestal.h"
 
@@ -41,6 +42,12 @@ static int riscv_int_irq;
 static struct mcs_rproc_mem hisi_riscv_mem[RPROC_MEM_MAX];
 static DECLARE_WAIT_QUEUE_HEAD(mcs_hisi_riscv_wait_queue);
 static atomic_t hisi_riscv_irq_ack;
+static struct work_struct riscv_irq_wake_work;
+
+static void riscv_irq_wake_work_handler(struct work_struct *work)
+{
+	wake_up_interruptible(&mcs_hisi_riscv_wait_queue);
+}
 
 static irqreturn_t handle_riscv_irq(int irq, void *data)
 {
@@ -53,7 +60,12 @@ static irqreturn_t handle_riscv_irq(int irq, void *data)
 	writel(IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_CLEAR);
 
 	atomic_set(&hisi_riscv_irq_ack, 1);
-	wake_up_interruptible(&mcs_hisi_riscv_wait_queue);
+	/*
+	 * On PREEMPT_RT the wait queue lock is a sleeping lock.  The
+	 * interrupted task may hold it inside poll_freewait(), so waking
+	 * up directly from the hard IRQ would deadlock; defer it.
+	 */
+	schedule_work(&riscv_irq_wake_work);
 
 	/* unmask irq */
 	writel(0x80000000 + IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_MASK);
@@ -101,6 +113,7 @@ static int init_riscv_irq(void)
 	writel(IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_CLEAR);
 	/* unmask irq */
 	writel(0x80000000 + IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_MASK);
+	INIT_WORK(&riscv_irq_wake_work, riscv_irq_wake_work_handler);
 	ret = request_irq(riscv_int_irq, handle_riscv_irq, 0,
 			  "MCS RISCV IRQ", NULL);
 	if (ret) {
@@ -126,6 +139,7 @@ static void remove_riscv_irq(void)
 		return;
 
 	free_irq(riscv_int_irq, NULL);
+	cancel_work_sync(&riscv_irq_wake_work);
 	/* clear irq */
 	writel(IPC_INT_A55MP_NUM, riscv_int_base + IPC_INT_CLEAR);
 	/* unmask irq */

@@ -21,6 +21,7 @@
 #include <linux/smp.h>
 #include <linux/version.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 #include <asm/cputype.h>
 #include <asm/smp.h>
 
@@ -45,6 +46,7 @@ static bool aarch64_irq_ready;
 static int __percpu *mcs_evt;
 static DECLARE_WAIT_QUEUE_HEAD(mcs_aarch64_wait_queue);
 static atomic_t aarch64_irq_ack;
+static struct work_struct aarch64_irq_wake_work;
 
 static unsigned long rmem_base;
 module_param(rmem_base, ulong, 0400);
@@ -171,11 +173,21 @@ static u64 get_cpu_mpidr(u32 cpu)
 #endif
 }
 
+static void aarch64_irq_wake_work_handler(struct work_struct *work)
+{
+	wake_up_interruptible(&mcs_aarch64_wait_queue);
+}
+
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
 	pr_info("received ipi from client os\n");
 	atomic_set(&aarch64_irq_ack, 1);
-	wake_up_interruptible(&mcs_aarch64_wait_queue);
+	/*
+	 * On PREEMPT_RT the wait queue lock is a sleeping lock.  The
+	 * interrupted task may hold it inside poll_freewait(), so waking
+	 * up directly from the hard IRQ would deadlock; defer it.
+	 */
+	schedule_work(&aarch64_irq_wake_work);
 	return IRQ_HANDLED;
 }
 
@@ -213,6 +225,8 @@ static int init_aarch64_irq(void)
 	if (!mcs_evt)
 		return -ENOMEM;
 
+	INIT_WORK(&aarch64_irq_wake_work, aarch64_irq_wake_work_handler);
+
 	err = request_percpu_irq(IPI_MCS, handle_clientos_ipi, "MCS IPI", mcs_evt);
 	if (err) {
 		free_percpu(mcs_evt);
@@ -233,6 +247,7 @@ static void remove_aarch64_irq(void)
 
 	on_each_cpu(disable_mcs_ipi, NULL, 1);
 	free_percpu_irq(IPI_MCS, mcs_evt);
+	cancel_work_sync(&aarch64_irq_wake_work);
 	free_percpu(mcs_evt);
 	mcs_evt = NULL;
 	aarch64_irq_ready = false;
