@@ -443,6 +443,14 @@ void rpmsg_rpc_service_terminate(void)
 		return;
 	}
 
+#ifdef MULTI_WORKERS
+	/*
+	 * Drain the worker pool before the caller destroys the rpmsg endpoint
+	 * and the shared log handles: pending requests still reference both.
+	 */
+	workers_flush();
+#endif
+
 	if (lfd != STDOUT_FILENO) {
 		lprintf("Destroying endpoint.\r\n");
 		close(lfd);
