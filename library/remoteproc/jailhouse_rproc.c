@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <syslog.h>
+#include <unistd.h>
 #include <metal/alloc.h>
 #include <metal/cache.h>
 #include <metal/io.h>
@@ -180,7 +181,7 @@ static int run_command(const char *arg, ...)
 		ret = -1;
 	} else if (pid == 0) {
 		execvp(argv[0], argv);
-		ret = -1;
+		_exit(127);
 	} else {
 		waitpid(pid, &status, 0);
 
