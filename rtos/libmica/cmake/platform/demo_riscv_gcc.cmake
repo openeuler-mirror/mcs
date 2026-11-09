@@ -5,7 +5,7 @@
 # -------------------- 用户配置区 --------------------
 
 # 1. 交叉编译器前缀
-set(CROSS_PREFIX "riscv32-linux-musl-")
+set(CROSS_PREFIX "riscv32-linux-musl-" CACHE STRING "Cross GCC prefix")
 
 # 2. 组件路径配置
 set(COMPONENTS_PATH "/path/to/dev" CACHE PATH "")

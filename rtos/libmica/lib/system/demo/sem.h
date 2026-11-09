@@ -1,44 +1,38 @@
-/*
- * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved
- *
- * SPDX-License-Identifier: MulanPSL-2.0
- */
-
-#ifndef __MICA_SEM__H__
-#error "Include mica/platform/sem.h instead of mica/platform/system/demo/sem.h"
+/* SPDX-License-Identifier: MulanPSL-2.0 */
+#ifndef MICA_PLATFORM_SEM_H
+#error "Include mica/platform/sem.h instead"
 #endif
+#ifndef MICA_DEMO_SEM_H
+#define MICA_DEMO_SEM_H
+#include <stdint.h>
+/* Porting template, not a runnable OS implementation. demo_sem.h must define
+ * demo_sem_t, DEMO_SEM_TICK_HZ, DEMO_SEM_MAX_FINITE_TICKS and the four demo_sem_*
+ * primitives below. Native 0 is valid. Primitives return 0/-errno; init failure
+ * leaves no live object, destroy failure retains it. post must be IRQ-safe
+ * (overflow may coalesce); pend(0) tries once, finite timeout is -ETIMEDOUT.
+ * The finite maximum must exclude the OS infinite-wait sentinel. */
+#include <demo_sem.h>
+typedef demo_sem_t mica_sem_t;
+#define MICA_SEM_TICK_HZ DEMO_SEM_TICK_HZ
+#define MICA_SEM_MAX_FINITE_TICKS DEMO_SEM_MAX_FINITE_TICKS
+static inline int mica_sem_init(mica_sem_t *sem, unsigned int count)
+{
+    return demo_sem_init(sem, count);
+}
 
-#ifndef __MICA_DEMO_SEM__H__
-#define __MICA_DEMO_SEM__H__
+static inline int mica_sem_post(mica_sem_t *sem)
+{
+    return demo_sem_post(sem);
+}
 
-#ifdef __cplusplus
-extern "C" {
+static inline int mica_sem_pend(mica_sem_t *sem, uint32_t ticks)
+{
+    return demo_sem_pend(sem, ticks);
+}
+
+static inline int mica_sem_destroy(mica_sem_t *sem)
+{
+    return demo_sem_destroy(sem);
+}
+
 #endif
-
-typedef int mica_sem_t;
-
-static inline int mica_sem_init(mica_sem_t *sem, unsigned int value)
-{
-	return demo_sem_init(value, sem);
-}
-
-static inline void mica_sem_destroy(mica_sem_t sem)
-{
-	demo_sem_destroy(sem);
-}
-
-static inline unsigned int mica_sem_post(mica_sem_t sem)
-{
-	return demo_sem_post(sem);
-}
-
-static inline unsigned int mica_sem_wait(mica_sem_t sem)
-{
-	return demo_sem_wait(sem);
-}
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __MICA_DEMO_SEM__H__ */

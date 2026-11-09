@@ -1,198 +1,104 @@
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved
- *
  * SPDX-License-Identifier: MulanPSL-2.0
  */
-
+#include <limits.h>
 #include <stdarg.h>
-#include <mica/mica.h>
-#include <mica/service.h>
-#include <mica/platform/macro.h>
-#include <mica/platform/sem.h>
-#include <mica/platform/log.h>
-#include <mica/platform/delay.h>
-#include <mica/platform/securec.h>
+#include <stdio.h>
 #include "mica_service_internal.h"
+#include "../mica_internal.h"
 
-#define TTY_MAX_BUFFER_SIZE  512
+#define TTY_MAX_BUFFER_SIZE 512
 
-/* TTY receive message */
-struct tty_rcv_msg {
-    void *data;
-    size_t len;
-};
+static int receive_tty(struct rpmsg_endpoint *ept, void *data, size_t len, uint32_t src, void *priv)
+{
+    (void)ept;
+    (void)src;
+    return mica_service_enqueue(priv, data, len);
+}
 
-/* TTY service private data */
-struct tty_service_priv {
-    mica_sem_t rx_sem;
-    struct tty_rcv_msg rx_msg;
-#ifdef MICA_SMP
-    mica_spinlock_t tx_lock;
-#endif
-};
+int mica_tty_init_service(struct mica_context *ctx, struct mica_service_slot *slot)
+{
+    (void)ctx; /* Stable slot identity is established before framework publish. */
+    slot->name = "rpmsg-tty";
+    slot->rx_callback = receive_tty;
+    slot->worker_entry = tty_service_thread;
+    return mica_service_prepare_data(slot, false);
+}
 
-#define RPMSG_TTY_EPT_NAME "rpmsg-tty"
-static struct rpmsg_endpoint g_tty_ept;
-static struct tty_service_priv g_tty_priv;
-static bool g_tty_service_running = false;
+void tty_service_thread(void *arg)
+{
+    struct mica_service_slot *slot = arg;
 
-/**
- * Check if TTY is ready.
- */
+    for (;;)
+    {
+        unsigned int index;
+        void *data;
+        size_t len;
+        int ret = mica_service_take(slot, true, &index, &data, &len);
+
+        if (ret == -ESHUTDOWN)
+            return;
+        if (ret)
+        {
+            ret = mica_sem_wait_until(&slot->wake, mica_now_ns() + MICA_RECEIVER_POLL_NS);
+            if (ret && ret != -ETIMEDOUT)
+            {
+                atomic_store_explicit(&slot->ctx->sync_failed, true, memory_order_release);
+                return;
+            }
+            continue;
+        }
+        void(*handler)(char) = slot->ctx->config.sys_ops.shell_cmd_handler;
+        if (handler)
+            for (size_t i = 0; i < len; ++i)
+            handler(((char *)data)[i]);
+        mica_service_complete(slot, index, true);
+    }
+}
+
 int mica_tty_is_ready(void)
 {
-    return is_rpmsg_ept_ready(&g_tty_ept);
+    return mica_service_is_ready(MICA_SERVICE_TTY);
 }
 
-/* TTY receive callback */
-static int rx_tty_callback(struct rpmsg_endpoint *ept, void *data,
-                          size_t len, uint32_t src, void *priv)
-{
-    struct tty_service_priv *tty_priv = (struct tty_service_priv *)priv;
-    int ret;
-
-    rpmsg_hold_rx_buffer(ept, data);
-
-    tty_priv->rx_msg.data = data;
-    tty_priv->rx_msg.len = len;
-    
-    /* notify processing thread */
-    ret = mica_sem_post(tty_priv->rx_sem);
-    
-    if (ret != 0) {
-        mica_log("ERROR: sem_post failed in callback!\n");
-    }
-
-    return 0;
-}
-
-void *tty_service_thread(void *arg)
-{
-    int ret;
-    char *tty_data;
-    struct mica_config *mica_config = mica_get_config();
-    struct rpmsg_device *rpdev = mica_get_rpdev();
-
-    if (!rpdev) {
-        mica_log("TTY: rpmsg device not initialized\n");
-        goto err_init;
-    }
-
-    ret = mica_sem_init(&g_tty_priv.rx_sem, 0);
-    if (ret != MICA_SUCCESS) {
-        mica_log("TTY: failed to create semaphore: %d\n", ret);
-        goto err_init;
-    }
-    
-    g_tty_ept.priv = &g_tty_priv;
-    ret = rpmsg_create_ept(&g_tty_ept, rpdev, RPMSG_TTY_EPT_NAME,
-                   RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
-                   rx_tty_callback, NULL);
-    if (ret != 0) {
-        mica_log("TTY: failed to create endpoint: %d\n", ret);
-        goto err_sem;
-    }
-
-    g_tty_service_running = true;
-
-    while (g_tty_ept.addr != RPMSG_ADDR_ANY && g_tty_service_running) {
-        /* wait for received data */
-        ret = mica_sem_wait(g_tty_priv.rx_sem);
-
-        if (ret != MICA_SUCCESS) {
-            mica_log("TTY: sem_wait failed: %d\n", ret);
-            continue;
-        }
-
-        if (g_tty_priv.rx_msg.len == 0 || g_tty_priv.rx_msg.data == NULL) {
-            mica_log("TTY: invalid rx message, len=%zu, data=%p\n",
-                     g_tty_priv.rx_msg.len, g_tty_priv.rx_msg.data);
-            continue;
-        }
-
-        tty_data = (char *)g_tty_priv.rx_msg.data;
-        tty_data[g_tty_priv.rx_msg.len] = '\0';
-
-        /* invoke platform shell handler callback */
-        if (mica_config && mica_config->sys_ops.shell_cmd_handler) {
-            for (int i = 0; i < g_tty_priv.rx_msg.len; i++) {
-                mica_config->sys_ops.shell_cmd_handler(tty_data[i]);
-            }
-        }
-
-        /* release rx buffer */
-        rpmsg_release_rx_buffer(&g_tty_ept, g_tty_priv.rx_msg.data);
-
-        /* clear message */
-        g_tty_priv.rx_msg.len = 0;
-        g_tty_priv.rx_msg.data = NULL;
-    }
-    mica_log("TTY: service exiting\n");
-    rpmsg_destroy_ept(&g_tty_ept);
-
-err_sem:
-    mica_sem_destroy(g_tty_priv.rx_sem);
-err_init:
-    g_tty_service_running = false;
-
-    pthread_exit(NULL);
-}
-
-/**
- * Initialize TTY service (spawn dedicated thread).
- */
-int mica_tty_init_service(pthread_attr_t *attr)
-{
-    pthread_t thread;
-    int ret;
-
-    ret = pthread_create(&thread, attr, tty_service_thread, NULL);
-
-    return ret;
-}
-
-int mica_tty_stop_service(void)
-{
-
-}
-
-/**
- * TTY send data.
- */
 int mica_tty_send(unsigned char *data, size_t len)
 {
-    int ret;
-    uintptr_t intSave;
+    if (!data || !len || len > INT_MAX)
+        return -EINVAL;
+    struct mica_service_slot *slot;
+    struct mica_peer_snapshot peer;
+    int ret = mica_service_borrow(MICA_SERVICE_TTY, &slot, &peer);
 
-    if (!mica_tty_is_ready()) {
-        return 0;
-    }
-#if defined(MICA_SMP)
-    intSave = LOS_SplIrqLock(&g_ttyLock);
-#endif
-    ret = rpmsg_send(&g_tty_ept, data, len);
-#if defined(MICA_SMP)
-    LOS_SplIrqUnlock(&g_ttyLock, intSave);
-#endif
-    return ret;
+    if (ret)
+        return ret;
+    struct mica_service_data *private = slot->service_data;
+
+    metal_mutex_acquire(&private->tx_lock);
+    ret = rpmsg_send_offchannel(&slot->endpoint, peer.local_addr, peer.remote_addr, data, (int)len);
+    metal_mutex_release(&private->tx_lock);
+    int returned = mica_service_unborrow(slot);
+
+    return ret < 0 ? ret : returned ? returned : ret;
 }
 
-/**
- * TTY printf-style output.
- */
 int mica_tty_printf(const char *format, ...)
 {
-    int len;
-    va_list vaList;
-    unsigned char tty_buff[TTY_MAX_BUFFER_SIZE];
+    if (!format)
+        return -EINVAL;
+    unsigned char buffer[TTY_MAX_BUFFER_SIZE];
 
-    mica_memset_s(tty_buff, TTY_MAX_BUFFER_SIZE, 0, TTY_MAX_BUFFER_SIZE);
-    va_start(vaList, format);
-    len = vsnprintf(tty_buff, TTY_MAX_BUFFER_SIZE, format, vaList);
-    if (len == -1) {
+    va_list args;
+    va_start(args, format);
+
+    int len = vsnprintf((char *)buffer, sizeof(buffer), format, args);
+
+    va_end(args);
+    if (len < 0)
         return len;
-    }
-    va_end(vaList);
-
-    return mica_tty_send(tty_buff, len + 1);
+    if ((size_t)len >= sizeof(buffer))
+        return -EMSGSIZE;
+    if (!len)
+        return 0;
+    return mica_tty_send(buffer, (size_t)len); /* no implicit NUL */
 }

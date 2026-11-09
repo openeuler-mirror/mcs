@@ -1,299 +1,422 @@
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved
- *
  * SPDX-License-Identifier: MulanPSL-2.0
  */
-
-#include <errno.h>
-#include <stdbool.h>
+#include <limits.h>
+#include <metal/io.h>
 #include <string.h>
-#include <mica/service.h>
-#include <mica/platform/macro.h>
-#include <mica/platform/sem.h>
-#include <mica/platform/delay.h>
-#include <mica/platform/log.h>
 #include "mica_service_internal.h"
+#include "../mica_internal.h"
 
-#define UMT_SEND_BUFFER_OFFSET  0x100000  /* 1MB */
-
-/* UMT data descriptor */
-typedef struct umt_data {
-    uint64_t phy_addr;            /* physical address */
-    uint32_t data_len;            /* data length */
-} umt_data_t;
-
-/* UMT receive message */
-struct umt_rcv_msg {
-    void *data;
-    size_t len;
+#define UMT_SEND_BUFFER_OFFSET 0x100000u
+/* Preserve the existing native ABI (including its trailing alignment), not a
+ * new packed wire format or Xen UMT extension. */
+struct umt_descriptor
+{
+    uint64_t phy_addr;
+    uint32_t data_len;
 };
 
-/* User-registered receive callback (single; payload pointer invalid after callback returns) */
-struct umt_rcv_cb {
-    umt_rcv_cb_t fn;
-    void *priv;
-    bool registered;
-};
+static void *mica_service_payload(struct mica_context *ctx, uint64_t da, size_t len)
+{
+    struct metal_io_region *io = ctx->layout.buffer_io;
 
-/* UMT service private data */
-struct umt_service_priv {
-    mica_sem_t rx_sem;             /* posted when rpmsg receives; consumed by umt_service_thread */
-    mica_sem_t passive_rcv_sem;    /* passive pull: posted by umt_service_thread, consumed by mica_rcv_data */
-    struct umt_rcv_msg rx_msg;
-    struct umt_rcv_cb rcv_cb;
-    bool umt_send_addr_init;       /* whether send buffer addr is initialized */
-    uintptr_t send_buffer_addr;   /* send buffer address */
-};
+    if (!io || !len)
+        return NULL;
+    void *va = metal_io_phys_to_virt(io, (metal_phys_addr_t)da);
 
-#define RPMSG_UMT_EPT_NAME "rpmsg-umt"
-static struct rpmsg_endpoint g_umt_ept;
-static struct umt_service_priv g_umt_priv;
-static bool g_umt_service_running = false;
+    if (!va)
+        return NULL;
+    unsigned long offset = metal_io_virt_to_offset(io, va);
 
-/**
- * Check if UMT is ready.
- */
+    if (offset == METAL_BAD_OFFSET || offset > io->size || len > io->size - offset)
+        return NULL;
+    return va;
+}
+
+static int receive_umt(struct rpmsg_endpoint *ept, void *buffer, size_t len, uint32_t src, void *priv)
+{
+    (void)ept;
+    (void)src;
+
+    struct mica_service_slot *slot = priv;
+
+    if (mica_service_lock(slot))
+        return 0;
+    bool active = slot->state == MICA_SERVICE_RUNNING && !slot->cancelled && !slot->failed_retained &&
+        !slot->ctx->cancel;
+
+    if (mica_service_unlock(slot))
+        return 0;
+    if (!active || !buffer || len < sizeof(struct umt_descriptor))
+        return 0;
+    struct umt_descriptor descriptor;
+
+    memcpy(&descriptor, buffer, sizeof(descriptor));
+    if (!descriptor.phy_addr || descriptor.data_len > INT_MAX || !mica_service_payload(slot->ctx,
+        descriptor.phy_addr, descriptor.data_len))
+        return 0;
+    if (!mica_service_lock(slot))
+    {
+        struct mica_service_data *data = slot->service_data;
+
+        if (slot->state == MICA_SERVICE_RUNNING && !slot->cancelled && !slot->failed_retained &&
+            !data->send_initialized && descriptor.phy_addr <= UINT64_MAX - UMT_SEND_BUFFER_OFFSET)
+        {
+            data->send_da = descriptor.phy_addr + UMT_SEND_BUFFER_OFFSET;
+            data->send_initialized = true;
+        }
+        if (mica_service_unlock(slot))
+            return 0;
+    }
+    return mica_service_enqueue(slot, buffer, len);
+}
+
+int mica_umt_init_service(struct mica_context *ctx, struct mica_service_slot *slot)
+{
+    (void)ctx; /* Stable slot identity is established before framework publish. */
+    slot->name = "rpmsg-umt";
+    slot->rx_callback = receive_umt;
+    slot->worker_entry = umt_service_thread;
+    return mica_service_prepare_data(slot, true);
+}
+
 int mica_umt_is_ready(void)
 {
-    return is_rpmsg_ept_ready(&g_umt_ept);
+    return mica_service_is_ready(MICA_SERVICE_UMT);
 }
 
-/* UMT receive callback */
-static int umt_rx_callback(struct rpmsg_endpoint *ept, void *data,
-                          size_t len, uint32_t src, void *priv)
+void umt_service_thread(void *arg)
 {
-    struct umt_service_priv *umt_priv = (struct umt_service_priv *)priv;
-    umt_data_t *umt_data;
+    struct mica_service_slot *slot = arg;
+    struct mica_context *ctx = slot->ctx;
 
-    /* hold rx buffer */
-    rpmsg_hold_rx_buffer(ept, data);
-
-    umt_priv->rx_msg.data = data;
-    umt_priv->rx_msg.len = len;
-    umt_data = (umt_data_t *)data;
-
-    /* init send buffer address on first receive */
-    if (!g_umt_priv.umt_send_addr_init) {
-        g_umt_priv.send_buffer_addr = umt_data->phy_addr + UMT_SEND_BUFFER_OFFSET;
-        g_umt_priv.umt_send_addr_init = true;
-
-    }
-
-    /* if valid physical address, notify receive thread */
-    if (umt_data->phy_addr) {
-        mica_sem_post(umt_priv->rx_sem);
-    } else {
-        /* invalid message, release immediately */
-        rpmsg_release_rx_buffer(ept, data);
-    }
-
-    return MICA_SUCCESS;
-}
-
-/* UMT service thread */
-void *umt_service_thread(void *arg)
-{
-    int ret;
-    struct rpmsg_device *rpdev = mica_get_rpdev();
-    umt_data_t *umt_data;
-
-    (void)arg;
-    if (!rpdev) {
-        mica_log("UMT: rpmsg device not initialized\n");
-        goto err_init;
-    }
-
-    /* create semaphores */
-    ret = mica_sem_init(&g_umt_priv.rx_sem, 0);
-    if (ret != MICA_SUCCESS) {
-        mica_log("UMT: failed to create rx_sem: %d\n", ret);
-        goto err_init;
-    }
-    ret = mica_sem_init(&g_umt_priv.passive_rcv_sem, 0);
-    if (ret != MICA_SUCCESS) {
-        mica_log("UMT: failed to create passive_rcv_sem: %d\n", ret);
-        goto err_rx_sem;
-    }
-
-    g_umt_priv.umt_send_addr_init = false;
-    g_umt_priv.rcv_cb.registered = false;
-
-    g_umt_ept.priv = &g_umt_priv;
-    /* register and create UMT endpoint */
-    ret = rpmsg_create_ept(&g_umt_ept, rpdev, RPMSG_UMT_EPT_NAME,
-                   RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
-                   umt_rx_callback, NULL);
-    if (ret != 0) {
-        mica_log("UMT: failed to create endpoint: %d\n", ret);
-        goto err_passive_sem;
-    }
-
-    g_umt_service_running = true;
-
-    /* main loop: consume rx_sem; callback mode invokes user callback with payload ptr, else post passive_rcv_sem for mica_rcv_data */
-    while (g_umt_ept.addr != RPMSG_ADDR_ANY && g_umt_service_running) {
-        if (mica_sem_wait(g_umt_priv.rx_sem) != MICA_SUCCESS)
-            continue;
-        if (g_umt_priv.rx_msg.len == 0 || g_umt_priv.rx_msg.data == NULL)
-            continue;
-
-        umt_data = (umt_data_t *)g_umt_priv.rx_msg.data;
-
-        if (g_umt_priv.rcv_cb.registered && g_umt_priv.rcv_cb.fn != NULL) {
-            /* callback mode: pass payload pointer, valid only during callback */
-            g_umt_priv.rcv_cb.fn((const void *)(uintptr_t)umt_data->phy_addr,
-                                (int)umt_data->data_len,
-                                g_umt_priv.rcv_cb.priv);
-        } else {
-            /* passive pull: notify mica_rcv_data */
-            mica_sem_post(g_umt_priv.passive_rcv_sem);
-            continue;   /* do not release here; mica_rcv_data releases after copy */
+    for (;;)
+    {
+        if (mica_service_lock(slot))
+        {
+            /* The worker cannot complete communication processing. This is
+             * sticky failure, not proof that the native mutex is damaged. */
+            atomic_store_explicit(&ctx->sync_failed, true, memory_order_release);
+            return;
         }
-        rpmsg_release_rx_buffer(&g_umt_ept, g_umt_priv.rx_msg.data);
-        g_umt_priv.rx_msg.data = NULL;
-        g_umt_priv.rx_msg.len = 0;
-    }
+        struct mica_service_data *data = slot->service_data;
+        bool stop = slot->cancelled || slot->failed_retained || ctx->cancel;
+        umt_rcv_cb_t callback = data->callback;
+        void *callback_arg = data->callback_arg;
+        bool available = !stop && slot->local_start_released && callback && data->count;
 
-err_passive_sem:
-    mica_sem_destroy(g_umt_priv.passive_rcv_sem);
-err_rx_sem:
-    mica_sem_destroy(g_umt_priv.rx_sem);
-err_init:
-    mica_log("UMT: service thread exiting with error\n");
-    pthread_exit(NULL);
+        if (available)
+            ++slot->callbacks; /* pins callback snapshot vs unregister */
+        if (mica_service_unlock(slot))
+        {
+            if (available)
+                atomic_fetch_sub_explicit(&slot->callbacks, 1, memory_order_release);
+            return;
+        }
+        if (stop)
+            return;
+        if (!available)
+        {
+            int waited = mica_sem_wait_until(&slot->wake, mica_now_ns() + MICA_RECEIVER_POLL_NS);
+
+            if (waited && waited != -ETIMEDOUT)
+            {
+                atomic_store_explicit(&ctx->sync_failed, true, memory_order_release);
+                return;
+            }
+            continue;
+        }
+
+        unsigned int index;
+        void *buffer;
+        size_t len;
+        int ret = mica_service_take(slot, false, &index, &buffer, &len);
+
+        if (!ret)
+        {
+            struct umt_descriptor descriptor;
+
+            memcpy(&descriptor, buffer, sizeof(descriptor));
+
+            void *payload = mica_service_payload(ctx, descriptor.phy_addr, descriptor.data_len);
+
+            if (payload)
+                callback(payload, (int)descriptor.data_len, callback_arg);
+            mica_service_complete(slot, index, false);
+        }
+        atomic_fetch_sub_explicit(&slot->callbacks, 1, memory_order_release);
+        int posted = mica_sem_post(&ctx->references_changed);
+        /* Completion may have woken RESET before the callback pin was returned.
+         * The worker still owns slot/context lifetime through both posts. */
+        int wake = mica_sem_post(&ctx->receiver_wake);
+
+        if ((posted && posted != -EOVERFLOW) || (wake && wake != -EOVERFLOW))
+            atomic_store_explicit(&ctx->sync_failed, true, memory_order_release);
+    }
 }
 
-/**
- * Initialize UMT service (spawn dedicated thread).
- */
-int mica_umt_init_service(pthread_attr_t *attr)
+int mica_send_data(void *buffer, int offset, size_t len)
 {
-    pthread_t thread;
-    int ret;
-
-    ret = pthread_create(&thread, attr, umt_service_thread, NULL);
-
-    return ret;
-}
-
-/**
- * Send data to peer (zero-copy into shared buffer).
- */
-int mica_send_data(void *data, int offset, size_t len)
-{
-    umt_data_t msg = {0};
-    int ret;
-
-    if (!mica_umt_is_ready()) {
-        return -EAGAIN;
-    }
-
-    if (!data || len == 0 || len > UMT_SEND_BUFFER_OFFSET) {
+    if (!buffer || offset < 0 || !len || len > UMT_SEND_BUFFER_OFFSET ||
+        (size_t)offset > UMT_SEND_BUFFER_OFFSET - len)
         return -EINVAL;
+    struct mica_service_slot *slot;
+    struct mica_peer_snapshot peer;
+    int ret = mica_service_borrow(MICA_SERVICE_UMT, &slot, &peer);
+
+    if (ret)
+        return ret;
+    struct mica_service_data *data = slot->service_data;
+    uint64_t da = 0;
+
+    ret = mica_service_lock(slot);
+    if (!ret)
+    {
+        if (!data->send_initialized)
+            ret = -EFAULT;
+        else
+            da = data->send_da;
+        int released = mica_service_unlock(slot);
+
+        if (!ret)
+            ret = released;
     }
+    if (!ret)
+    {
+        if (da > UINT64_MAX - (unsigned int)offset)
+            ret = -EFAULT;
+        else
+        {
+            da += (unsigned int)offset;
 
-    /* check send buffer initialized */
-    if (!g_umt_priv.umt_send_addr_init) {
-        mica_log("UMT: send_buffer_addr not initialized\n");
-        return -EFAULT;
+            void *target = mica_service_payload(slot->ctx, da, len);
+
+            if (!target)
+                ret = -EFAULT;
+            else
+            {
+                metal_mutex_acquire(&data->tx_lock);
+                memcpy(target, buffer, len);
+                struct umt_descriptor descriptor = {0};
+                descriptor.phy_addr = da;
+                descriptor.data_len = (uint32_t)len;
+
+                int sent = rpmsg_send_offchannel(&slot->endpoint, peer.local_addr,
+                    peer.remote_addr, &descriptor, sizeof(descriptor));
+
+                ret = sent == (int)sizeof(descriptor) ? 0 : -EIO;
+                metal_mutex_release(&data->tx_lock);
+            }
+        }
     }
+    int returned = mica_service_unborrow(slot);
 
-    /* copy data to shared memory */
-    memcpy((void *)(uintptr_t)g_umt_priv.send_buffer_addr + offset, data, len);
-    /* set message physical address and length */
-    msg.phy_addr = g_umt_priv.send_buffer_addr + offset;
-    msg.data_len = (uint32_t)len;
-
-    ret = rpmsg_send(&g_umt_ept, &msg, sizeof(msg));
-    if (ret < 0) {
-        mica_log("UMT: send failed, ret=%d, len=%zu\n", ret, len);
-        return -EIO;
-    }
-
-    return MICA_SUCCESS;
+    return ret ? ret : returned;
 }
 
-/**
- * Register UMT receive callback. Mutually exclusive with mica_rcv_data; returns -EALREADY if already registered.
- */
-int mica_umt_register_rcv_cb(umt_rcv_cb_t callback, void *priv)
+int mica_umt_register_rcv_cb(umt_rcv_cb_t callback, void *arg)
 {
-    if (!mica_umt_is_ready())
-        return -EAGAIN;
     if (!callback)
         return -EINVAL;
-    if (g_umt_priv.rcv_cb.registered)
-        return -EALREADY;
+    struct mica_service_slot *slot;
+    struct mica_peer_snapshot peer;
+    int ret = mica_service_borrow(MICA_SERVICE_UMT, &slot, &peer);
 
-    g_umt_priv.rcv_cb.fn = callback;
-    g_umt_priv.rcv_cb.priv = priv;
-    g_umt_priv.rcv_cb.registered = true;
-    return 0;
+    if (ret)
+        return ret;
+    if (!(ret = mica_service_lock(slot)))
+    {
+        struct mica_service_data *data = slot->service_data;
+
+        if (data->callback)
+            ret = -EALREADY;
+        else if (atomic_load_explicit(&data->passive_active, memory_order_acquire) || slot->callbacks)
+            ret = -EBUSY;
+        else
+        {
+            data->callback = callback;
+            data->callback_arg = arg;
+            ret = mica_sem_post(&slot->wake);
+            if (ret == -EOVERFLOW)
+                ret = 0;
+            if (ret)
+                atomic_store_explicit(&slot->ctx->sync_failed, true, memory_order_release);
+        }
+        int released = mica_service_unlock(slot);
+
+        if (!ret)
+            ret = released;
+    }
+    int returned = mica_service_unborrow(slot);
+
+    return ret ? ret : returned;
 }
 
-/**
- * Unregister UMT receive callback. After this, use mica_rcv_data() for passive receive.
- */
 int mica_umt_unregister_rcv_cb(void)
 {
-    g_umt_priv.rcv_cb.registered = false;
-    g_umt_priv.rcv_cb.fn = NULL;
-    g_umt_priv.rcv_cb.priv = NULL;
-    return 0;
+    struct mica_service_slot *slot;
+    struct mica_peer_snapshot peer;
+    int ret = mica_service_borrow(MICA_SERVICE_UMT, &slot, &peer);
+
+    if (ret)
+        return ret;
+    mica_deadline_t deadline = mica_now_ns() + MICA_STOP_BUDGET_NS;
+
+    for (;;)
+    {
+        ret = mica_service_lock(slot);
+        if (ret)
+            break;
+        struct mica_service_data *data = slot->service_data;
+
+        if (slot->callbacks && slot->worker_acquired && mica_thread_is_self(slot->worker))
+            ret = -EDEADLK;
+        if (!ret)
+        {
+            data->callback = NULL;
+            data->callback_arg = NULL;
+        }
+
+        bool busy = slot->callbacks != 0;
+
+        if (!ret && !busy && data->count && !data->passive_signalled)
+        {
+            ret = mica_sem_post(&data->passive);
+            if (ret == -EOVERFLOW)
+                ret = 0;
+            if (!ret)
+                data->passive_signalled = true;
+            else
+                atomic_store_explicit(&slot->ctx->sync_failed, true, memory_order_release);
+        }
+        int released = mica_service_unlock(slot);
+
+        if (!ret)
+            ret = released;
+        if (ret || !busy)
+            break;
+        if (mica_now_ns() >= deadline)
+        {
+            ret = -ETIMEDOUT;
+            break;
+        }
+        ret = mica_sem_wait_until(&slot->ctx->references_changed, deadline);
+        if (ret)
+            break;
+    }
+    int returned = mica_service_unborrow(slot);
+
+    return ret ? ret : returned;
 }
 
-/**
- * Receive data from peer (passive pull; copy into user buffer).
- * Mutually exclusive with callback mode: returns -EBUSY if mica_umt_register_rcv_cb was registered.
- */
-int mica_rcv_data(void *buffer, size_t *len)
+int mica_rcv_data(void *buffer, size_t *length)
 {
-    umt_data_t *umt_data;
-    int ret;
-
-    if (!mica_umt_is_ready()) {
-        return -EAGAIN;
-    }
-
-    if (!buffer || !len) {
+    if (!buffer || !length)
         return -EINVAL;
+    struct mica_service_slot *slot;
+    struct mica_peer_snapshot peer;
+    int ret = mica_service_borrow(MICA_SERVICE_UMT, &slot, &peer);
+
+    if (ret)
+        return ret;
+    struct mica_service_data *data = slot->service_data;
+
+    bool claimed_passive = false;
+
+    ret = mica_service_lock(slot);
+    if (ret)
+        goto exit;
+    if (data->callback || atomic_load_explicit(&data->passive_active, memory_order_acquire) ||
+        slot->callbacks)
+        ret = -EBUSY;
+    else
+    {
+        atomic_store_explicit(&data->passive_active, true, memory_order_release);
+        claimed_passive = true;
     }
+    int released = mica_service_unlock(slot);
 
-    if (g_umt_priv.rcv_cb.registered) {
-        return -EBUSY;
+    if (!ret)
+        ret = released;
+    if (ret)
+        goto exit;
+    for (;;)
+    {
+        ret = mica_service_lock(slot);
+        if (ret)
+            break;
+        if (slot->cancelled || slot->failed_retained || slot->ctx->cancel)
+            ret = -ESHUTDOWN;
+        bool available = data->count != 0;
+
+        if (!ret && available)
+        {
+            struct umt_descriptor descriptor;
+            unsigned int index = data->queue[data->head];
+
+            memcpy(&descriptor, data->items[index].data, sizeof(descriptor));
+            if (*length < descriptor.data_len)
+            {
+                *length = descriptor.data_len;
+                ret = -EMSGSIZE;
+            }
+        }
+        released = mica_service_unlock(slot);
+        if (!ret)
+            ret = released;
+        if (ret)
+            break;
+        if (available)
+        {
+            unsigned int index;
+            void *packet;
+            size_t len;
+
+            ret = mica_service_take(slot, false, &index, &packet, &len);
+            if (!ret)
+            {
+                struct umt_descriptor descriptor;
+
+                memcpy(&descriptor, packet, sizeof(descriptor));
+
+                void *payload = mica_service_payload(slot->ctx, descriptor.phy_addr,
+                    descriptor.data_len);
+
+                /* Validate the same final snapshot used by the actual copy. */
+                if (*length < descriptor.data_len)
+                {
+                    *length = descriptor.data_len;
+                    ret = -EMSGSIZE;
+                }
+                else if (!payload)
+                    ret = -EFAULT;
+                else
+                {
+                    memcpy(buffer, payload, descriptor.data_len);
+                    *length = descriptor.data_len;
+                }
+                mica_service_complete(slot, index, false);
+            }
+            break;
+        }
+        ret = mica_sem_wait_until(&data->passive, mica_now_ns() + MICA_RECEIVER_POLL_NS);
+        if (ret && ret != -ETIMEDOUT)
+            break;
+        if (!ret && !mica_service_lock(slot))
+        {
+            data->passive_signalled = false;
+            released = mica_service_unlock(slot);
+            if (!ret)
+                ret = released;
+        }
     }
+exit:
+    /* All payload/state accesses are finished; only this call's claim may be
+     * cleared. Reference return still owns the entry pin protecting data. */
+    if (claimed_passive)
+        atomic_store_explicit(&data->passive_active, false, memory_order_release);
+    int returned = mica_service_unborrow(slot);
 
-    /* passive wait: umt_service_thread posts when message received */
-    /* TODO: do timeout */
-    // if (timeout_ms < 0) {
-    //     ret = mica_sem_wait(g_umt_priv.passive_rcv_sem, MICA_WAIT_FOREVER);
-    // } else if (timeout_ms == 0) {
-    //     ret = mica_sem_wait(g_umt_priv.passive_rcv_sem, MICA_NO_WAIT);
-    // } else {
-    //     ret = mica_sem_wait(g_umt_priv.passive_rcv_sem, timeout_ms);
-    // }
-    ret = mica_sem_wait(g_umt_priv.passive_rcv_sem);
-    if (ret != MICA_SUCCESS) {
-        return -EAGAIN;
-    }
-
-    /* check received message */
-    if (g_umt_priv.rx_msg.len == 0 || g_umt_priv.rx_msg.data == NULL) {
-        return -EFAULT;
-    }
-
-    umt_data = (umt_data_t *)g_umt_priv.rx_msg.data;
-
-    /* TODO: check buffer size */
-
-    /* copy from shared memory */
-    memcpy(buffer, (void *)(uintptr_t)umt_data->phy_addr, umt_data->data_len);
-    *len = umt_data->data_len;
-
-    /* release rx buffer and clear */
-    rpmsg_release_rx_buffer(&g_umt_ept, g_umt_priv.rx_msg.data);
-    g_umt_priv.rx_msg.len = 0;
-    g_umt_priv.rx_msg.data = NULL;
-
-    return 0;
+    return ret ? ret : returned;
 }

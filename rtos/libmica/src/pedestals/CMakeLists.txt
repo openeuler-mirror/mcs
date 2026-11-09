@@ -1,21 +1,15 @@
-# 根据 MICA_PED 选择对应的底座实现
-if(NOT DEFINED MICA_PED)
-    message(FATAL_ERROR "MICA_PED not defined! Please set it in toolchain file.")
-endif()
-
-message(STATUS "Building MICA pedestal: ${MICA_PED}")
-
-collect(PROJECT_LIB_SOURCES ped_rsc_table.c)
-
-if(MICA_PED STREQUAL "hetero")
-    collect(PROJECT_LIB_SOURCES hetero.c)
-    
-elseif(MICA_PED STREQUAL "baremetal")
-    collect(PROJECT_LIB_SOURCES baremetal.c)
-    
+list(APPEND MICA_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/ped_rsc_table.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/mica_openamp.c")
+if(MICA_PED STREQUAL "xen")
+  list(APPEND MICA_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/xen/xen.c")
 else()
-    message(FATAL_ERROR "Unknown MICA_PED value: '${MICA_PED}'")
-    message(FATAL_ERROR "Supported values: hetero, baremetal")
+  list(APPEND MICA_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${MICA_PED}.c")
 endif()
-
-message(STATUS "Pedestal sources: ${PROJECT_LIB_SOURCES}")
+if(MICA_PED STREQUAL "xen" AND MICA_XEN_PROVIDER STREQUAL "builtin")
+  list(APPEND MICA_SOURCES "${PROJECT_SOURCE_DIR}/src/arch/arm64/xen/hypercall.S")
+  foreach(source provider_builtin debug_console memory hvm shared_info events gnttab xenstore)
+    list(APPEND MICA_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/xen/${source}.c")
+  endforeach()
+endif()
+set(MICA_SOURCES "${MICA_SOURCES}" PARENT_SCOPE)
