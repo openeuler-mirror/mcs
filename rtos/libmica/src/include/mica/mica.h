@@ -33,11 +33,11 @@ struct mica_sys_ops {
 
 /* ========== MICA main configuration ========== */
 struct mica_config {
-    /* shared memory configuration */
+    /* baremetal/hetero shared memory; ignored by Xen (may be zero) */
     uintptr_t shm_base_addr;
     size_t shm_size;
 
-    /* interrupt configuration */
+    /* baremetal/hetero interrupts; Xen discovers through provider/OS port */
     uint32_t ipc_irq_num;
     uintptr_t ipc_irq_base;
 
@@ -47,7 +47,8 @@ struct mica_config {
 
 /* ========== Backend core API ========== */
 /**
- * Initialize MICA backend (IRQ, RPMsg, shared memory).
+ * Initialize the single backend; copy config, do not retain caller storage.
+ * Xen uses the provider's mapped runtime table, not the ELF template.
  *
  * @param config: backend configuration (must not be NULL)
  * @return: 0 on success; negative errno on failure:
@@ -58,8 +59,9 @@ struct mica_config {
 int mica_init(struct mica_config *config);
 
 /**
- * Tear down MICA backend (RPMsg and related resources).
- * Safe to call if not initialized.
+ * Release an already stopped, proven-quiescent backend; uninitialized is a
+ * no-op. Running/failed-quiescence calls retain resources and log diagnostics.
+ * Does not destroy domain-wide provider facilities; reinit is not guaranteed.
  */
 void mica_remove(void);
 

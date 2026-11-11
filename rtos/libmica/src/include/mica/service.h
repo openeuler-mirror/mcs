@@ -25,28 +25,55 @@ enum mica_service_type {
 /* ========== Service configuration ========== */
 
 /**
- * Create all default services (RPC + TTY + UMT).
- * Note: spawns dedicated receiver and service threads.
+ * Create the fixed default set TTY + UMT, using the same internal creation
+ * path as mica_create_service. Preflight capability/duplicates before changes.
+ * Failure logically revokes only this call's additions; existing services stay
+ * running. Published additions retain bounded objects until overall stop and
+ * cannot be retried this domain; this is not complete physical rollback.
  *
- * @return: 0 on success; negative errno or pthread error on failure
+ * @return: 0 when locally ready (not peer-bound); negative errno on failure
  */
 int mica_create_all_services(void);
 
 /**
- * Create a registered service endpoint by type.
+ * Create one service, reusing the framework's single receiver. Local success
+ * does not wait for remote readiness; query mica_service_is_ready separately.
+ * A failed addition must not interrupt another running service.
+ * Before endpoint publication, complete cleanup permits retry. After successful
+ * registration, any later failure returns its original error but retains that
+ * service's bounded objects, closes business admission and forbids same-domain
+ * retry (-EOPNOTSUPP). Late RX/NS cannot reactivate it.
  *
  * @param type: service type
- * @return: 0 on success; negative errno on failure (e.g. -EINVAL, -EOPNOTSUPP)
+ * @return: 0 on local success; -EINVAL invalid type, -EOPNOTSUPP unsupported
+ * capability, retry of a published failed service, or create after completed
+ * stop; -EALREADY successful duplicate, -ENODEV
+ * uninitialized, -EBUSY lifecycle operation/initialization/stop in progress.
  */
 int mica_create_service(enum mica_service_type type);
 
 /**
- * Stop the receiver thread. Stops reception for all services.
+ * Synchronously stop ALL services and the shared receiver. No public timeout
+ * or individual stop/recreate API. Only truly uninitialized/resource-empty
+ * stop is a no-op; retained published endpoints require stop even with no
+ * worker. Empty stop does not prevent a first create; completed stop is
+ * idempotent. Endpoint destruction waits for the sole receiver to exit;
+ * continuous peer RX may prevent exit and cause the internal timeout.
+ * @return 0 on completion, -EBUSY competing lifecycle operation, -EDEADLK
+ * from a library worker/callback, -ETIMEDOUT internal completion deadline.
+ * Failure/timeout retains all resources still reachable by live users.
+ */
+int mica_stop_services(void);
+
+/**
+ * Asynchronously request receiver stop and wake it; does not join or reclaim.
+ * This is not a substitute for mica_stop_services().
  */
 void mica_stop_receiver(void);
 
 /**
- * Check whether a service is ready.
+ * Check local RUNNING admission and a locked peer snapshot; never read raw
+ * OpenAMP dest_addr from the caller thread. Retained failed service is not ready.
  *
  * @param type: service type
  * @return: 1 if ready, 0 if not ready
@@ -59,7 +86,8 @@ int mica_service_is_ready(enum mica_service_type type);
  *
  * @param data: data buffer
  * @param len:  data length
- * @return: number of bytes sent on success; 0 if TTY not ready; negative on failure
+ * @return: bytes sent; -EINVAL invalid args, -EAGAIN not ready,
+ * -ESHUTDOWN stopping, or another negative errno
  */
 int mica_tty_send(unsigned char *data, size_t len);
 
@@ -93,9 +121,14 @@ typedef void (*umt_rcv_cb_t)(const void *data, int data_len, void *priv);
 int mica_umt_register_rcv_cb(umt_rcv_cb_t callback, void *priv);
 
 /**
- * Unregister UMT receive callback. After this, use mica_rcv_data() for passive receive.
+ * Unregister UMT receive callback and wait for in-flight callbacks to drain.
+ * Only a successful return permits freeing priv or other callback-owned state
+ * and switching to mica_rcv_data(). A timeout or other error does not prove
+ * callbacks have exited, even if the registered callback was already cleared.
  *
- * @return: 0 on success
+ * @return: 0 after callbacks drain; -EDEADLK from the active callback itself;
+ *          -ETIMEDOUT if draining exceeds the deadline; -EAGAIN if UMT is not
+ *          ready; other negative errors on synchronization or lifecycle failure
  */
 int mica_umt_unregister_rcv_cb(void);
 
