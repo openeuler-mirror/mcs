@@ -3,6 +3,7 @@
  * backend (Copyright Huawei Technologies Co., Ltd. 2024). No duplicate
  * OpenAMP assembly, endpoint manager or domain facilities are implemented here.
  */
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -113,6 +114,34 @@ static int discover(struct xen_cookie *c, uint32_t *refs, size_t *count, uint32_
     return *port ? 0 : -EINVAL;
 }
 
+static int read_shmem_base(struct xen_cookie *c, metal_phys_addr_t *base)
+{
+    char path[128], value[32] = {0};
+
+    snprintf(path, sizeof(path), "/local/domain/0/backend/mica/%u/0/shmem_base", c->domid);
+    int ret = negative(c->provider->xs_read(path, value, sizeof(value)));
+
+    if (ret)
+        return ret;
+    if (value[0] != '0' || (value[1] != 'x' && value[1] != 'X') ||
+        !isxdigit((unsigned char)value[2]))
+        return -EINVAL;
+    for (const char *digit = value + 2; *digit; ++digit) {
+        if (!isxdigit((unsigned char)*digit))
+            return -EINVAL;
+    }
+    errno = 0;
+    char *end;
+    unsigned long long number = strtoull(value + 2, &end, 16);
+
+    if (errno || end == value + 2 || *end ||
+        number != (metal_phys_addr_t)number || number % XEN_PAGE_BYTES ||
+        c->bytes - 1 > (metal_phys_addr_t)-1 - (metal_phys_addr_t)number)
+        return -EINVAL;
+    *base = (metal_phys_addr_t)number;
+    return 0;
+}
+
 static void event(void *arg)
 {
     struct xen_cookie *c = arg;
@@ -195,15 +224,31 @@ static int make_layout(struct xen_cookie *c, struct mica_rpmsg_layout *out)
 
     if (offset0 < sizeof(*t) || offset0 >= c->bytes)
         return -EINVAL;
-    c->wire = t->vring0.da;
-    metal_io_init(&c->buffers, (char *)c->local + offset0, &c->wire, c->bytes - offset0, -1, 0, NULL);
-    struct mica_rpmsg_layout layout = {
-        .runtime_table = t,
-        .table_bytes = sizeof(*t),
-        .buffer_io = &c->buffers,
-        .notify = notify,
-        .notify_cookie = c
-    };
+    /* Grant mappings use guest-local addresses, not the driver's DA space.
+     * The u32 resource-table DAs cannot describe a pool above 4 GiB. */
+    metal_phys_addr_t base;
+
+    ret = read_shmem_base(c, &base);
+    if (ret == -ENOENT)
+    {
+        /* Compatibility assumes the actual legacy pool is wholly below 4 GiB.
+         * These inferred low DAs cannot detect aliases of a high pool. */
+        if (t->vring0.da < offset0)
+            return -EINVAL;
+        base = t->vring0.da - offset0;
+        if (c->bytes - 1 > UINT32_MAX - base)
+            return -EINVAL;
+    }
+    else if (ret)
+        return ret;
+    metal_phys_addr_t wire = base + offset0;
+    struct metal_io_region buffers;
+    struct mica_rpmsg_layout layout;
+
+    metal_io_init(&buffers, (char *)c->local + offset0, &wire, c->bytes - offset0, -1, 0, NULL);
+    ret = mica_rsc_layout(t, sizeof(*t), &buffers, true, notify, c, &layout);
+    if (ret)
+        return ret;
     const struct fw_rsc_vdev_vring *rings[2] = {
         &t->vring0,
         &t->vring1
@@ -213,17 +258,17 @@ static int make_layout(struct xen_cookie *c, struct mica_rpmsg_layout *out)
         const struct fw_rsc_vdev_vring *r = rings[i];
         size_t offset = t->vring_offset.offset[i];
 
-        if (!r->num || r->num > RPROC_MAX_VRING_DESC || (r->num & (r->num - 1)) || !r->align ||
-            r->align > 65536 || (r->align & (r->align - 1)) || offset < offset0 || offset > c->bytes)
+        if (offset < offset0 || offset >= c->bytes || offset % r->align ||
+            r->da != (uint32_t)(base + offset) ||
+            layout.vring_local[i] != (char *)c->local + offset)
             return -EINVAL;
-        size_t length = (size_t)vring_size(r->num, r->align);
-
-        if (length > c->bytes - offset || offset % r->align ||
-            (uint64_t)r->da != (uint64_t)c->wire + (offset - offset0))
+        if (layout.vring_bytes[i] > c->bytes - offset)
             return -EINVAL;
-        layout.vring_local[i] = (char *)c->local + offset;
-        layout.vring_bytes[i] = length;
     }
+    c->wire = wire;
+    c->buffers = buffers;
+    c->buffers.physmap = &c->wire;
+    layout.buffer_io = &c->buffers;
     *out = layout;
     return 0;
 }

@@ -21,6 +21,7 @@
 #include <memory/shm_pool.h>
 #include <remoteproc/remoteproc_module.h>
 #include <remoteproc/mica_rsc.h>
+#include <rpmsg/rpmsg_vdev.h>
 
 struct cpu_info {
 	uint32_t cpu;
@@ -315,7 +316,11 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	}
 
 	client = metal_container_of(rproc, struct mica_client, rproc);
-	ret = init_shmem_pool(client, info.phy_addr + (client->ped_setup.cpu_id * SHM_POOL_SIZE), SHM_POOL_SIZE);
+	uint64_t pool_offset = (uint64_t)client->ped_setup.cpu_id * SHM_POOL_SIZE;
+
+	if (pool_offset > UINT64_MAX - info.phy_addr)
+		return -EINVAL;
+	ret = init_shmem_pool(client, info.phy_addr + pool_offset, SHM_POOL_SIZE);
 	if (ret) {
 		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
 		return ret;
@@ -525,5 +530,6 @@ const struct remoteproc_ops rproc_bare_metal_ops = {
 	.stop = NULL,
 	.shutdown = rproc_shutdown,
 	.mmap = rproc_mmap,
+	.get_mem = mica_vring_get_mem,
 	.notify = rproc_notify,
 };

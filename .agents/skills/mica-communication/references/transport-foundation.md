@@ -73,6 +73,16 @@
 
 就说明问题仍可能卡在 transport foundation，而不是上层 RPMsg service。
 
+#### 高地址共享池
+
+`vring.da` 为 u32，buffer descriptor 地址为 u64。Xen/baremetal 利用完整池基址和池内偏移
+恢复 ring 地址：Linux 共用 `rpmsg_vdev.c` 的 `get_mem`，guest 共用 `mica_rsc_layout`；
+仅高位恢复要求单连续 IO，hetero 保持 DIRECT。普通 `mmap` 不猜高位，RPMsg 写 ring 前核对实际映射。
+
+baremetal guest 配置须匹配实际 CPU 窗口：基址为 `region_base + cpu_id * 0x20000`，长度 `0x20000`。
+Xen 通过 `shmem_base` 传完整后端基址，不能用 guest grant 本地地址补高位；高地址需两侧同步更新，
+缺失该 key 的旧模式仅适用于整池位于低 4GiB。底座/BSP 仍负责映射、cache 和通知。
+
 ### 4.3 通知与中断闭环
 
 即使共享内存已经准备好，如果通知链不通，vring 也不会真正推进。

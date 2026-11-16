@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <limits.h>
 #include <syslog.h>
 #include <metal/atomic.h>
 #include <metal/alloc.h>
@@ -29,6 +30,8 @@ int init_shmem_pool(struct mica_client *client, metal_phys_addr_t pa, size_t siz
 {
 	void *va;
 
+	if (!size || size > UINT_MAX || pa == METAL_BAD_PHYS || size - 1 > METAL_BAD_PHYS - pa)
+		return -EINVAL;
 	va = remoteproc_mmap(&client->rproc, &pa, NULL, size, 0, &client->shbuf_io);
 	if (!va)
 		return -EPERM;

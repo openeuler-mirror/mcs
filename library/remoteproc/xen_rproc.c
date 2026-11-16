@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <syslog.h>
 #include <ctype.h>
 #include <unistd.h>
@@ -23,6 +24,7 @@
 #include <memory/shm_pool.h>
 #include <remoteproc/remoteproc_module.h>
 #include <remoteproc/mica_rsc.h>
+#include <rpmsg/rpmsg_vdev.h>
 
 #define PIPE_READ_END  0
 #define PIPE_WRITE_END 1
@@ -563,10 +565,21 @@ static void *rproc_mmap(struct remoteproc *rproc,
 	if (lda == METAL_BAD_PHYS)
 		lda = lpa;
 
+	if (!size || !pdata->shmem_size ||
+	    pdata->shmem_size - 1 > (metal_phys_addr_t)-1 - pdata->shmem_addr)
+		return NULL;
+	/* Ring u32 recovery belongs to the explicit common ring path, not mmap. */
+	if (lpa < pdata->shmem_addr || lpa - pdata->shmem_addr >= pdata->shmem_size)
+		return NULL;
+	if (size > pdata->shmem_size - (lpa - pdata->shmem_addr))
+		return NULL;
+
 	/* align to page boundary */
 	pagesize = sysconf(_SC_PAGE_SIZE);
 	aligned_addr = (lpa) & ~(pagesize - 1);
 	offset = lpa - aligned_addr;
+	if (size > SIZE_MAX - offset - (pagesize - 1))
+		return NULL;
 	aligned_size = (offset + size + pagesize - 1) & ~(pagesize - 1);
 
 	va = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE, MAP_SHARED, pdata->mcs_fd, aligned_addr);
@@ -686,6 +699,24 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 
 	pdata->shmem_addr = info.phy_addr;
 	pdata->shmem_size = info.size;
+
+	/* Publish the driver's full DA base before the guest can run. Resource
+	 * table vring DAs are u32, whereas virtqueue descriptor addresses are u64.
+	 * Grant mappings alone do not convey this address space to the guest.
+	 */
+	{
+		char path[PATH_MAX], address[32];
+
+		snprintf(path, sizeof(path), "/local/domain/0/backend/mica/%d/0/shmem_base",
+			 pdata->domu_id);
+		snprintf(address, sizeof(address), "0x%llx",
+			 (unsigned long long)pdata->shmem_addr);
+		ret = run_command("xenstore-write", path, address, NULL);
+		if (ret) {
+			syslog(LOG_ERR, "Failed to publish shared memory base\n");
+			goto err_close_fd;
+		}
+	}
 
 	ret = init_shmem_pool(client, info.phy_addr, info.size);
 	if (ret) {
@@ -937,5 +968,6 @@ const struct remoteproc_ops rproc_xen_ops = {
 	.stop = NULL,
 	.shutdown = rproc_shutdown,
 	.mmap = rproc_mmap,
+	.get_mem = mica_vring_get_mem,
 	.notify = rproc_notify,
 };

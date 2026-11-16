@@ -30,6 +30,6 @@ int mica_context_unlock(struct mica_context *ctx);
 
 int mica_context_cancel(struct mica_context *ctx);
 
-int mica_rsc_layout(void *table, size_t table_bytes, struct metal_io_region *buffers,
+int mica_rsc_layout(void *table, size_t table_bytes, struct metal_io_region *buffers, bool low32,
     int(*notify)(void *, uint32_t), void *cookie, struct mica_rpmsg_layout *layout);
 #endif
