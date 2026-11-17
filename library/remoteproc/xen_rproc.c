@@ -694,7 +694,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	ret = ioctl(pdata->mcs_fd, IOC_QUERY_MEM, &info);
 	if (ret) {
 		syslog(LOG_ERR, "ioctl(IOC_QUERY_MEM) failed: %s\n", strerror(errno));
-		goto err_close_fd;
+		goto err_config;
 	}
 
 	pdata->shmem_addr = info.phy_addr;
@@ -714,14 +714,14 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 		ret = run_command("xenstore-write", path, address, NULL);
 		if (ret) {
 			syslog(LOG_ERR, "Failed to publish shared memory base\n");
-			goto err_close_fd;
+			goto err_config;
 		}
 	}
 
 	ret = init_shmem_pool(client, info.phy_addr, info.size);
 	if (ret) {
 		syslog(LOG_ERR, "init shared memory pool failed, err %d\n", ret);
-		goto err_close_fd;
+		goto err_config;
 	}
 
 	client->shmem_dynamic = true;
@@ -737,13 +737,15 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 				  &noffset, &nlen);
 	if (ret < 0) {
 		syslog(LOG_ERR, "load header failed 0x%lx,%ld", offset, len);
-		goto err;
+		goto err_config;
 	}
 
 	ret = loader->locate_rsc_table(limg_info, &rsc_da, &offset, &rsc_size);
 	if (ret != 0 || rsc_size <= 0) {
 		syslog(LOG_ERR, "unable to locate rsctable, ret: %d", ret);
-		goto err;
+		if (!ret)
+			ret = -EINVAL;
+		goto err_config;
 	}
 
 	DEBUG_PRINT("get rsctable from header, rsc_da: %lx, rsc_size: %ld\n", rsc_da, rsc_size);
@@ -752,7 +754,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	if (rsc_size > pagesize) {
 		syslog(LOG_ERR, "rsc table size exceeds limit: (0x%lx vs. 0x%lx)", rsc_size, pagesize);
 		ret = -EINVAL;
-		goto err;
+		goto err_config;
 	}
 
 	/*
@@ -766,7 +768,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	rsc_table = alloc_shmem_region(client, rw_addr, pagesize);
 	if (!rsc_table) {
 		ret = -ENOMEM;
-		goto err;
+		goto err_config;
 	}
 	memcpy(rsc_table, image->buf + offset, rsc_size);
 
@@ -774,7 +776,7 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	if (ret) {
 		syslog(LOG_ERR, "unable to set rsctable, ret: %d", ret);
 		ret = -EINVAL;
-		goto err;
+		goto err_config;
 	}
 
 	rproc->state = RPROC_READY;
@@ -786,10 +788,47 @@ static int rproc_config(struct remoteproc *rproc, void *data)
 	loader->release(limg_info);
 	return ret;
 
-err:
-	loader->release(limg_info);
+err_config:
+	/* Only helper success transfers this paused domain to this transaction. */
+	if (limg_info)
+		loader->release(limg_info);
+	pagesize = sysconf(_SC_PAGE_SIZE);
+	while (!metal_list_is_empty(&rproc->mems)) {
+		struct remoteproc_mem *mem = metal_container_of(rproc->mems.next, struct remoteproc_mem, node);
+		size_t page_offset = mem->pa & (pagesize - 1);
+		size_t mapped_size = (page_offset + mem->io->size + pagesize - 1) & ~(pagesize - 1);
+
+		munmap((char *)mem->io->virt - page_offset, mapped_size);
+		metal_list_del(&mem->node);
+		metal_free_memory(mem->io);
+		metal_free_memory(mem);
+	}
+	rproc->rsc_table = NULL;
+	rproc->rsc_io = NULL;
+	rproc->rsc_len = 0;
+	rproc->bitmap = 0;
+	client->shbuf_io = NULL;
+	client->phys_shmem_start = 0;
+	client->shmem_size = 0;
+	client->virt_shmem_start = NULL;
+	client->virt_shmem_end = NULL;
+	client->unused_shmem_start = NULL;
+	client->shmem_dynamic = false;
+	pdata->shmem_addr = 0;
+	pdata->shmem_size = 0;
+	{
+		char domid[32];
+		int cleanup_ret;
+
+		snprintf(domid, sizeof(domid), "%d", pdata->domu_id);
+		cleanup_ret = run_command("xl", "destroy", domid, NULL);
+		if (cleanup_ret)
+			syslog(LOG_ERR, "Failed to destroy domU %d after config failure, err %d",
+			       pdata->domu_id, cleanup_ret);
+	}
 err_close_fd:
 	close(pdata->mcs_fd);
+	pdata->mcs_fd = -1;
 	return ret;
 }
 
