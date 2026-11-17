@@ -15,6 +15,12 @@ extern "C" {
 
 int create_rpmsg_device(struct mica_client *client);
 void release_rpmsg_device(struct mica_client *client);
+/* Internal resource-table ring contract, not an arbitrary PA/DA translator. */
+int mica_resolve_rsc_da(metal_phys_addr_t base, size_t bytes,
+		      metal_phys_addr_t da, size_t len, metal_phys_addr_t *full);
+struct remoteproc_mem *mica_vring_get_mem(struct remoteproc *rproc,
+		const char *name, metal_phys_addr_t pa, metal_phys_addr_t da,
+		void *va, size_t size, struct remoteproc_mem *buf);
 
 #if defined __cplusplus
 }

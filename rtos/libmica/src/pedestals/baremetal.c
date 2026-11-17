@@ -103,7 +103,7 @@ static int prepare(struct mica_context *ctx, struct mica_rpmsg_layout *layout)
         (void)mica_sem_wait_until(&ctx->receiver_wake, mica_now_ns() + 1000000ULL);
     }
     atomic_thread_fence(memory_order_acquire);
-    return mica_rsc_layout(table, (size_t)bytes, &cookie->buffers, notify, cookie, layout);
+    return mica_rsc_layout(table, (size_t)bytes, &cookie->buffers, true, notify, cookie, layout);
 }
 
 static int quiesce(struct mica_context *ctx, uint64_t deadline)
