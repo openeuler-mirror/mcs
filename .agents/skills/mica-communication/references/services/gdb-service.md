@@ -86,7 +86,7 @@ Linux/master 侧当前已有一条比较完整的 GDB 转发链，关键文件�
 ### 4.1 `RSC_VENDOR_RBUF_PAIR` 的使用
 
 `mica_gdb_server.c` 中可以看到：
-- `find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0)`
+- `mica_find_rsc(rsc_table, RSC_VENDOR_RBUF_PAIR, 0)`
 
 并结合：
 - `RBUF_STATE_CPU_STOP`

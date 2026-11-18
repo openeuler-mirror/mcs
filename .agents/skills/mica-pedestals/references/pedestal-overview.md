@@ -22,10 +22,11 @@
 - `JAILHOUSE` -> `rproc_jailhouse_ops`
 - `XEN` -> `rproc_xen_ops`
 - `HETERO && cpu_str == "riscv"` -> `rproc_riscv_ops`
+- `HETERO && cpu_str == "stm32mp2_m33"` -> `rproc_stm32mp2_ops`
 
 这意味着 pedestal 会直接决定：
 - 进入哪个 backend 文件
-- `.init/.config/.start/.shutdown/.remove/.notify/.mmap` 由谁实现
+- `.init/.config/.start/.stop/.shutdown/.remove/.notify/.mmap` 由谁实现
 - 使用哪个 KO 或 `/dev/*` 设备
 - ioctl、共享内存、通知、中断、resource table 的具体处理方式
 - RTOS/client 侧要满足什么对接契约
@@ -37,48 +38,48 @@
 从 Linux/master 侧当前仓内代码看，主要 pedestal backend 文件是：
 - `library/remoteproc/baremetal_rproc.c`
 - `library/remoteproc/riscv_rproc.c`
+- `library/remoteproc/stm32mp2_rproc.c`
 - `library/remoteproc/jailhouse_rproc.c`
 - `library/remoteproc/xen_rproc.c`
 
 它们分别承载各自 pedestal 的：
 - `remoteproc_ops`
-- `.init/.config/.start/.shutdown/.remove/.notify/.mmap`
+- `.init/.config/.start/.stop/.shutdown/.remove/.notify/.mmap`
 - pedestal-specific 私有状态
 - 与 KO、设备节点、外部运行环境之间的接口
 
-从代码定位角度看，pedestal 问题通常先从这四类文件之一开始，而不是先从 `library/mica/mica.c` 找全部答案。
+从代码定位角度看，pedestal 问题通常先从对应的 `*_rproc.c` 开始，再进入配套的 KO 或平台实现。
 
 ## 4. 当前 pedestal 实现视图
 
 ### 4.1 baremetal
 主落点：
 - `library/remoteproc/baremetal_rproc.c`
-- `mcs_km/mcs_km.c`
+- `mcs_km/mcs_km_aarch64.c`
 
 关键特征：
 - 使用 `/dev/mcs`
 - 主要通过 PSCI、IPI、reserved memory、poll/notifier 来管理远端
 - shared memory 和 resource table 由 baremetal 路径自己准备
-- 当前 `ped-baremetal.md` 已按代码追踪手册风格展开到 create/start/stop/remove、`/dev/mcs`/ioctl、共享内存首页规则、notify/poll 闭环、RTOS 契约与调试入口
+- resource table 按 ELF 中的地址映射，停机通过 PSCI 确认目标 CPU 进入 OFF 状态
 
 ### 4.2 hetero
 主落点：
 - `library/remoteproc/riscv_rproc.c`
+- `library/remoteproc/stm32mp2_rproc.c`
 - `library/remoteproc/remoteproc_core.c`
-- `mcs_km/mcs_km.c`
-- `rtos/libmica/src/pedestals/hetero.c`
+- `mcs_km/mcs_km_hisi_riscv.c`
+- `mcs_km/mcs_km_stm32mp2.c`
+- `rtos/libmica/src/pedestals/hetero.c`（HiSilicon RISC-V client 路径）
 
 关键特征：
-- 当前已落地的 hetero 主分支主要是 riscv
+- 包括 HiSilicon RISC-V 和 STM32MP2 M33 两条平台路径
 - 也使用 `/dev/mcs`
-- 通过 `IOC_SET_PED_TYPE` 区分 hetero 的子类型
+- 通过 `IOC_SET_PED_TYPE` 校验用户态请求与 KO 编译 backend 的匹配关系
 - resource table、shared memory、bootaddr、pedestal bin、notify 路径都带有异构分支特征
-- 当前 `ped-hetero.md` 已按 baremetal 的深度标准重写，并补上 Linux/master 与 RTOS 两侧的运行时契约
+- HiSilicon RISC-V 使用寄存器启动序列与 IPC IRQ；STM32MP2 M33 使用 NSVTOR、reset control 与 IPCC mailbox
 
-这里需要特别注意：
-- 文档名是 `ped-hetero.md`
-- 当前正文会以 riscv 子分支为主
-- 后续如果 hetero 扩展到其他架构，应继续在同一篇文档内扩展子章节，而不是重新发明新的顶层分类
+hetero 平台的生命周期、资源表布局和 client 契约按子路径分别确认，具体实现归入 `ped-hetero.md`。
 
 ### 4.3 jailhouse
 主落点：
@@ -105,12 +106,28 @@
 
 ## 5. pedestal 与 KO / 设备节点 / ioctl 的关系
 
-当前代码里，KO 与 `/dev/*` 设备并不是一套完全公共的抽象层，而是明显和 pedestal 实现绑定。
+### 5.1 `mcs_km.ko` 分层与 backend 选择
 
-例如：
-- baremetal / hetero 当前主要围绕 `mcs_km/mcs_km.c` 和 `/dev/mcs`
-- xen 则是 `mcs_km/xen-mcsback.c` 和 `/dev/mcs_xen`
-- 各自的 ioctl、poll、shared memory、event 机制也不相同
+baremetal / hetero 使用 `mcs_km.ko` 和 `/dev/mcs`，内核侧分工为：
+- `mcs_km/mcs_km_core.c`：字符设备、ioctl 参数处理、mmap 入口与 backend 分发
+- `mcs_km/mcs_km_common.c`：reserved memory 和 copy-message memory 辅助逻辑
+- `mcs_km/mcs_km_pedestal.h`：`mcs_pedestal_ops`、ioctl 与内核侧公共结构定义
+- `mcs_km/mcs_km_aarch64.c`、`mcs_km/mcs_km_hisi_riscv.c`、`mcs_km/mcs_km_stm32mp2.c`：平台资源、启动、通知、poll 和映射范围校验
+
+`mcs_km/Makefile` 在构建时选择唯一 backend：
+- `CONFIG_MCS_PED_AARCH64=y`：AArch64 baremetal
+- `CONFIG_MCS_PED_HISI_RISCV=y`：HiSilicon RISC-V
+- `CONFIG_MCS_PED_STM32MP2=y`：STM32MP2 M33
+- 未选择 backend 时默认使用 AArch64；同时选择多个 backend 时构建报错
+
+- `IOC_SET_PED_TYPE` 要求类型值与已编译 backend 一致，类型不匹配时返回 `-EOPNOTSUPP`
+- ioctl 请求的可选操作未实现时返回 `-EOPNOTSUPP`
+- 打开 `/dev/mcs` 需要 `CAP_SYS_RAWIO`
+
+### 5.2 设备与平台接口
+
+- baremetal / hetero 的 ioctl、poll、shared memory 与通知操作通过 `mcs_pedestal_ops` 接入各自平台实现
+- `CONFIG_XEN=y` 时构建 `xen-mcsback.ko`，对应 `mcs_km/xen-mcsback.c` 和 `/dev/mcs_xen`
 
 因此理解某个 pedestal 时，通常应同时回答这三个问题：
 1. 对应哪个 `*_rproc.c`
@@ -159,23 +176,23 @@
 ### 8.1 `ped-baremetal.md`
 重点看：
 - `baremetal_rproc.c`
-- `mcs_km.c` 中 baremetal 相关分支
+- `mcs_km_core.c`、`mcs_km_common.c` 和 `mcs_km_aarch64.c`
 - `/dev/mcs`
 - `IOC_QUERY_MEM` / `IOC_CPUON` / `IOC_SENDIPI`
 - reserved memory / PSCI / IPI / notifier
 - shared memory 和 resource table 的准备
-- create/start/stop/remove 如何与 `/dev/mcs`、共享内存首页、notify/poll 闭环对应起来
+- create/start/stop/remove 如何与 `/dev/mcs`、资源表映射、notify/poll 闭环对应起来
 
 ### 8.2 `ped-hetero.md`
 重点看：
-- `riscv_rproc.c`
-- `remoteproc_core.c` 中 hetero -> riscv 的分派条件
-- `mcs_km.c` 中 hetero/riscv 相关分支
-- `rtos/libmica/src/pedestals/hetero.c`
+- `riscv_rproc.c`、`stm32mp2_rproc.c`
+- `remoteproc_core.c` 中 hetero 子路径的分派条件
+- `mcs_km_hisi_riscv.c`、`mcs_km_stm32mp2.c`
+- `rtos/libmica/src/pedestals/hetero.c` 对应的 RISC-V client 契约
 - `/dev/mcs`
-- `IOC_SET_PED_TYPE` / `IOC_QUERY_MEM` / `IOC_MCUON` / `IOC_SENDIPI`
-- resource table 放共享内存首页的路径
-- pedestal bin / bootaddr / notifier / poll
+- `IOC_SET_PED_TYPE` / `IOC_QUERY_MEM` / `IOC_MCUON` / `IOC_MCUOFF` / `IOC_SENDIPI` 的平台支持范围
+- RISC-V 的共享内存首页资源表与 STM32MP2 的 ELF 资源表加载路径
+- pedestal bin / bootaddr / notifier / poll，以及 M33 的向量表、reset 与 IPCC
 - Linux/master 与 RTOS 两侧如何共同完成 virtio ready、service ready 与停机语义
 
 ### 8.3 `ped-jailhouse.md`
@@ -233,7 +250,7 @@
    - `mica-common-tasks/references/debugging-workflow/debugging-overview.md`
 
 从当前完成度看，ped 体系里：
-- `ped-baremetal.md` 已是高细节、可直接带代码追踪的版本，当前应保持冻结
+- `ped-baremetal.md` 覆盖 baremetal backend、内核接口与 RTOS 契约
 - `ped-hetero.md` 已按 baremetal 深度补齐，并覆盖 Linux/master + RTOS 两侧契约
 - `ped-jailhouse.md` 已补齐 userspace backend、ivshmem/UIO 与 cell 生命周期这条主线
 - `ped-xen.md` 已补齐到可用于理解虚拟化 backend、grant/evtchn 与 guest 契约的深度

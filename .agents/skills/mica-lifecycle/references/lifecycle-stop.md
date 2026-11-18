@@ -60,7 +60,9 @@ stop 分支非常直接：
 2. `recv()` 收到控制字符串
 3. `strncmp(msg, "stop", CTRL_MSG_SIZE) == 0`
 4. `mica_stop(unit->client)`
-5. 返回 `MICA_MSG_SUCCESS`
+5. `mica_stop()` 成功时发送 `MICA_MSG_SUCCESS`；失败时记录返回值并发送 `MICA_MSG_FAILED`
+
+`mica stop` 的 CLI 退出码为 `0`（成功响应）或 `1`（失败响应）。具体失败原因见 `micad` 日志。
 
 也就是说，stop 命令的控制面语义是：
 - 通过已存在的 `/run/mica/{client}.socket`
@@ -79,8 +81,8 @@ stop 分支非常直接：
 
 `library/mica/mica.c` 中的 `mica_stop()` 很短，但它决定了 stop 的资源回退顺序。
 
-固定顺序如下：
-1. `remoteproc_stop(rproc)`
+成功路径的顺序如下：
+1. `remoteproc_stop(rproc)`；backend 实现 `.stop` 时，检查其返回值
 2. `mica_unregister_all_services(client)`
 3. `release_rpmsg_device(client)`
 4. 如果 `client->debug` 为真，执行 `destroy_rbuf_device(client)`
@@ -100,24 +102,11 @@ stop 分支非常直接：
 因此，`mica_stop()` 的真实语义更接近：
 - 把一个“已经运行并已接入通信层”的实例，从上到下拆回到“client 仍存在但不再运行”的状态
 
-## 5. 第一步：`remoteproc_stop(rproc)` 的位置与含义
+## 5. 第一步：`remoteproc_stop(rproc)` 与 `.stop` 回调
 
-在 `mica_stop()` 开头，首先执行：
-- `remoteproc_stop(rproc)`
-
-这一步和后面的 `remoteproc_shutdown()` 很容易混淆，但它们不是一回事。
-
-从当前仓库代码可以确认：
-- `mica_stop()` 先显式调用 `remoteproc_stop(rproc)`
-- 然后最后才通过 `stop_client()` 进入 `remoteproc_shutdown(&client->rproc)`
-
-所以 stop 过程至少被拆成两层 remoteproc 语义：
-1. `remoteproc_stop()`
-   - 更接近“停止当前 remoteproc 运行阶段”
-2. `remoteproc_shutdown()`
-   - 更接近“完成 backend 与资源级清理”
-
-即便底层 OpenAMP 或 pedestal 实现会决定二者实际差异有多大，在 MICA 这一层也必须把它们看成两个阶段，否则会误判 stop 的清理顺序。
+- `remoteproc_stop()` 先于 service 清理执行。backend 实现 `.stop` 时，该阶段失败会立即返回，跳过后续 service、RPMsg、debug 清理和 shutdown。
+- backend 未实现 `.stop` 时，`mica_stop()` 调用 `remoteproc_stop()` 后直接进入 service 清理。
+- STM32MP2 M33 的 `.stop` 发起 `IOC_MCUOFF` 并等待 notifier 退出；baremetal 的停机请求和 CPU OFF 确认在 `.shutdown` 中完成。
 
 ## 6. 第二步：`mica_unregister_all_services(client)`
 
@@ -155,11 +144,11 @@ stop 分支非常直接：
 它的主链是：
 1. 如果 `client->rdev == NULL`，直接返回
 2. 通过 `metal_container_of(client->rdev, struct rpmsg_virtio_device, rdev)` 找回 `rpmsg_vdev`
-3. `rpmsg_deinit_vdev(rpmsg_vdev)`
-   - 注释里明确写了：`destroy all epts`
-4. `remoteproc_remove_virtio(&client->rproc, rpmsg_vdev->vdev)`
-5. `metal_free_memory(rpmsg_vdev)`
-6. `client->rdev = NULL`
+3. 保存 `rpmsg_vdev->vdev` 到局部变量 `vdev`
+4. `rpmsg_deinit_vdev(rpmsg_vdev)` 销毁 endpoints 并清空 `rpmsg_vdev->vdev`
+5. `remoteproc_remove_virtio(&client->rproc, vdev)` 移除 remoteproc 管理的 virtio 对象
+6. `metal_free_memory(rpmsg_vdev)`
+7. `client->rdev = NULL`
 
 这一步很重要，因为它清楚定义了 stop 后 communication 基础设施的状态：
 - RPMsg virtio device 会被释放
@@ -196,9 +185,9 @@ stop 分支非常直接：
 
 位置：`library/remoteproc/remoteproc_core.c`
 
-`stop_client()` 自身非常薄：
-- 如果 `client != NULL`
-- 就调用 `remoteproc_shutdown(&client->rproc)`
+`stop_client()` 调用 `remoteproc_shutdown(&client->rproc)`，并将结果返回给 `mica_stop()`。
+- shutdown 失败时，`stop_client()` 将 remoteproc 状态置为 `RPROC_ERROR`
+- 此时 service、RPMsg 和已启用的 debug 通道已完成清理，backend 资源状态需按失败位置确认
 
 因此真正的 backend/pedestal-specific 收尾，不在 `mica.c`，而在各自 `*_rproc.c` 的 `.shutdown`。
 
@@ -206,6 +195,7 @@ stop 分支非常直接：
 - `library/remoteproc/baremetal_rproc.c: rproc_shutdown()`
 - `library/remoteproc/jailhouse_rproc.c: rproc_shutdown()`
 - `library/remoteproc/riscv_rproc.c: rproc_shutdown()`
+- `library/remoteproc/stm32mp2_rproc.c: rproc_shutdown()`
 - `library/remoteproc/xen_rproc.c: rproc_shutdown()`
 
 也就是说，`mica_stop()` 最后这一步的职责是：
@@ -318,8 +308,9 @@ service 只是运行态挂接物；stop 就会把它们卸掉。
 
 1. 控制面是否真正进入 stop 分支
    - 看 `mica/micad/socket_listener.c: client_ctrl_handler()`
-2. `mica_stop()` 是否完整执行到末尾
-   - 看 `library/mica/mica.c`
+2. `mica_stop()` 失败发生在哪个阶段
+   - 区分 `remoteproc_stop()` 阶段和 `remoteproc_shutdown()` 阶段
+   - 结合 CLI 退出码、`micad` 日志与实例状态确认
 3. service 是否真的被卸掉
    - 看 `mica_unregister_all_services()`
 4. `client->rdev` 是否被释放并置空

@@ -110,6 +110,7 @@
 - `JAILHOUSE` -> `rproc_jailhouse_ops`
 - `XEN` -> `rproc_xen_ops`
 - `HETERO && cpu_str == "riscv"` -> `rproc_riscv_ops`
+- `HETERO && cpu_str == "stm32mp2_m33"` -> `rproc_stm32mp2_ops`
 
 如果这些条件不满足，会直接 `return -EINVAL`。
 
@@ -153,17 +154,17 @@ create 完成后，通常已经：
 
 这些都属于后续 `start`。
 
-### 6.2 hetero（当前 Linux 侧对应 `riscv_rproc.c`）
+### 6.2 hetero
 create 完成后，通常已经：
 - 打开 `/dev/mcs`
-- `IOC_SET_PED_TYPE` 切换到 `MCS_KM_PED_RISCV`
-- 让 `client->rproc` 绑定到 `rproc_riscv_ops`
+- 根据 `CPU` 绑定对应平台的 `remoteproc_ops`
+- 通过 `IOC_SET_PED_TYPE` 校验请求类型与 KO 中编译的 backend 一致
 
 但还没有：
 - `IOC_QUERY_MEM`
 - 初始化共享内存池
 - 解析 resource table
-- 载入 pedestal bin
+- 加载平台所需的固件（如 RISC-V 配置指定的 pedestal bin）
 - `IOC_MCUON` 真正启动远端
 
 这些同样属于 `start`。

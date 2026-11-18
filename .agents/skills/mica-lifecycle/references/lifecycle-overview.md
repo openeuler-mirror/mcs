@@ -32,7 +32,8 @@
      - `baremetal_rproc.c`
      - `jailhouse_rproc.c`
      - `xen_rproc.c`
-     - `riscv_rproc.c`（当前 hetero/RISC-V 对应实现）
+      - `riscv_rproc.c`（当前 hetero/RISC-V 对应实现）
+      - `stm32mp2_rproc.c`（hetero/STM32MP2 M33 对应实现）
    - 作用：
      - 真正实现 `.init/.config/.start/.mmap/.notify/.shutdown/.remove`
      - 把不同部署底座的共享内存、通知、中断、resource table、远端启动方式落地
@@ -225,6 +226,7 @@ status 既依赖 `remoteproc` 状态，也依赖当前服务注册与设备显�
 - `JAILHOUSE` -> `rproc_jailhouse_ops`
 - `XEN` -> `rproc_xen_ops`
 - `HETERO && cpu_str == "riscv"` -> `rproc_riscv_ops`
+- `HETERO && cpu_str == "stm32mp2_m33"` -> `rproc_stm32mp2_ops`
 
 这意味着：
 - pedestal 差异在 create 阶段就已经决定

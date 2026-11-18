@@ -114,8 +114,9 @@ start 之前至少已经完成：
 #### baremetal
 baremetal 的 `.config` 主要负责按当前 CPU 对应的 RTOS 运行内存窗口初始化共享内存池，并按镜像中的 `resource_table` 设备地址建立访问前提。
 
-#### hetero（当前 Linux 侧实现对应 `riscv_rproc.c`）
-hetero 的 `.config` 主要负责切换到 RISC-V pedestal、初始化共享内存池、在共享内存首页建立 `resource_table`、设置 `bootaddr`，并把状态推进到 `RPROC_READY`。
+#### hetero
+- HiSilicon RISC-V：初始化共享内存池，在共享内存首页建立 `resource_table`，设置 `bootaddr` 并进入 `RPROC_READY`
+- STM32MP2 M33：初始化共享内存池，随后由 `remoteproc_load()` 加载 ELF 与资源表
 
 #### jailhouse
 jailhouse 的 `.config` 主要负责初始化 ivshmem 共享内存池、完成 cell load，并在共享区中建立可被后续阶段消费的 `resource_table`。
@@ -165,8 +166,7 @@ jailhouse 就是很典型的例子：
 
 位置：`library/remoteproc/remoteproc_core.c`
 
-这一步本身很薄：
-- `return remoteproc_start(rproc);`
+这一步调用 `remoteproc_start(rproc)` 并返回其结果；失败时将状态置为 `RPROC_ERROR`。
 
 真正的启动行为交给 pedestal-specific `.start` 去做。
 
@@ -176,8 +176,9 @@ baremetal 的 `.start` 主要负责触发 remote CPU 上线，并建立后续通
 ### 6.2 jailhouse
 jailhouse 的 `.start` 主要负责启动 cell，并建立 ivshmem 事件等待链。
 
-### 6.3 hetero（当前 Linux 侧实现对应 `riscv_rproc.c`）
-hetero 的 `.start` 由 `library/remoteproc/riscv_rproc.c` 中的 `rproc_riscv_ops` 承担，主要负责 notifier 建立、必要的 pedestal/bin 装载，以及通过 `IOC_MCUON` 拉起远端。
+### 6.3 hetero
+- HiSilicon RISC-V：`riscv_rproc.c` 建立 notifier，按配置加载 pedestal bin，再通过 `IOC_MCUON` 启动远端
+- STM32MP2 M33：`stm32mp2_rproc.c` 建立 notifier，通过 `IOC_MCUON` 提交 NSVTOR 启动地址并启动 M33
 
 ### 6.4 xen
 xen 的 `.start` 主要负责让 domU 从 pause 进入运行态，并接通后续通知与共享内存通路。
@@ -296,29 +297,25 @@ MICA 调用：
 
 ### 10.1 `mica_stop()`
 执行顺序：
-1. `remoteproc_stop(rproc)`
+1. `remoteproc_stop(rproc)`；backend 实现 `.stop` 时，失败会中止后续清理
 2. `mica_unregister_all_services(client)`
 3. `release_rpmsg_device(client)`
 4. 如果 debug 打开：`destroy_rbuf_device(client)`
 5. `stop_client(client)` -> `remoteproc_shutdown(&client->rproc)`
 
-这里要注意：
-- 注释写的是先 remove services，再 remove rpmsg device，再 shutdown
-- 但当前实际代码顺序是先 `remoteproc_stop()`，再做服务和 rpmsg 清理，最后 `remoteproc_shutdown()`
-- 所以后续如果 agent 分析 stop 语义，要以代码实际顺序为准，不要只看注释
+各阶段的职责和失败传播见 `lifecycle-stop.md`。
 
 ### 10.2 `release_rpmsg_device()`
 在 `library/rpmsg_device/rpmsg_vdev.c` 中：
-- 先 `rpmsg_deinit_vdev(rpmsg_vdev)`
-- 再 `remoteproc_remove_virtio(&client->rproc, rpmsg_vdev->vdev)`
-- 最后释放 `rpmsg_vdev` 内存并清空 `client->rdev`
+- `rpmsg_deinit_vdev()` 负责 RPMsg 清理，`remoteproc_remove_virtio()` 负责从 remoteproc 移除 virtio 对象
+- 两层对象的释放顺序见 `lifecycle-stop.md` 第 7 节
 
 这说明 RPMsg device 的销毁也分两层：
 - 先退 RPMsg
 - 再退 virtio
 
 ### 10.3 `mica_remove()`
-- 如果 `rproc->state != RPROC_OFFLINE`，先 `mica_stop(client)`
+- 如果 `rproc->state != RPROC_OFFLINE`，先 `mica_stop(client)`；失败时返回错误
 - 如果有 gdb server thread，先 cancel + join
 - 最后 `destory_client(client)` -> `remoteproc_remove(&client->rproc)`
 

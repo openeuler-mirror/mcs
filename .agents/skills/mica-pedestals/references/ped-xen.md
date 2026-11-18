@@ -228,7 +228,7 @@ xen 的“guest -> Linux/master”回通知闭环是：
 1. guest 通过 event channel 通知 Dom0
 2. `xen-mcsback.c:evtchn_handler()` 触发
 3. `atomic_set(&irq_triggered, 1)`
-4. `wake_up_interruptible(&mcs_evtchn_wait)`
+4. `evtchn_handler()` 调度 `evtchn_wake_work`，由 workqueue 唤醒 `mcs_evtchn_wait`
 5. 用户态线程在 `rproc_wait_event()` 中对 `/dev/mcs_xen` 做 `poll()`
 6. `mcs_xen_poll()` 检测到 `irq_triggered == 1`，返回 `POLLIN | POLLRDNORM`
 7. `rproc_wait_event()` 收到 `POLLIN` 后调用 `remoteproc_get_notification(rproc, 0)`
@@ -381,7 +381,7 @@ xen 下的 probe 路径是：
 `mcs_init_gnttab()` 的关键动作是：
 - `alloc_pages(GFP_KERNEL | __GFP_ZERO, SHMEM_ORDER)` 分配一大块连续页
 - `page_address()` / `page_to_phys()` 得到虚拟地址和物理地址
-- `xenbus_grant_ring()` 为每个页生成 grant ref
+- 为连续内存的每一页生成 grant ref：内核 5.16 及以上逐页调用 `gnttab_grant_foreign_access()`，早期内核使用 `xenbus_grant_ring()`
 - 把每一页对应的 `gref_i` 写到 xenstore
 - 把总页数 `gref_num` 也写到 xenstore
 
@@ -422,7 +422,7 @@ backend 通过：
 backend 会：
 - `mcs_backend_cleanup(dev)`
 - 清理 grant table
-- 清理 event channel
+- 清理 event channel，解绑 IRQ handler 后调用 `cancel_work_sync()` 回收通知 work
 - 从活动链表中删除 backend 实例
 
 同时 `rproc_shutdown()` 也会显式写 xenstore state 为 closed，促使 backend 做最终回收。
