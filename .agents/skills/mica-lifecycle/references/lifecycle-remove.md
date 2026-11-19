@@ -58,41 +58,25 @@ remove 的代码路径必须拆成两层来看：
 1. `accept()` 接收控制连接
 2. `recv()` 读取控制字符串
 3. 匹配 `strncmp(msg, "rm", CTRL_MSG_SIZE) == 0`
-4. `epoll_ctl(epoll_fd, EPOLL_CTL_DEL, unit->socket_fd, NULL)`
-5. `mica_remove(unit->client)`
+4. `mica_remove(unit->client)`，失败时进入错误响应分支
+5. `epoll_ctl(epoll_fd, EPOLL_CTL_DEL, unit->socket_fd, NULL)`
 6. 发送 `MICA_MSG_SUCCESS`
 7. `close(msg_fd)`
 8. `free_listener_by_name(unit->name)`
 
-这条链说明 remove 的执行顺序是：先清控制面监听，再清 lifecycle/backend，最后回到控制面完成对象释放。
+remove 先完成 lifecycle/backend 清理，再摘除控制面监听并释放对象。
 
-## 4. remove 的第一步：先从 epoll 中摘掉 listener fd
+## 4. remove 的控制面清理条件
 
-在 rm 分支里，`mica_remove()` 之前先做：
-- `epoll_ctl(epoll_fd, EPOLL_CTL_DEL, unit->socket_fd, NULL)`
-
-这一步的含义是：
-- 当前实例对应的控制 socket，不再继续被 micad 的 epoll 主循环监听
-
-也就是说，remove 从一开始就已经进入“控制面摘除”阶段，而不是只做 backend 清理。
-
-如果这一步失败：
-- 代码会直接报错并跳到 `err`
-- 不会继续执行 `mica_remove(unit->client)`
-
-因此，rm 的成功前提之一是：
-- listener fd 必须能先从 epoll 中删掉
-
-这也是 remove 与 stop 的第一条硬边界：
-- stop 不碰 epoll listener
-- remove 一开始就处理 epoll listener
+- `mica_remove()` 失败：记录错误，发送 `MICA_MSG_FAILED`，保留实例的 listener 和 socket。`mica rm` 收到失败响应时以 `1` 退出。
+- `mica_remove()` 成功：尝试从 epoll 摘除 listener；`EPOLL_CTL_DEL` 失败时记录告警，继续发送成功响应并执行 `free_listener_by_name()`。
 
 ## 5. `mica_remove()` 主体作用
 
 位置：`library/mica/mica.c`
 
 `mica_remove()` 本身仍然很薄，主逻辑只有三段：
-1. 如果 `rproc->state != RPROC_OFFLINE`，先 `mica_stop(client)`
+1. 如果 `rproc->state != RPROC_OFFLINE`，先调用 `mica_stop(client)`；失败时直接返回错误
 2. 如果 `client->gdb_server_thread` 存在，`pthread_cancel()` + `pthread_join()`
 3. `destory_client(client)`
 
@@ -115,7 +99,8 @@ remove 的代码路径必须拆成两层来看：
 - `struct remoteproc *rproc = &client->rproc;`
 
 然后判断：
-- `if (rproc->state != RPROC_OFFLINE) mica_stop(client);`
+- `rproc->state == RPROC_OFFLINE`：进入对象级清理
+- 其他状态：先执行 `mica_stop(client)`，成功后进入对象级清理
 
 这说明 remove 的设计前提是：
 - 如果实例还没 offline，先用 stop 路径把运行态资源退掉
@@ -197,6 +182,7 @@ remove 的代码路径必须拆成两层来看：
 - `library/remoteproc/baremetal_rproc.c: rproc_remove()`
 - `library/remoteproc/jailhouse_rproc.c: rproc_remove()`
 - `library/remoteproc/riscv_rproc.c: rproc_remove()`
+- `library/remoteproc/stm32mp2_rproc.c: rproc_remove()`
 - `library/remoteproc/xen_rproc.c: rproc_remove()`
 
 所以 `destory_client()` 不是简单“删链表节点”，而是：
@@ -247,7 +233,6 @@ remove 由两条路径共同完成：
 ## 11. remove 成功语义
 
 ### 11.1 remove 成功至少代表
-- 该 listener fd 已从 epoll 中删除
 - 如有必要，实例已先走完 stop 链
 - gdb server thread 已被 cancel/join
 - client 已从生命周期公共链表中摘除
@@ -291,11 +276,11 @@ remove 后通常不应再存在：
 - epoll listener 绑定
 
 ### 13.2 remove 拆除的主要对象
-- 从 epoll 中删 listener fd
 - 如有必要先 stop 运行态
 - 清 gdb thread
 - `metal_list_del(&client->node)`
 - `remoteproc_remove(&client->rproc)`
+- 尝试从 epoll 中删除 listener fd
 - `free(unit->client)`
 - `close/unlink/free listener`
 
@@ -348,11 +333,11 @@ remove 后通常不应再存在：
 如果 `mica rm` 看起来异常，建议按下面顺序排：
 
 1. rm 是否真正进入 `client_ctrl_handler()` 的 rm 分支
-2. `epoll_ctl(... EPOLL_CTL_DEL ...)` 是否成功
-3. `mica_remove()` 是否真正被执行
-4. 是否因为 `rproc->state != RPROC_OFFLINE` 先进入 stop 链
-5. gdb thread 是否被正常 cancel/join
-6. `destory_client()` 是否执行到了 `metal_list_del()` 和 `remoteproc_remove()`
+2. 是否因为 `rproc->state != RPROC_OFFLINE` 先进入 stop 链，stop 是否成功
+3. gdb thread 是否被正常 cancel/join
+4. `destory_client()` 是否执行到了 `metal_list_del()` 和 `remoteproc_remove()`
+5. `mica_remove()` 的返回值是否成功
+6. `epoll_ctl(... EPOLL_CTL_DEL ...)` 是否有告警
 7. `free_listener_by_name()` 是否成功执行到：
    - `free(unit->client)`
    - `close(unit->socket_fd)`
@@ -363,7 +348,8 @@ remove 后通常不应再存在：
 - rm 后服务没了，但 socket 还在
 
 重点看：
-- `epoll_ctl DEL` 后是否走到了 `free_listener_by_name()`
+- 若 rm 返回失败，先确认 `mica_stop()` 的失败阶段
+- 若 rm 返回成功，确认是否执行了 `free_listener_by_name()`
 
 如果问题表现为：
 - rm 后 socket 没了，但内存或 backend 状态仍异常

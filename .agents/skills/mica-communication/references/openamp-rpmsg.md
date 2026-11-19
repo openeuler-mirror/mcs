@@ -117,6 +117,15 @@ Linux/master 侧 RPMsg 设备建立入口在：
 - OpenAMP 负责把这些输入真正落成 `remoteproc_virtio -> virtio_device -> rpmsg_virtio_device -> rpmsg_device`
 - 后续 endpoint 收发、buffer 回收、NS 处理，大部分关键语义都已经在 OpenAMP 里了
 
+### 3.4 RPMsg 与 virtio 对象释放
+
+`library/rpmsg_device/rpmsg_vdev.c:release_rpmsg_device()` 分两层回收通信设备：
+- RPMsg 层：保存 `rpmsg_vdev->vdev` 后调用 `rpmsg_deinit_vdev()`，销毁 endpoint 并清空包装对象中的 `vdev` 指针
+- virtio 层：用保存的指针调用 `remoteproc_remove_virtio()`，从 `rproc->vdevs` 移除 virtio 设备
+- 最后释放 `rpmsg_vdev`，并清空 `client->rdev`
+
+Linux/master 侧 TTY、UMT、RPC 在分配对象时将 endpoint 清零。OpenAMP 2026.04 在销毁 endpoint 时可调用 `release_cb`，这些服务的未使用回调保持为 `NULL`。
+
 ## 4. Linux/master 侧服务绑定流程
 
 ### 4.1 `mica_ns_bind_cb()`：RPMsg 与 `mica_service` 的关键接缝

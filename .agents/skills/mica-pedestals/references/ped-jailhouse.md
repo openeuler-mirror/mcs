@@ -26,7 +26,7 @@ jailhouse 这条线需要额外看的驱动来源：
 - `yocto-meta-openeuler` 仓库下的 `meta-openeuler/recipes-kernel/linux/files/meta-data/features/mcs/0003-uio-Add-driver-for-inter-VM-shared-memory-device.patch`
 
 这里要特别注意：
-- baremetal 的关键内核配套实现主要就在 `mcs_km/mcs_km.c`
+- baremetal 的关键内核配套实现位于 `mcs_km/mcs_km_core.c` 和 `mcs_km/mcs_km_aarch64.c`
 - 但 jailhouse 的关键设备基础并不在 `mcs` 仓内维护
 - `mcs` 仓主要维护的是用户态 remoteproc backend
 - 与 ivshmem / UIO 相关的内核侧入口，要结合 yocto 里的 `uio_ivshmem` KO 实现一起理解
@@ -46,7 +46,7 @@ jailhouse pedestal 对应的是“由 Jailhouse hypervisor 管理 non-root cell�
 第二，它的设备接口不是 `/dev/mcs`。
 - baremetal 侧核心设备是 `/dev/mcs`
 - jailhouse 侧核心设备是 `uio_ivshmem` 暴露出的 `/dev/uioX`
-- 因而共享内存探测、事件等待、中断 re-enable、doorbell 通知这些行为，都不再通过 `mcs_km.c` 的 ioctl/poll 分支完成，而是走 UIO + ivshmem register 语义
+- jailhouse 的共享内存探测、事件等待、中断 re-enable 和 doorbell 通知通过 UIO 与 ivshmem 寄存器完成
 
 jailhouse 文档关注的核心不是 `ped_type` 切换，而是：
 - MICA 用户态 backend 如何接住 Jailhouse cell 生命周期
@@ -246,7 +246,7 @@ jailhouse 的“对端 -> Linux/master”通知闭环是：
 这一节是 jailhouse 与 baremetal 最常见的混淆点。
 
 baremetal 里，很多问题最终都回到：
-- `mcs_km/mcs_km.c`
+- `mcs_km/mcs_km_core.c`、`mcs_km/mcs_km_aarch64.c`
 - `/dev/mcs`
 - ioctl / poll / reserved memory / IRQ
 
@@ -306,7 +306,7 @@ jailhouse 这里内核侧的关键不是 `mcs_km`，而是 yocto 提供的：
 - jailhouse 则把“共享内存 + doorbell + 事件”建立在 hypervisor 暴露出来的 ivshmem PCI 设备之上，再通过通用 `uio_ivshmem` 让 userspace 接住
 
 因此：
-- baremetal 出问题，优先去看 `mcs_km.c`、`IOC_*`、reserved memory、IPI
+- baremetal 出问题，优先看 `ped-baremetal.md` 中的 `IOC_*`、reserved memory、IPI 路径
 - jailhouse 出问题，优先去看：
   - `jailhouse cell ...` 生命周期命令是否成功
   - `/dev/uioX` 是否真的对应 ivshmem

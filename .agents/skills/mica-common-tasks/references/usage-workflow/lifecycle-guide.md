@@ -157,7 +157,7 @@ AutoBoot=yes
 
 不同底座语义：
 - baremetal：仅支持单核，范围为 `0 ~ nproc - 1`
-- hetero：指定为 `riscv`
+- hetero：HiSilicon RISC-V 使用 `riscv`，STM32MP2 M33 使用 `stm32mp2_m33`
 - jailhouse：实际资源由 cell 文件配置
 - xen：支持多核或范围，例如 `1-3`
 
@@ -199,7 +199,7 @@ client OS 镜像路径。
 
 不同底座语义：
 - baremetal：通常不涉及
-- hetero：指定用于引导 RTOS 的 bin 文件
+- hetero：HiSilicon RISC-V 可指定引导 RTOS 的 bin 文件；STM32MP2 M33 通过 `ClientPath` 加载 ELF，`PedestalConf` 留空
 - jailhouse：指定 RTOS 所需 Non-Root Cell 配置文件
 - xen：指定用于引导 RTOS 的 bin 文件
 
@@ -359,6 +359,8 @@ PedestalConf=/lib/firmware/liteos.bin
 - 使用 hetero 部署底座
 - 在 RISC-V 核上运行 RTOS
 - `PedestalConf` 指向用于引导 RTOS 的 bin 文件
+
+STM32MP2 M33 的配置示例见 `rtos/arm64/stm32mp257-zephyr.conf`，需配套使用 STM32MP2 backend 构建的 `mcs_km.ko`。
 
 ## 9. 代码路径影响
 

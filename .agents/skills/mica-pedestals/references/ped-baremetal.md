@@ -15,7 +15,10 @@
 
 ## 2. 相关源码
 - `library/remoteproc/baremetal_rproc.c`
-- `mcs_km/mcs_km.c`
+- `mcs_km/mcs_km_core.c`
+- `mcs_km/mcs_km_common.c`
+- `mcs_km/mcs_km_aarch64.c`
+- `mcs_km/mcs_km_pedestal.h`
 - `library/mica/mica.c`
 - `library/remoteproc/remoteproc_core.c`
 - `library/rpmsg_device/rpmsg_vdev.c`
@@ -66,15 +69,20 @@ baremetal 是 MICA 最基础的 pedestal：
 它的主链是：
 1. 把 resource table reserved[0] 置为 `CPU_OFF_FUNCID`
 2. 调 `rproc->ops->notify(rproc, 0)`
-3. 遍历 `rproc->mems`
-4. 对每个映射的 memory 做 `munmap()`
-5. 从 `rproc->mems` 链表中删除
-6. 释放 `mem->io` 和 `mem`
-7. 清空 `rproc->rsc_table`、`rproc->rsc_len`、`rproc->bitmap`
+3. `wait_cpu_off()` 通过 `IOC_AFFINITY_INFO` 确认目标 CPU 进入 PSCI OFF 状态
+4. 遍历 `rproc->mems`
+5. 对每个映射的 memory 做 `munmap()`
+6. 从 `rproc->mems` 链表中删除
+7. 释放 `mem->io` 和 `mem`
+8. 清空 `rproc->rsc_table`、`rproc->rsc_len`、`rproc->bitmap`
 
-这一阶段的结果是：
+失败处理：
+- 通知失败、状态查询失败或等待超时时，`rproc_shutdown()` 返回错误，保留尚未回收的映射
+- `stop_client()` 将状态置为 `RPROC_ERROR`，错误经 `mica_stop()` 返回控制面
+
+这一阶段成功后的结果是：
 - 运行态状态被回退
-- 通知状态被推进到 shutdown
+- 目标 CPU 已进入 PSCI OFF 状态
 - 远端映射的内存对象被回收
 - remoteproc 资源指针被清掉
 
@@ -133,35 +141,39 @@ baremetal 是 MICA 最基础的 pedestal：
 - 通过 `IOC_SENDIPI` 向目标 CPU 发送 IPI
 - 驱动远端处理状态变化或 vring 消息
 
-#### 回通知链：`handle_clientos_ipi()` / `mcs_poll()` / notifier thread
+#### 回通知链：`handle_clientos_ipi()` / `mcs_aarch64_poll()` / notifier thread
 baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 
 主链是：
 1. 远端通过约定好的 IPI 线打到 Linux 侧
-2. `mcs_km.c: handle_clientos_ipi()` 被触发
-   - `atomic_set(&baremetal_irq_ack, 1)`
-   - `wake_up_interruptible(&mcs_baremetal_wait_queue)`
+2. `mcs_km_aarch64.c: handle_clientos_ipi()` 被触发
+   - `atomic_set(&aarch64_irq_ack, 1)`
+   - 调度 `aarch64_irq_wake_work`，由 workqueue 唤醒 `mcs_aarch64_wait_queue`
 3. 用户态线程在 `rproc_wait_event()` 里对 `mcs_fd` 执行 `poll()`
-4. `mcs_poll()` 被调用：
-   - `poll_wait(file, &mcs_baremetal_wait_queue, wait)`
-   - `atomic_cmpxchg(&baremetal_irq_ack, 1, 0)`
+4. `mcs_km_core.c: mcs_poll()` 分发到 `mcs_aarch64_poll()`：
+   - `poll_wait(file, &mcs_aarch64_wait_queue, wait)`
+   - `atomic_cmpxchg(&aarch64_irq_ack, 1, 0)`
    - 若有事件，则返回 `POLLIN | POLLRDNORM`
 5. 用户态 `poll()` 返回后，`rproc_wait_event()` 调 `rproc_notify_all()`
 6. `rproc_notify_all()` 遍历 `g_client_list`，对处于 `RPROC_RUNNING` 的 baremetal client 调：
    - `remoteproc_get_notification(&client->rproc, 0)`
 
 也就是说，baremetal 的回通知链不是“内核直接回调 remoteproc”，而是：
-- KO IRQ handler 置位并唤醒 waitqueue
+- KO IRQ handler 置位，由 workqueue 唤醒 waitqueue
 - `/dev/mcs` 的 `poll()` 变为可读
 - 用户态 notifier 线程收到 `POLLIN`
 - 再回到 remoteproc/OpenAMP 层继续推进
 
 这条链对排查“远端已经发中断，但 Linux/master 没继续处理消息”这类问题非常关键。
 
+waitqueue 唤醒在 workqueue 上下文执行，满足 PREEMPT_RT 下的锁上下文要求；IPI 资源回收时通过 `cancel_work_sync()` 等待该 work 结束。
+
 ## 5. 跟 `/dev/mcs` 的交互
 
 ### 5.1 设备打开和初始化
 `rproc_init()` 负责打开 `/dev/mcs`，并把 baremetal 后续运行所需的基础状态挂起来。
+- 目标 KO 应包含 AArch64 backend
+- 打开设备的进程需要 `CAP_SYS_RAWIO`
 
 ### 5.2 共享内存查询
 `rproc_config()` 里通过 `IOC_QUERY_MEM` 获取 reserved memory 信息，再用它初始化共享内存池。
@@ -177,13 +189,20 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 
 ## 6. KO 里的具体实现
 
-`mcs_km/mcs_km.c` 负责把 baremetal 所需的内核侧能力拼出来：
+baremetal 使用包含 AArch64 backend 的 `mcs_km.ko`，各文件分工如下：
+- `mcs_km_core.c`：`/dev/mcs` 注册、ioctl 分发和 mmap 入口
+- `mcs_km_common.c`：reserved memory 与 copy-message memory 辅助逻辑
+- `mcs_km_aarch64.c`：PSCI、IPI、poll 和平台内存范围校验
+- `mcs_km_pedestal.h`：公共接口与 `mcs_pedestal_ops` 定义
 
 ### 6.1 模块初始化
 `mcs_dev_init()` 会依次完成：
-- `get_psci_method()`
-- `init_reserved_mem()`
-- `init_mcs_ipi()`
+- 选择 `mcs_aarch64_ops`
+- 调用 `mcs_aarch64_init()`：
+  - `get_psci_method()`
+  - 启用 `CONFIG_KPROBES` 时获取 `cpu_logical_map` 符号
+  - `mcs_init_ped_rsv_mem()`
+  - `init_aarch64_irq()`
 - `register_mcs_dev()`
 
 ### 6.2 字符设备注册
@@ -193,7 +212,7 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - `device_create()`
 
 ### 6.3 资源内存初始化
-`init_reserved_mem()` 会把 baremetal reserved memory 解析到 `baremetal_mem[]`。
+`mcs_km_common.c: mcs_init_ped_rsv_mem()` 会把 baremetal reserved memory 解析到 `aarch64_mem[]`。
 
 这里要注意一个很关键的规则：
 - 如果 DTS 里像 `tools/create_dtb.sh` 这样给了多个 `memory-region`，例如 `client_os_dma_memory_region` 和 `client_os_reserved`
@@ -212,12 +231,12 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - 所以用户需要自己保证这段物理内存已经是可用且已预留的
 
 ### 6.4 IPI 初始化与回收
-`init_mcs_ipi()` / `remove_mcs_ipi()` 负责 baremetal 的 IPI 路径和相关中断资源。
+`init_aarch64_irq()` / `remove_aarch64_irq()` 负责 baremetal 的 IPI 路径和相关中断资源。
 
 这一节最关键的实现约束其实只有一条：
 - 在当前 ARM64 场景下，双方真正应约定的是使用 IPI 7
 
-之所以 `mcs_km.c` 里写的是：
+之所以 `mcs_km_aarch64.c` 里写的是：
 - `#define IPI_MCS 8`
 
 可以把它理解成：
@@ -232,7 +251,7 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - 如果未来切到别的架构，或者 IPI 的物理号/虚拟号映射关系变化，`mcs_km` 里这处硬编码不一定还能直接复用
 
 ### 6.5 ioctl 分发
-`mcs_ioctl()` 里和 baremetal 相关的 ioctl 不止三个，比较重要的有：
+`mcs_km_core.c: mcs_ioctl()` 通过 `mcs_aarch64_ops` 分发 baremetal 操作，比较重要的 ioctl 有：
 - `IOC_SENDIPI`
 - `IOC_XPUON`（用户态 baremetal 路径里对应 `IOC_CPUON` 宏）
 - `IOC_AFFINITY_INFO`
@@ -241,14 +260,14 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 
 其中要注意一点：
 - 用户态 `library/remoteproc/baremetal_rproc.c` 里把 `_IOW('A', 1, int)` 定义成了 `IOC_CPUON`
-- KO `mcs_km.c` 里同一个 ioctl 号在内核侧名字叫 `IOC_XPUON`
+- KO `mcs_km_pedestal.h` 里同一个 ioctl 号在内核侧名字叫 `IOC_XPUON`
 - 两边编号是一致的，只是命名不同
 
 各 ioctl 在 baremetal 下的语义可以概括成：
 
 #### `IOC_SENDIPI`
 - 入口：`rproc_notify()`
-- KO 行为：`mcs_ioctl()` 里进入 baremetal 分支，调用 `send_clientos_ipi(cpumask_of(info.cpu))`
+- KO 行为：`mcs_ioctl()` 调用 `mcs_aarch64_send_ipi()`，再通过 `send_clientos_ipi(cpumask_of(info->cpu))` 发送 IPI
 - 用途：Linux/master 向目标 CPU 发送 IPI，驱动远端处理 vring / message / 状态变化
 
 #### `IOC_XPUON` / `IOC_CPUON`
@@ -260,18 +279,17 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - 额外含义：所以 baremetal 启动远端，本质上是经由 PSCI 把目标 CPU 从 Linux/master 侧拉起
 
 #### `IOC_AFFINITY_INFO`
-- 入口：当前 baremetal 用户态主链里没有直接调用，但 KO 已提供
+- 入口：`rproc_shutdown()` 中的 `wait_cpu_off()`
 - KO 行为：
   - 把逻辑 CPU 转成 MPIDR
   - 再通过 `invoke_psci_fn(AFFINITY_INFO_FUNCID, mpidr, 0, 0)` 查询目标 CPU 状态
   - 要求其处于 OFF 状态
-- 用途：做 CPU 上电前的状态检查
-- 含义：这是一个有调试价值、但当前主链未显式用起来的能力
+- 用途：确认停机完成，成功后再回收远端映射
 
 #### `IOC_QUERY_MEM`
 - 入口：`rproc_config()`
 - KO 行为：
-  - 从 `baremetal_mem[0]` 取出第一段 reserved memory 的起始地址和大小
+  - 从 `aarch64_mem[0]` 取出第一段 reserved memory 的起始地址和大小
   - 返回给用户态的是“整块共享内存/保留内存”的基址和总大小，而不是某个已经切好的子分段
 - 用途：让用户态知道底座能用的共享内存总范围，再由上层按照 client / CPU 维度去做池化分段
 - 进一步的分段方式：
@@ -281,7 +299,8 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 #### `IOC_GET_COPY_MSG_MEM`
 - 入口：当前 baremetal 的主生命周期代码没有直接使用，但 KO 已实现
 - KO 行为：
-  - 根据 `instance_id` 和固定偏移，从 `baremetal_mem[0]` 推导一段 copy message memory
+  - `mcs_aarch64_copy_msg_mem()` 调用公共辅助函数 `mcs_copy_msg_mem()`
+  - 根据 `instance_id` 和固定偏移，从 `aarch64_mem[0]` 推导一段 copy message memory
   - `copy_mem_offset = instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 3`
   - 返回区域大小 `OPENAMP_SHM_COPY_SIZE * 2`
 - 用途：给 UMT 服务使用的 copy-message 共享区提供物理地址与大小
@@ -292,15 +311,16 @@ baremetal 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - 含义：这说明 baremetal KO 里除了主通信区，还内置了面向 UMT 服务的辅助共享区规划
 
 所以如果从用户关心的角度总结，baremetal 下这些 ioctl 可以分成三类：
-1. 启动控制：`IOC_XPUON` / `IOC_CPUON`、`IOC_AFFINITY_INFO`
+1. CPU 控制与停机确认：`IOC_XPUON` / `IOC_CPUON`、`IOC_AFFINITY_INFO`
 2. 通知控制：`IOC_SENDIPI`
 3. 内存相关：`IOC_QUERY_MEM`、`IOC_GET_COPY_MSG_MEM`
 
 ### 6.6 模块退出
-`mcs_dev_exit()` 会按相反顺序回收：
-- `remove_mcs_ipi()`
+`mcs_dev_exit()` 会依次回收：
 - `unregister_mcs_dev()`
-- `release_reserved_mem()`
+- `mcs_aarch64_exit()`：
+  - `remove_aarch64_irq()`，包含待执行唤醒 work 的同步回收
+  - `mcs_release_ped_rsv_mem()`
 
 ## 7. RTOS/client 侧契约
 
@@ -316,13 +336,13 @@ baremetal client 侧至少要满足：
 ## 8. baremetal 调试观察顺序
 
 如果 baremetal 有问题，建议按这个顺序看：
-1. `mcs_km/mcs_km.c` 是否成功注册了 `/dev/mcs`
+1. KO 是否包含 AArch64 backend，`mcs_km/mcs_km_core.c` 是否成功注册了 `/dev/mcs`
 2. `rproc_init()` 是否成功打开设备并注册 notifier
 3. `rproc_config()` 是否拿到了 `IOC_QUERY_MEM`
 4. resource table 是否成功映射并设置
 5. `rproc_start()` 是否真正调用了 `IOC_CPUON`
-6. `rproc_notify()` / `mcs_poll()` / notifier 线程是否闭环
-7. `rproc_shutdown()` 是否把 memory 和状态清干净
+6. `rproc_notify()` / `mcs_aarch64_poll()` / notifier 线程是否闭环
+7. `rproc_shutdown()` 是否确认 CPU OFF，并把 memory 和状态清干净
 8. `rproc_remove()` 是否在最后把 notifier 基础设施收掉
 
 ## 9. 建议继续阅读

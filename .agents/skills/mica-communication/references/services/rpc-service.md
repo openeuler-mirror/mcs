@@ -144,7 +144,7 @@ Linux/master 侧入口在：
 这一步才是真正把 RPC 服务落地成本地运行时对象的地方。
 
 从当前代码看，它至少负责：
-- 分配本地 `struct rpmsg_endpoint`
+- 分配并清零本地 `struct rpmsg_endpoint`
 - 通过 `rpmsg_create_ept(...)` 建立 Linux/master 侧 `rpmsg-rpc` endpoint
 - 立即发出一条 first message
 
@@ -168,6 +168,12 @@ Linux/master 侧 `rpc_service_init()` 在 bind 完成本地 endpoint 后，会�
 因此分析 RPC 是否真正可用时，要区分：
 1. NS / endpoint bind 是否成立
 2. first message 与后续 RPC 收发链是否成立
+
+### 5.3 实例服务与进程级资源的生命周期
+
+- RPC endpoint 随实例的 RPMsg 设备建立。实例 stop 时，RPC service 的 `.remove` 回调先调用 `rpmsg_rpc_service_terminate()`，随后 RPMsg 设备进入释放流程。
+- 日志句柄由 `micad` 进程内的 RPC 服务共享。`rpc_log_refcount` 记录引用数，最后一个引用释放时关闭日志句柄。
+- 启用 `MULTI_WORKERS` 时，工作线程池在 `micad` 进程内初始化一次。服务初始化时恢复接收请求；最后一个服务引用释放时，`workers_flush()` 停止接收新请求并等待排队和执行中的请求完成，线程池留在进程中供后续服务使用。
 
 ## 6. `rtos/libmica` 当前 RPC 侧实现
 

@@ -78,6 +78,26 @@ $(MAKE) -C $(KERNEL_SRC) M=$(SRC)
 
 因此 KO 构建前必须确认 `KERNEL_SRC` 有效，并且该 SDK 与目标镜像或开发板运行内核匹配。
 
+### 4.1 `mcs_km.ko` backend 选择
+
+在 `mcs_km` 目录中按目标平台构建：
+- AArch64 baremetal：`make CONFIG_MCS_PED_AARCH64=y`
+- HiSilicon RISC-V：`make CONFIG_MCS_PED_HISI_RISCV=y`
+- STM32MP2 M33：`make CONFIG_MCS_PED_STM32MP2=y`
+
+构建规则：
+- 公共部分为 `mcs_km_core.o` 和 `mcs_km_common.o`，链接一个平台 backend，产物统一为 `mcs_km.ko`
+- 未指定 backend 时默认选择 AArch64；同时指定多个 backend 为 `y` 时构建报错
+- KO 的 backend 应与目标 DTS 和用户态 `remoteproc_ops` 匹配；`IOC_SET_PED_TYPE` 类型不匹配时返回 `-EOPNOTSUPP`
+
+### 4.2 Xen 模块
+
+`CONFIG_XEN=y` 时构建 `xen-mcsback.ko`：
+
+```sh
+make CONFIG_XEN=y
+```
+
 ## 5. 目标侧部署对象
 
 Linux/master 侧常见部署对象包括：

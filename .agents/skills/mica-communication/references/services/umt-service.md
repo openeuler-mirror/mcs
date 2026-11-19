@@ -168,9 +168,10 @@ UMT 在 Linux/master 侧还依赖一块由内核侧规划的 copy-message 共享
 
 对应的 ioctl 常量和处理路径可以在：
 - `library/user_msg/user_msg_mem.c`
-- `mcs_km/mcs_km.c`
+- `mcs_km/mcs_km_pedestal.h`、`mcs_km/mcs_km_core.c`：ioctl 定义与分发
+- `mcs_km/mcs_km_common.c`：`mcs_copy_msg_mem()` 共享内存计算
 
-找到。
+该 ioctl 由 AArch64 和 HiSilicon RISC-V backend 提供；STM32MP2 M33 返回 `-EOPNOTSUPP`。
 
 这块 copy-message 共享区的意义是：
 - 给 Linux 用户态提供一块双方都认可的数据缓冲区

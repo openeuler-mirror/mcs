@@ -2,11 +2,11 @@
 
 ## 1. 文档目标
 
-这篇文档解释 hetero pedestal 在 MICA 中的完整落地方式：它如何把 MICA 的生命周期骨架落到 Linux/master 侧当前已实现的 `riscv_rproc.c` backend、`/dev/mcs` 设备、RISC-V 专用共享内存、resource table 首页布局、RISC-V 中断通知，以及远端 client 的启动与消息收发。
+这篇文档解释 hetero pedestal 在 MICA 中的完整落地方式：它如何把 MICA 的生命周期骨架落到 Linux/master 侧的 HiSilicon RISC-V、STM32MP2 M33 backend、`/dev/mcs` 设备、共享内存、resource table、中断通知，以及远端 client 的启动与消息收发。
 
 它主要回答：
 - hetero 当前对应哪些源码文件
-- hetero 为什么在 Linux/master 侧主要落到 `riscv_rproc.c`
+- hetero 在 Linux/master 侧如何选择对应平台的 `remoteproc_ops`
 - hetero 用的 KO、设备节点、ioctl 是什么
 - create/start/stop/remove 在 hetero 下分别做什么
 - 共享内存和 resource table 如何建立
@@ -16,7 +16,12 @@
 
 ## 2. 相关源码
 - `library/remoteproc/riscv_rproc.c`
-- `mcs_km/mcs_km.c`
+- `library/remoteproc/stm32mp2_rproc.c`
+- `mcs_km/mcs_km_core.c`
+- `mcs_km/mcs_km_common.c`
+- `mcs_km/mcs_km_pedestal.h`
+- `mcs_km/mcs_km_hisi_riscv.c`
+- `mcs_km/mcs_km_stm32mp2.c`
 - `library/mica/mica.c`
 - `library/remoteproc/remoteproc_core.c`
 - `library/rpmsg_device/rpmsg_vdev.c`
@@ -31,19 +36,15 @@
 
 hetero 是 MICA 中“异构远端”这一大类 pedestal。
 
-但从当前仓内 Linux/master 侧代码来看，真正已经落地的 hetero 主分支主要就是：
-- `client->ped == HETERO`
-- 且 `client->ped_setup.cpu_str == "riscv"`
-- 然后进入 `rproc_riscv_ops`
+`client->ped == HETERO` 时，Linux/master 按 `client->ped_setup.cpu_str` 选择平台路径：
+- `"riscv"` -> `rproc_riscv_ops`，对应 `library/remoteproc/riscv_rproc.c`
+- `"stm32mp2_m33"` -> `rproc_stm32mp2_ops`，对应 `library/remoteproc/stm32mp2_rproc.c`
 
-也就是说：
-- 文档名叫 `ped-hetero`
-- 但当前实现细节主要落在 `library/remoteproc/riscv_rproc.c`
-- 所以本文实际上是在解释“hetero 大类下当前已实现的 riscv 子分支”
-
-在代码里，hetero 也不是一个“薄配置”，而是一套完整 backend，只是它和 baremetal 共用 `/dev/mcs`，再通过 `IOC_SET_PED_TYPE` 在 KO 里切换到 riscv 这条实现路径。
+hetero 使用 `/dev/mcs`，配套 `mcs_km.ko` 在构建时选择 HiSilicon RISC-V 或 STM32MP2 backend。`IOC_SET_PED_TYPE` 校验用户态类型与已编译 backend 的匹配关系。
 
 ## 4. 生命周期实现
+
+4.1～4.5 描述 HiSilicon RISC-V 路径；STM32MP2 M33 路径见 4.6。
 
 ### 4.1 create
 - `create_client()` 发现：
@@ -52,20 +53,20 @@ hetero 是 MICA 中“异构远端”这一大类 pedestal。
   - 因此选择 `rproc_riscv_ops`
 - `remoteproc_init()` 进入 hetero 的 `rproc_init()`
 - `rproc_init()` 打开 `/dev/mcs`
-- `rproc_init()` 通过 `IOC_SET_PED_TYPE` 把当前 fd 的 pedestal 类型切到 `MCS_KM_PED_RISCV`
+- `rproc_init()` 通过 `IOC_SET_PED_TYPE` 提交 `MCS_KM_PED_RISCV`，与 KO 的 `MCS_KM_PED_HISI_RISCV` 类型匹配
 - 创建 `struct rproc_pdata`
 - 把 `rproc->priv`、`rproc->ops` 等挂好
 
 这一阶段的结果是：
 - hetero 实例具备后续配置与启动的前提
-- 当前 fd 已经不再走 baremetal 默认分支，而是明确进入 riscv 这条 KO 子路径
+- 用户态 RISC-V backend 与 KO 编译的 HiSilicon RISC-V backend 匹配
 - 但远端还没有真正跑起来
 
 ### 4.2 start
 主链是：
 1. `load_client_image()`
 2. `remoteproc_config()` -> hetero 的 `rproc_config()`
-3. `remoteproc_load()`（理论上是后续标准路径，但当前 hetero 通常会在 `.config()` 后直接进入 ready 快路径）
+3. `.config()` 已设置资源表和 `RPROC_READY`，`load_client_image()` 通过 ready 快路径返回
 4. `start_client()` -> `remoteproc_start()` -> hetero 的 `rproc_start()`
 5. `create_rpmsg_device()`
 
@@ -81,11 +82,11 @@ hetero 是 MICA 中“异构远端”这一大类 pedestal。
 `stop` 通过 `remoteproc_shutdown()` 落到 hetero 的 `rproc_shutdown()`。
 
 它的主链是：
-1. 遍历 `rproc->mems`
-2. 对每个映射的 memory 做 `munmap()`
-3. 从 `rproc->mems` 链表中删除
-4. 释放 `mem->io` 和 `mem`
-5. 通过 pipe 通知 notifier 线程退出
+1. `rproc_stop_notifier()` 通过 pipe 唤醒 notifier，`pthread_join()` 等待线程退出并关闭 pipe
+2. 遍历 `rproc->mems`
+3. 按页对齐的原始映射地址和长度执行 `munmap()`
+4. 从 `rproc->mems` 链表中删除
+5. 释放 `mem->io` 和 `mem`
 6. 清空 `rproc->rsc_table`、`rproc->rsc_len`、`rproc->bitmap`
 
 这一阶段的结果是：
@@ -101,14 +102,15 @@ hetero 是 MICA 中“异构远端”这一大类 pedestal。
 `remove` 主要在 `rproc_remove()` 中完成。
 
 它的核心逻辑是：
-1. 关闭 `mcs_fd`
-2. 释放 `rproc_pdata`
-3. 把 `rproc->priv` 置空
+1. `rproc_stop_notifier()` 确认该实例的 notifier 已退出
+2. 关闭 `mcs_fd`
+3. 释放 `rproc_pdata`
+4. 把 `rproc->priv` 置空
 
 这一阶段的结果是：
 - hetero backend 私有状态被回收
 - 与 baremetal 不同，这里没有按 `g_client_list` 全局协调 notifier 基础设施是否保留的逻辑
-- notifier 线程的退出动作已经在 `.shutdown()` 里通过 pipe 完成
+- notifier 线程由实例的 `rproc_pdata` 管理，退出时通过 pipe 唤醒并 join
 
 ### 4.5 生命周期隐含钩子
 
@@ -160,44 +162,53 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 
 主链是：
 1. 远端通过 riscv 专用 IRQ 线打到 Linux 侧
-2. `mcs_km.c: handle_riscv_irq()` 被触发
+2. `mcs_km_hisi_riscv.c: handle_riscv_irq()` 被触发
    - 先 mask IRQ
    - 再 clear IRQ
-   - `atomic_set(&riscv_irq_ack, 1)`
-   - `wake_up_interruptible(&mcs_riscv_wait_queue)`
+   - `atomic_set(&hisi_riscv_irq_ack, 1)`
+   - 调度 `riscv_irq_wake_work`，由 workqueue 唤醒 `mcs_hisi_riscv_wait_queue`
    - 最后 unmask IRQ
 3. 用户态线程在 `rproc_wait_event()` 里对 `mcs_fd` 执行 `poll()`
-4. `mcs_poll()` 被调用：
-   - 根据 `priv->ped_type == MCS_KM_PED_RISCV` 选择 `mcs_riscv_wait_queue`
-   - `atomic_cmpxchg(&riscv_irq_ack, 1, 0)`
+4. `mcs_km_core.c: mcs_poll()` 分发到 `mcs_hisi_riscv_poll()`：
+   - `poll_wait(file, &mcs_hisi_riscv_wait_queue, wait)`
+   - `atomic_cmpxchg(&hisi_riscv_irq_ack, 1, 0)`
    - 若有事件，则返回 `POLLIN | POLLRDNORM`
 5. 用户态 `poll()` 返回后，`rproc_wait_event()` 调 `remoteproc_get_notification(rproc, 0)`
 
 也就是说，hetero 的回通知链也不是“内核直接回调 remoteproc”，而是：
-- KO IRQ handler 置位并唤醒 riscv waitqueue
+- KO IRQ handler 置位，由 workqueue 唤醒 RISC-V waitqueue
 - `/dev/mcs` 的 `poll()` 变为可读
 - 用户态 notifier 线程收到 `POLLIN`
 - 再回到 remoteproc/OpenAMP 层继续推进
 
 这条链对排查“远端已经发中断，但 Linux/master 没继续处理消息”这类问题同样关键。
 
-## 5. 跟 `/dev/mcs` 的交互
+### 4.6 STM32MP2 M33 生命周期
 
-### 5.1 设备打开和 pedestal 类型切换
+配置入口为 `Pedestal=hetero`、`CPU=stm32mp2_m33`，示例见 `rtos/arm64/stm32mp257-zephyr.conf`。
+
+- create：选择 `rproc_stm32mp2_ops`，打开 `/dev/mcs`，通过 `IOC_SET_PED_TYPE` 校验 `MCS_KM_PED_STM32MP2`
+- config/load：`IOC_QUERY_MEM` 获取共享内存并初始化静态地址池；`remoteproc_load()` 加载 ELF 和固件内的 resource table
+- start：建立 pipe 和 notifier，`stm32mp2_get_boot_addr()` 优先取 `.isr_vectors` 地址，解析失败时使用 `rproc->bootaddr`；通过 `IOC_MCUON` 设置 NSVTOR 并启动 M33
+- stop：`.stop` 通过 `IOC_MCUOFF` 停核，并 join notifier；成功后由 `mica_stop()` 继续释放 service、RPMsg，再通过 `.shutdown` 回收映射和资源表状态
+- remove：确认 notifier 已退出，关闭 `mcs_fd` 并释放 `rproc_pdata`
+
+STM32MP2 使用 `ClientPath` 指定的 ELF，示例配置中 `PedestalConf` 为空。NSVTOR 启动地址需满足设备树提供的掩码约束。
+
+## 5. RISC-V 与 `/dev/mcs` 的交互
+
+### 5.1 设备打开和 pedestal 类型校验
 `rproc_init()` 负责打开 `/dev/mcs`，然后立刻通过：
 - `ioctl(mcs_fd, IOC_SET_PED_TYPE, &ped_type)`
 
-把当前 fd 对应的 `priv->ped_type` 切到：
-- `MCS_KM_PED_RISCV`
-
-这是 hetero 路径最关键的分叉动作。
+请求类型为用户态的 `MCS_KM_PED_RISCV`，对应内核侧 `MCS_KM_PED_HISI_RISCV`。KO 对合法类型进行匹配校验，不匹配时返回 `-EOPNOTSUPP`。
 
 ### 5.2 共享内存查询
 `rproc_config()` 里通过 `IOC_QUERY_MEM` 获取 reserved memory 信息。
 
-在 KO 里，它并不是返回 baremetal 那组内存，而是：
-- 检查当前 fd 的 `ped_type`
-- 若是 `MCS_KM_PED_RISCV`，返回 `riscv_mem[0]`
+在 KO 里：
+- `mcs_ioctl()` 调用已编译 backend 的 `.query_mem`
+- `mcs_hisi_riscv_query_mem()` 返回 `hisi_riscv_mem[0]`
 
 ### 5.3 远端启动
 `rproc_start()` 里通过 `IOC_MCUON` 启动远端。
@@ -205,8 +216,8 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 虽然用户态宏名叫 `IOC_MCUON`，但 KO 内核侧分发入口仍是：
 - `IOC_XPUON`
 
-随后在 `ped_type == MCS_KM_PED_RISCV` 分支里调用：
-- `boot_riscv(info.boot_addr)`
+随后通过 `mcs_hisi_riscv_xpu_on()` 调用：
+- `boot_riscv(info->boot_addr)`
 
 ### 5.4 远端通知
 `rproc_notify()` 通过 `IOC_SENDIPI` 把通知送到远端。
@@ -220,17 +231,18 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 
 ## 6. KO 里的具体实现
 
-`mcs_km/mcs_km.c` 负责把 hetero/riscv 所需的内核侧能力拼出来。
+hetero 内核接口由 `mcs_km_core.c` 和 `mcs_km_pedestal.h` 定义，内存辅助逻辑位于 `mcs_km_common.c`。平台实现分别位于 `mcs_km_hisi_riscv.c` 和 `mcs_km_stm32mp2.c`。
+
+6.1～6.7 描述 HiSilicon RISC-V backend；STM32MP2 backend 见 6.8。
 
 ### 6.1 模块初始化
 `mcs_dev_init()` 会依次完成：
-- `get_psci_method()`
-- `init_reserved_mem()`
-- `init_mcs_ipi()`
+- 选择 `mcs_hisi_riscv_ops`
+- `mcs_hisi_riscv_init()` 初始化平台资源
 - `register_mcs_dev()`
 
 对 hetero/riscv 来说，真正相关的是：
-- `init_riscv_rsv_mem()` 初始化 riscv reserved memory
+- `mcs_init_ped_rsv_mem()` 初始化 RISC-V reserved memory
 - `init_riscv_irq()` 初始化 riscv IRQ 路径
 - `/dev/mcs` 字符设备注册
 
@@ -244,13 +256,13 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - `/dev/mcs`
 
 ### 6.3 资源内存初始化
-`init_riscv_rsv_mem()` 本质上是：
-- `init_ped_rsv_mem("oe,mcs_riscv_remoteproc", riscv_mem, "mcs_riscv_mem", false)`
+`mcs_hisi_riscv_init()` 调用公共辅助函数：
+- `mcs_init_ped_rsv_mem("oe,mcs_riscv_remoteproc", hisi_riscv_mem, "mcs_hisi_riscv_mem", false, 0, 0)`
 
 这里有几条和 baremetal 不同的关键点：
 - hetero/riscv 看的 DTS compatible 节点是：
   - `oe,mcs_riscv_remoteproc`
-- 使用的是 `riscv_mem[]`
+- 使用的是 `hisi_riscv_mem[]`
 - `support_cmdline` 为 `false`
 
 也就是说：
@@ -259,11 +271,11 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - 它要求通过 DTS 提供 `oe,mcs_riscv_remoteproc` 及其 `memory-region`
 
 同时，和 baremetal 类似：
-- `IOC_QUERY_MEM` 实际只返回 `riscv_mem[0]`
+- `IOC_QUERY_MEM` 实际只返回 `hisi_riscv_mem[0]`
 - 所以真正直接参与主通信的也是第一段 riscv reserved memory
 
 ### 6.4 RISC-V IRQ 初始化与回收
-`init_riscv_irq()` / `remove_mcs_ipi()` 负责 hetero 的 IRQ 路径和相关中断资源。
+`init_riscv_irq()` / `remove_riscv_irq()` 负责 RISC-V 的 IRQ 路径和相关中断资源，回收时通过 `cancel_work_sync()` 等待唤醒 work 结束。
 
 `init_riscv_irq()` 的关键动作是：
 - 在 DTS 中查找：
@@ -280,7 +292,7 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 - hetero/riscv 走的是一套 memory-mapped IPC interrupt controller 寄存器 + 独立 IRQ 号 的模型
 
 ### 6.5 ioctl 分发
-`mcs_ioctl()` 里和 hetero/riscv 相关的重要 ioctl 有：
+`mcs_km_core.c: mcs_ioctl()` 通过 `mcs_hisi_riscv_ops` 分发 RISC-V 操作，重要 ioctl 有：
 - `IOC_SET_PED_TYPE`
 - `IOC_SENDIPI`
 - `IOC_XPUON`（用户态 hetero 路径里对应 `IOC_MCUON` 宏）
@@ -289,31 +301,30 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 
 其中要注意两点：
 - 用户态 `library/remoteproc/riscv_rproc.c` 里把 `_IOW('A', 1, int)` 定义成了 `IOC_MCUON`
-- KO `mcs_km.c` 里同一个 ioctl 号在内核侧名字叫 `IOC_XPUON`
+- KO `mcs_km_pedestal.h` 里同一个 ioctl 号在内核侧名字叫 `IOC_XPUON`
 - 两边编号一致，只是命名不同
 
-各 ioctl 在 hetero 下的语义可以概括成：
+各 ioctl 在 RISC-V 下的语义可以概括成：
 
 #### `IOC_SET_PED_TYPE`
 - 入口：`rproc_init()`
 - KO 行为：
   - 校验 pedestal type 合法性
-  - 把当前 fd 的 `priv->ped_type` 设置成 `MCS_KM_PED_RISCV`
-- 用途：告诉 KO 这不是 baremetal 默认 fd，而是 hetero/riscv 分支
-- 含义：这是后续 `poll/ioctl/mmap` 都能走对分支的前提
+  - 校验请求类型与 `mcs_ops->type` 一致，成功后保存到 fd 私有数据
+- 用途：确认用户态请求与已编译的 HiSilicon RISC-V backend 匹配
 
 #### `IOC_SENDIPI`
 - 入口：`rproc_notify()`
 - KO 行为：
-  - 进入 riscv 分支
+  - 调 `mcs_hisi_riscv_send_ipi()`
   - 调 `send_riscv_interrupt()`
 - 用途：Linux/master 向 RISC-V 远端发通知，驱动其处理 vring / message / 状态变化
 
 #### `IOC_XPUON` / `IOC_MCUON`
 - 入口：`rproc_start()`
 - KO 行为：
-  - 进入 riscv 分支
-  - 调 `boot_riscv(info.boot_addr)`
+  - 调 `mcs_hisi_riscv_xpu_on()`
+  - 调 `boot_riscv(info->boot_addr)`
   - 在 `boot_riscv()` 中：
     - `ioremap()` 四组固定物理寄存器地址
     - 写入 `boot_addr`
@@ -325,7 +336,7 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 #### `IOC_QUERY_MEM`
 - 入口：`rproc_config()`
 - KO 行为：
-  - 从 `riscv_mem[0]` 取出第一段 reserved memory 的起始地址和大小
+  - 从 `hisi_riscv_mem[0]` 取出第一段 reserved memory 的起始地址和大小
   - 返回给用户态的是 riscv 这一路通信共享内存的基址和大小
 - 用途：让用户态知道 hetero/riscv 可用的共享内存总范围
 - 进一步含义：当前 hetero 用户态会直接用这块内存首页保存 resource table
@@ -333,35 +344,48 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 #### `IOC_GET_COPY_MSG_MEM`
 - 入口：当前 hetero 的主生命周期代码没有直接使用，但 KO 已实现
 - KO 行为：
-  - 在 riscv 分支下，根据 `instance_id` 和固定偏移从 `riscv_mem[0]` 推导 copy message memory
+  - `mcs_hisi_riscv_copy_msg_mem()` 调用公共辅助函数 `mcs_copy_msg_mem()`
+  - 根据 `instance_id` 和固定偏移从 `hisi_riscv_mem[0]` 推导 copy message memory
   - 返回区域大小 `OPENAMP_SHM_COPY_SIZE * 2`
 - 用途：给 UMT 类服务使用的 copy-message 共享区提供物理地址与大小
 - 含义：这说明 hetero KO 里也内置了面向 UMT 服务的辅助共享区规划
 
 所以如果从用户关心的角度总结，hetero 下这些 ioctl 可以分成三类：
-1. pedestal 类型切换：`IOC_SET_PED_TYPE`
+1. pedestal 类型校验：`IOC_SET_PED_TYPE`
 2. 启动与通知控制：`IOC_XPUON` / `IOC_MCUON`、`IOC_SENDIPI`
 3. 内存相关：`IOC_QUERY_MEM`、`IOC_GET_COPY_MSG_MEM`
 
 ### 6.6 mmap 校验
-`mcs_mmap()` 在 hetero/riscv 下并不是无条件映射物理地址，而是：
-- 根据 `priv->ped_type == MCS_KM_PED_RISCV`
-- 检查请求映射范围是否落在 `riscv_mem[]` 中某一段 reserved memory 之内
+`mcs_mmap()` 通过 `mcs_hisi_riscv_mmap_allowed()` 校验映射范围：
+- 检查请求映射范围是否落在 `hisi_riscv_mem[]` 中某一段 reserved memory 之内
 - 只有合法才允许 `remap_pfn_range()`
 
 这意味着：
-- hetero 用户态所有通过 `/dev/mcs` 做的共享内存映射，都受 `riscv_mem[]` 边界约束
+- RISC-V 用户态所有通过 `/dev/mcs` 做的共享内存映射，都受 `hisi_riscv_mem[]` 边界约束
 - 如果 `loadbin()`、`rproc_mmap()` 或其他映射请求落到 riscv reserved memory 外部，KO 会拒绝
 
 ### 6.7 模块退出
-`mcs_dev_exit()` 会按相反顺序回收：
-- `remove_mcs_ipi()`
+`mcs_dev_exit()` 会依次回收：
 - `unregister_mcs_dev()`
-- `release_reserved_mem()`
+- `mcs_hisi_riscv_exit()`：
+  - `remove_riscv_irq()`
+  - `mcs_release_ped_rsv_mem()`
+
+### 6.8 STM32MP2 backend
+
+`mcs_km_stm32mp2.c` 通过 `mcs_stm32mp2_ops` 提供平台操作：
+- DTS 节点为 `oe,mcs_stm32mp2_remoteproc`，`memory-region` 提供可映射内存，第一段用于 `IOC_QUERY_MEM`
+- `init_stm32mp2()` 获取 `mcu_rst`、`hold_boot` reset control、`st,syscfg-nsvtor` 寄存器描述和 `vq0` / `vq1` mailbox 通道
+- `IOC_XPUON` 写入 NSVTOR 并执行启动 reset 序列；`IOC_MCUOFF` 通过 hold-boot 和 MCU reset 停核
+- `IOC_SENDIPI` 按 `info->cpu` 选择 IPCC 通道；用户态将 vring notifyid 0/1 映射到对应通道，其他 notifyid 使用通道 0
+- M33 回通知由 mailbox callback 置位并唤醒 waitqueue；用户态 poll 收到事件后以 `RSC_NOTIFY_ID_ANY` 处理 virtqueue 通知
+- `.copy_msg_mem` 为 NULL，`IOC_GET_COPY_MSG_MEM` 返回 `-EOPNOTSUPP`
 
 ## 7. RTOS/client 侧契约
 
-从 `rtos/libmica/src/pedestals/hetero.c` 可以看出，hetero client 侧至少要满足：
+### 7.1 HiSilicon RISC-V
+
+从 `rtos/libmica/src/pedestals/hetero.c` 可以看出，RISC-V client 侧至少要满足：
 - 共享内存基址 `shm_base_addr` 与 Linux/master 侧约定一致
 - resource table 就放在 `shm_base_addr` 起始位置
 - `reserved[0]` 要配合传递额外状态：
@@ -403,9 +427,18 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 
 如果这些契约不成立，hetero 的 `start` 可能能跑到一半，但后续服务和通信就不会稳定。
 
+### 7.2 STM32MP2 M33
+
+- client ELF 提供 resource table、vring 和 payload buffer 所需的内存布局，与 Linux 侧 DTS 保留区一致
+- `.isr_vectors` 向量表地址满足 NSVTOR 对齐要求
+- client 通过 IPCC 的 `vq0` / `vq1` 通道与 Linux/master 交换通知
+- client 在 RPMsg 初始化后发布目标服务；示例 `zephyr_openamp_rsc_table.elf` 的具体能力以对应 Zephyr 工程为准
+
 ## 8. hetero 调试观察顺序
 
-如果 hetero 有问题，建议按这个顺序看：
+### 8.1 HiSilicon RISC-V
+
+如果 RISC-V 有问题，建议按这个顺序看：
 1. `create_client()` 是否确实进入了：
    - `client->ped == HETERO`
    - `cpu_str == "riscv"`
@@ -417,11 +450,19 @@ hetero 的“远端 -> Linux/master”通知闭环也值得单独看清楚。
 6. `rproc_start()` 是否成功注册 notifier
 7. `client->ped_cfg` 是否存在、路径是否正确、`loadbin()` 是否成功
 8. `IOC_MCUON` 是否真正进入 `boot_riscv(boot_addr)`
-9. `rproc_notify()` / `handle_riscv_irq()` / `mcs_poll()` / notifier 线程是否闭环
+9. `rproc_notify()` / `handle_riscv_irq()` / `mcs_hisi_riscv_poll()` / notifier 线程是否闭环
 10. `create_rpmsg_device()` 是否成功建立 virtio/RPMsg
 11. RTOS 侧 `ped_hetero_init_rpmsg()` 是否成功把 `rpdev` 建起来
 12. `mica_create_all_services()` 与 `rpmsg_create_ept()` 是否成功把 TTY/UMT/RPC 服务创建出来
 13. `rproc_shutdown()` 是否把 memory、pipe 和状态清干净
+
+### 8.2 STM32MP2 M33
+
+1. `CPU=stm32mp2_m33` 是否选中 `rproc_stm32mp2_ops`，KO 是否包含 STM32MP2 backend
+2. DTS 的 reserved memory、reset control、NSVTOR 和 mailbox 资源是否获取成功
+3. `remoteproc_load()` 是否完成 ELF 和 resource table 加载，向量表地址是否满足启动要求
+4. IPCC kick、mailbox callback、poll 和 `remoteproc_get_notification()` 是否闭环
+5. `.stop` 是否完成停核及 notifier join，随后 service、RPMsg 和映射是否完成回收
 
 ## 9. 建议继续阅读
 - `pedestal-overview.md`

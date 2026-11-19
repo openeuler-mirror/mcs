@@ -43,8 +43,8 @@ Smoke test 不绑定 QEMU 或开发板。执行前只要求具备三类能力：
 - 目标配置文件存在
 - RTOS/client image 存在
 - 配置文件中的 `ClientPath`、`Pedestal`、`PedestalConf` 等字段与实际部署文件一致
-- 目标 pedestal 所需 KO 已加载或可加载
-- 用户态依赖库存在
+- 目标 pedestal 所需 KO 已加载或可加载；使用 `mcs_km.ko` 时确认编译的 backend 与目标匹配
+- 目标侧 OpenAMP、libmetal 等运行库与被测 `micad` 的构建依赖匹配
 - 日志输出位置已确认
 
 可以使用下面的检查模型：
@@ -188,6 +188,8 @@ Smoke test 通过至少应满足：
 - `mica rm <name>` 成功，最终状态符合预期
 - Running 阶段存在 `/dev/ttyRPMSG*`，且在目标安装 `screen` 时至少一个 TTY 设备可完成最小输入和回读
 - kernel log 中没有明确的 KO 加载失败、resource table 解析失败、reserved memory 失败或 RPMsg 初始化失败
+
+停止判定应同时检查命令结果和实例状态。`Error`、`Ready` 等状态不能作为停机成功的依据。
 
 `Running` 只代表生命周期进入运行态，不等于所有 service ready，也不等于业务链路完整闭合。`screen /dev/ttyRPMSGX` 最小交互通过说明基础 RPMsg TTY 通信可用，但不代表 UMT、RPC、GDB 或目标业务协议已经完成完整验证。
 

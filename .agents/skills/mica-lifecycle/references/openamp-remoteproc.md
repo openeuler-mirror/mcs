@@ -27,6 +27,7 @@
 - pedestal backend：
   - `library/remoteproc/baremetal_rproc.c`
   - `library/remoteproc/riscv_rproc.c`
+  - `library/remoteproc/stm32mp2_rproc.c`
   - `library/remoteproc/jailhouse_rproc.c`
   - `library/remoteproc/xen_rproc.c`
 - 上层生命周期入口：`library/mica/mica.c`
@@ -47,6 +48,7 @@
 - `JAILHOUSE` -> `rproc_jailhouse_ops`
 - `XEN` -> `rproc_xen_ops`
 - `HETERO && cpu_str == "riscv"` -> `rproc_riscv_ops`
+- `HETERO && cpu_str == "stm32mp2_m33"` -> `rproc_stm32mp2_ops`
 
 然后进入：
 - `remoteproc_init(&client->rproc, ops, client)`
@@ -104,6 +106,7 @@
 但不同 pedestal 的落地方式不同：
 - baremetal：按当前 CPU 对应的 RTOS 运行内存窗口初始化共享内存池，并按镜像中的 `resource_table` 设备地址建立访问前提
 - hetero/riscv：初始化共享内存池，在共享内存首页建立 `resource_table`，并设置 `bootaddr`
+- hetero/STM32MP2 M33：初始化共享内存池，由后续 `remoteproc_load()` 加载 ELF 与资源表
 - jailhouse：初始化 ivshmem 共享内存池，并在 cell load 阶段形成共享区中的 `resource_table`
 - xen：初始化动态共享内存池，并在动态共享内存契约下形成 `resource_table` 与 ready 前提
 
@@ -141,6 +144,7 @@
 例如：
 - baremetal 会走 remote CPU 启动路径
 - hetero/riscv 会完成 notifier 建立、必要的 bin 装载和 MCUON 启动
+- hetero/STM32MP2 M33 会建立 notifier，并由 `IOC_MCUON` 触发 NSVTOR 配置及 M33 启动
 - jailhouse 会推进 cell start
 - xen 会推进 domU 运行态建立
 
@@ -187,6 +191,10 @@
 - `remoteproc_set_rsc_table(rproc, ...)`
 - `rproc->rsc_table` 被 `rpmsg_vdev.c:setup_vdev()` 消费
 - `mica_rsc_table.c` 继续读 vendor resource，例如 endpoint table
+
+MICA 侧通过 `library/include/remoteproc/mica_rsc.h` 中的 `mica_find_rsc()` 按资源类型和同类索引查找条目，返回相对资源表起点的偏移，未命中时返回 `0`。使用位置包括：
+- `setup_vdev()`：查找 `RSC_VDEV` 及动态共享内存使用的 vring offset 资源
+- `rsc_update_ept_table()` 和 GDB/rbuf 路径：分别查找 endpoint table 和 ring buffer 资源
 
 所以如果 `rproc->rsc_table` 不成立，后面很多现象都会一起塌：
 - virtio 起不来
@@ -351,7 +359,7 @@ OpenAMP loader 和后续 virtio/RPMsg 并不直接知道：
 先确认：
 - `client->ped` 是否正确
 - `remoteproc_ops` 是否进入了预期 backend
-- hetero 是否真的走到了 riscv 分支
+- hetero 的 `cpu_str`、用户态 `remoteproc_ops` 和 KO backend 是否匹配
 
 ### 9.2 `remoteproc_config()` 后的 ready 前提确认点
 确认：
