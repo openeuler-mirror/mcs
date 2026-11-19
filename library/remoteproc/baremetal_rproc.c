@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <syslog.h>
 #include <time.h>
+#include <unistd.h>
 #include <metal/alloc.h>
 #include <metal/cache.h>
 #include <metal/io.h>
@@ -33,8 +34,8 @@ struct mem_info {
 	uint64_t size;
 };
 
-static int mcs_fd;
-static int pipe_fd[2];
+static int mcs_fd = -1;
+static int pipe_fd[2] = { -1, -1 };
 #define PIPE_READ_END  0
 #define PIPE_WRITE_END 1
 #define MCS_DEVICE_NAME    "/dev/mcs"
@@ -54,6 +55,7 @@ static int pipe_fd[2];
 #define SHM_POOL_SIZE      0x20000
 
 static atomic_bool notifier;
+static pthread_t notifier_thread;
 
 static void rproc_notify_all(void)
 {
@@ -78,14 +80,17 @@ static void *rproc_wait_event(void *arg)
 		{ .fd = pipe_fd[PIPE_READ_END], .events = POLLIN, }
 	};
 
-	notifier = true;
-
 	while (notifier) {
 		ret = poll(fds, 2, -1);
 		if (ret == -1) {
+			if (errno == EINTR)
+				continue;
 			syslog(LOG_ERR, "%s failed: %s\n", __func__, strerror(errno));
 			break;
 		}
+
+		if (!notifier || (fds[1].revents & POLLHUP))
+			break;
 
 		if (fds[0].revents & POLLIN)
 			rproc_notify_all();
@@ -96,14 +101,7 @@ static void *rproc_wait_event(void *arg)
 
 static int rproc_register_notifier(void)
 {
-	int ret = 0;
-	pthread_t thread;
-
-	/*
-	 * For bare-metal, we only need to register one notifier.
-	 */
-	if (notifier)
-		return ret;
+	int ret;
 
 	ret = pipe(pipe_fd);
 	if (ret == -1) {
@@ -111,20 +109,17 @@ static int rproc_register_notifier(void)
 		return ret;
 	}
 
-	ret = pthread_create(&thread, NULL, rproc_wait_event, NULL);
-	if (ret)
-		goto err;
-
-	ret = pthread_detach(thread);
+	/* Publish before creation; a late entry must not undo remove's stop. */
+	notifier = true;
+	ret = pthread_create(&notifier_thread, NULL, rproc_wait_event, NULL);
 	if (ret) {
-		pthread_cancel(thread);
-		goto err;
+		notifier = false;
+		close(pipe_fd[PIPE_READ_END]);
+		close(pipe_fd[PIPE_WRITE_END]);
+		pipe_fd[PIPE_READ_END] = -1;
+		pipe_fd[PIPE_WRITE_END] = -1;
 	}
 
-	return 0;
-err:
-	close(pipe_fd[PIPE_READ_END]);
-	close(pipe_fd[PIPE_WRITE_END]);
 	return ret;
 }
 
@@ -135,35 +130,41 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 
 	rproc->ops = ops;
-	/* open mcs device for rproc->ops */
-	mcs_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
-	if (mcs_fd < 0) {
-		syslog(LOG_ERR, "open %s device failed, err %d\n", MCS_DEVICE_NAME, mcs_fd);
-		return NULL;
-	}
-
 	/* parse cpu_id for baremetal */
 	ret = strtoul(client->ped_setup.cpu_str, NULL, 0);
 	if (ret < 0 || ret >= sysconf(_SC_NPROCESSORS_CONF)) {
 		syslog(LOG_ERR, "Invalid CPUID: %s, should be only one cpu_id within range(0-%ld)",
 			client->ped_setup.cpu_str, sysconf(_SC_NPROCESSORS_CONF) - 1);
-		goto err;
+		return NULL;
 	}
 	client->ped_setup.cpu_id = ret;
 
-	/* set up the notification waiter */
-	ret = rproc_register_notifier();
-	if (ret) {
-		syslog(LOG_ERR, "unable to register notifier, err: %d\n", ret);
-		goto err;
+	/* Share the device fd with the existing notifier and other clients. */
+	if (!notifier) {
+		/* Do not replace resources still owned by an unjoined worker. */
+		if (mcs_fd >= 0) {
+			syslog(LOG_ERR, "previous notifier was not joined");
+			return NULL;
+		}
+
+		mcs_fd = open(MCS_DEVICE_NAME, O_RDWR | O_SYNC);
+		if (mcs_fd < 0) {
+			syslog(LOG_ERR, "open %s device failed: %s\n", MCS_DEVICE_NAME, strerror(errno));
+			return NULL;
+		}
+
+		ret = rproc_register_notifier();
+		if (ret) {
+			syslog(LOG_ERR, "unable to register notifier, err: %d\n", ret);
+			close(mcs_fd);
+			mcs_fd = -1;
+			return NULL;
+		}
 	}
 
 	client->ped_ops = NULL;
 
 	return rproc;
-err:
-	close(mcs_fd);
-	return NULL;
 }
 
 static void *rproc_mmap(struct remoteproc *rproc,
@@ -482,25 +483,33 @@ static int rproc_shutdown(struct remoteproc *rproc)
 
 static void rproc_remove(struct remoteproc *rproc)
 {
-	int find = 0;
+	int ret;
 	struct metal_list *node;
 	struct mica_client *client;
 
+	if (!notifier)
+		return;
+
 	metal_list_for_each(&g_client_list, node) {
 		client = metal_container_of(node, struct mica_client, node);
-		if (client->ped == BARE_METAL) {
-			find = 1;
-			break;
-		}
+		if (client->ped == BARE_METAL)
+			return;
 	}
 
-	notifier = find ? true : false;
-	if (!notifier) {
-		(void)!write(pipe_fd[PIPE_WRITE_END], &find, sizeof(find));
-		close(mcs_fd);
-		close(pipe_fd[PIPE_READ_END]);
-		close(pipe_fd[PIPE_WRITE_END]);
+	notifier = false;
+	/* Closing the writer wakes poll on the read end with POLLHUP. */
+	close(pipe_fd[PIPE_WRITE_END]);
+	pipe_fd[PIPE_WRITE_END] = -1;
+	/* Keep both poll descriptors valid until the worker has exited. */
+	ret = pthread_join(notifier_thread, NULL);
+	if (ret) {
+		syslog(LOG_ERR, "unable to join notifier: %s\n", strerror(ret));
+		return;
 	}
+	close(mcs_fd);
+	close(pipe_fd[PIPE_READ_END]);
+	mcs_fd = -1;
+	pipe_fd[PIPE_READ_END] = -1;
 }
 
 static int rproc_notify(struct remoteproc *rproc, uint32_t id)

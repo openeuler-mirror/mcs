@@ -42,7 +42,7 @@ baremetal 是 MICA 最基础的 pedestal：
 - `rproc_init()` 打开 `/dev/mcs`
 - 解析 `client->ped_setup.cpu_str`
 - 把 `client->ped_setup.cpu_id` 填好
-- 注册 notifier 基础设施
+- 第一个 baremetal 实例打开 `/dev/mcs` 并启动 notifier；后续实例共享这一设备 fd 和线程
 
 这一阶段的结果是：
 - baremetal 实例具备后续配置与启动的前提
@@ -91,9 +91,9 @@ baremetal 是 MICA 最基础的 pedestal：
 
 它的核心逻辑是：
 1. 在 `g_client_list` 里查找 baremetal client
-2. 根据是否还有 baremetal client 决定 `notifier` 是否继续保持
-3. 如果没有了，就通过 pipe 通知 notifier 线程退出
-4. 关闭 `mcs_fd` 和 pipe
+2. 若还有 baremetal client，保留共享 notifier 和设备 fd
+3. 否则清除运行标志、关闭 pipe 写端，通过 `POLLHUP` 唤醒 notifier，并等待线程退出
+4. 线程退出后再关闭 `mcs_fd` 和 pipe 读端；线程入口不会重置运行标志
 
 这一阶段的结果是：
 - 最后一个相关实例被移除后，baremetal 的后台通知基础设施也会被回收
