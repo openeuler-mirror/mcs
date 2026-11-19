@@ -248,9 +248,3 @@ baremetal / hetero 使用 `mcs_km.ko` 和 `/dev/mcs`，内核侧分工为：
    - `mica-common-tasks/references/debugging-workflow/debugging-overview.md`
    - `mica-rtos-client`
    - `mica-common-tasks/references/debugging-workflow/debugging-overview.md`
-
-从当前完成度看，ped 体系里：
-- `ped-baremetal.md` 覆盖 baremetal backend、内核接口与 RTOS 契约
-- `ped-hetero.md` 已按 baremetal 深度补齐，并覆盖 Linux/master + RTOS 两侧契约
-- `ped-jailhouse.md` 已补齐 userspace backend、ivshmem/UIO 与 cell 生命周期这条主线
-- `ped-xen.md` 已补齐到可用于理解虚拟化 backend、grant/evtchn 与 guest 契约的深度
