@@ -185,15 +185,18 @@ Linux/master 侧 TTY、UMT、RPC 在分配对象时将 endpoint 清零。OpenAMP
 这时 `mica_ns_bind_cb()` 不会直接丢弃这个远端 endpoint，而是：
 - 分配 `struct remote_ept`
 - 把 name / addr / dest_addr 记到 `remote_ept_list`
+- 记录通告所属实例；资源表恢复出来的远端 endpoint 也记录所属实例
 - 等后续本地 service 再注册时补绑定
 
 对应的补绑定逻辑在：
 - `mica_register_service()`
 
-`mica_register_service()` 会遍历 `remote_ept_list`，对每个已有远端 endpoint 再跑一次：
+`mica_register_service()` 只取出本实例的待绑定条目，对这些远端 endpoint 再跑一次：
 - `rpmsg_ns_match()`
 - `rpmsg_ns_bind_cb()`
 - `rsc_update_ept_table()`
+
+未匹配的条目留给本实例后续注册的服务；stop/remove 会丢弃本实例剩余的条目，不影响其他实例。
 
 这说明 MICA 允许两种路径：
 - 先注册本地 service，再等远端 endpoint 出现

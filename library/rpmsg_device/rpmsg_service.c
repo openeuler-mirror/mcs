@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MulanPSL-2.0
  */
 
+#include <pthread.h>
 #include <stdio.h>
 #include <syslog.h>
 #include <openamp/remoteproc_virtio.h>
@@ -13,13 +14,44 @@
 #include <remoteproc/mica_rsc.h>
 
 static METAL_DECLARE_LIST(remote_ept_list);
+static pthread_mutex_t remote_ept_lock = PTHREAD_MUTEX_INITIALIZER;
 
 struct remote_ept {
 	char              name[RPMSG_NAME_SIZE];
 	uint32_t          addr;
 	uint32_t          dest_addr;
+	struct mica_client *client;
 	struct metal_list node;
 };
+
+static void take_remote_epts(struct mica_client *client, struct metal_list *pending)
+{
+	struct metal_list *node, *next;
+
+	pthread_mutex_lock(&remote_ept_lock);
+	for (node = remote_ept_list.next; node != &remote_ept_list; node = next) {
+		struct remote_ept *ept = metal_container_of(node, struct remote_ept, node);
+
+		next = node->next;
+		if (ept->client == client) {
+			metal_list_del(node);
+			metal_list_add_tail(pending, node);
+		}
+	}
+	pthread_mutex_unlock(&remote_ept_lock);
+}
+
+void clear_remote_epts(struct mica_client *client)
+{
+	METAL_DECLARE_LIST(pending);
+	struct metal_list *node;
+
+	take_remote_epts(client, &pending);
+	while ((node = metal_list_first(&pending)) != NULL) {
+		metal_list_del(node);
+		metal_free_memory(metal_container_of(node, struct remote_ept, node));
+	}
+}
 
 void print_device_of_service(struct mica_client *client, char *str, size_t size)
 {
@@ -43,7 +75,8 @@ void print_device_of_service(struct mica_client *client, char *str, size_t size)
 
 int mica_register_service(struct mica_client *client, struct mica_service *svc)
 {
-	struct metal_list *node, *tmp_node;
+	METAL_DECLARE_LIST(pending);
+	struct metal_list *node, *next;
 	struct remote_ept *r_ept;
 	struct mica_service *new_svc;
 	int ret;
@@ -71,8 +104,10 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 		return -EINVAL;
 	}
 
-	/* check if the service is registered by rpmsg name service */
-	metal_list_for_each(&remote_ept_list, node) {
+	/* Take only this client's announcements; call service code unlocked. */
+	take_remote_epts(client, &pending);
+	for (node = pending.next; node != &pending; node = next) {
+		next = node->next;
 		r_ept = metal_container_of(node, struct remote_ept, node);
 
 		if (new_svc->rpmsg_ns_match(client->rdev, r_ept->name, r_ept->addr, r_ept->dest_addr, new_svc->priv)) {
@@ -81,12 +116,18 @@ int mica_register_service(struct mica_client *client, struct mica_service *svc)
 			ret = rsc_update_ept_table(&client->rproc, client->rdev);
 			if (ret != 0)
 				syslog(LOG_ERR, "Failed to update ept rsc table, ret %d", ret);
-			tmp_node = node;
-			node = tmp_node->prev;
-			metal_list_del(tmp_node);
+			metal_list_del(node);
 			metal_free_memory(r_ept);
 		}
 	}
+	/* Requeue unmatched entries ahead of announcements that arrived meanwhile. */
+	pthread_mutex_lock(&remote_ept_lock);
+	while (!metal_list_is_empty(&pending)) {
+		node = pending.prev;
+		metal_list_del(node);
+		metal_list_add_head(&remote_ept_list, node);
+	}
+	pthread_mutex_unlock(&remote_ept_lock);
 
 out:
 	DEBUG_PRINT("register service: %s\n", new_svc->name);
@@ -113,7 +154,6 @@ void mica_unregister_all_services(struct mica_client *client)
 void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 {
 	struct mica_service *svc;
-	struct remote_ept *r_ept;
 	struct rpmsg_virtio_device *rvdev;
 	struct remoteproc_virtio *rpvdev;
 	struct remoteproc *rproc;
@@ -152,19 +192,11 @@ void mica_ns_bind_cb(struct rpmsg_device *rdev, const char *name, uint32_t dest)
 	 * If no service is matched, append this endpoint to
 	 * remote_ept_list and wait for a register.
 	 */
-	r_ept = metal_allocate_memory(sizeof(*r_ept));
-	if (!r_ept) {
-		syslog(LOG_ERR, "%s failed: remote_ept node creation failed, no memory\n", __func__);
-		return;
-	}
-
-	r_ept->addr = dest;
-	r_ept->dest_addr = RPMSG_ADDR_ANY;
-	strlcpy(r_ept->name, name, RPMSG_NAME_SIZE);
-	metal_list_add_tail(&remote_ept_list, &r_ept->node);
+	register_remote_ept(client, name, dest, RPMSG_ADDR_ANY);
 }
 
-void register_remote_ept(const char *name, uint32_t addr, uint32_t dest_addr)
+void register_remote_ept(struct mica_client *client, const char *name,
+			 uint32_t addr, uint32_t dest_addr)
 {
 	struct remote_ept *r_ept;
 
@@ -174,9 +206,12 @@ void register_remote_ept(const char *name, uint32_t addr, uint32_t dest_addr)
 		return;
 	}
 
-	DEBUG_PRINT("restore endpoint: %s, addr:%d, dest_addr: %d", name, addr, dest_addr);
+	DEBUG_PRINT("queue endpoint: %s, addr:%u, dest_addr: %u", name, addr, dest_addr);
+	r_ept->client = client;
 	r_ept->addr = addr;
 	r_ept->dest_addr = dest_addr;
 	strlcpy(r_ept->name, name, RPMSG_NAME_SIZE);
+	pthread_mutex_lock(&remote_ept_lock);
 	metal_list_add_tail(&remote_ept_list, &r_ept->node);
+	pthread_mutex_unlock(&remote_ept_lock);
 }
