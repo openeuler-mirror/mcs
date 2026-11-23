@@ -8,6 +8,7 @@
 #include <metal/cache.h>
 #include <openamp/remoteproc.h>
 
+#include <mica/mica_client.h>
 #include <remoteproc/mica_rsc.h>
 #include <rpmsg/rpmsg_service.h>
 
@@ -22,13 +23,14 @@ int handle_mica_rsc(struct remoteproc *rproc, void *rsc, size_t len)
 	switch (rsc_type) {
 	case RSC_VENDOR_EPT_TABLE:
 	{
+		struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 		struct fw_rsc_ept *ept_rsc = rsc;
 		struct ept_info *ept;
 
 		for (i = 0; i < ept_rsc->num_of_epts; i++) {
 			ept = &ept_rsc->endpoints[i];
 			if (ept->addr != 0)
-				register_remote_ept(ept->name, ept->addr, ept->dest_addr);
+				register_remote_ept(client, ept->name, ept->addr, ept->dest_addr);
 		}
 		break;
 	}

@@ -9,6 +9,7 @@
 
 #include "mica/mica.h"
 #include "remoteproc/remoteproc_module.h"
+#include "rpmsg/rpmsg_service.h"
 #include "rpmsg/rpmsg_vdev.h"
 #include "rbuf_device/rbuf_dev.h"
 
@@ -75,7 +76,9 @@ int mica_stop(struct mica_client *client)
 	if (client->debug)
 		destroy_rbuf_device(client);
 
-	return stop_client(client);
+	ret = stop_client(client);
+	clear_remote_epts(client);
+	return ret;
 }
 
 int mica_remove(struct mica_client *client)
@@ -96,6 +99,7 @@ int mica_remove(struct mica_client *client)
 		
 
 	destory_client(client);
+	clear_remote_epts(client);
 	return 0;
 }
 
